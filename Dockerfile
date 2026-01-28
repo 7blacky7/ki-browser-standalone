@@ -11,8 +11,8 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy source code
-COPY Cargo.toml Cargo.lock* ./
+# Copy source code (exclude Cargo.lock to let cargo regenerate)
+COPY Cargo.toml ./
 COPY src/ ./src/
 
 # Build release binary
