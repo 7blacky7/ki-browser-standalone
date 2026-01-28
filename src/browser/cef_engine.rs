@@ -46,7 +46,7 @@ use cef::{
     Errorcode, MainArgs, KeyEventModifiers,
     // Traits for handler implementations
     ImplApp, ImplClient, ImplRenderHandler, ImplLoadHandler, ImplLifeSpanHandler,
-    ImplBrowser, ImplBrowserHost, ImplFrame,
+    ImplBrowser, ImplBrowserHost,
     // Macros for wrapping handlers
     wrap_app, wrap_client, wrap_render_handler, wrap_load_handler, wrap_life_span_handler,
 };
@@ -1219,7 +1219,7 @@ impl CefBrowserEngine {
                 y,
                 modifiers: KeyEventModifiers::empty(),
             };
-            host.send_mouse_move_event(Some(&event), false);
+            host.send_mouse_move_event(Some(&event), 0);
             trace!("Mouse move sent to tab {}: ({}, {})", tab_id, x, y);
             Ok(())
         } else {
@@ -1252,7 +1252,7 @@ impl CefBrowserEngine {
             };
 
             // Decode click_count: positive = down, negative = up
-            let mouse_up = click_count < 0;
+            let mouse_up = if click_count < 0 { 1 } else { 0 };
             let actual_count = click_count.abs();
 
             let button_type = match button {
