@@ -43,9 +43,9 @@ use cef::{
     LifeSpanHandler, LoadHandler, RenderHandler,
     PaintElementType, TransitionType,
     Rect, ScreenInfo, WindowInfo, Settings, LogSeverity,
-    Errorcode, MainArgs, EventFlags,
+    Errorcode, MainArgs,
     // Traits for handler implementations
-    ImplApp, ImplClient, ImplRenderHandler, ImplLoadHandler, ImplLifeSpanHandler,
+    ImplApp, ImplRenderHandler, ImplLoadHandler, ImplLifeSpanHandler,
     ImplBrowser, ImplBrowserHost, ImplFrame,
     // Traits for wrapper implementations
     WrapApp, WrapClient, WrapRenderHandler, WrapLoadHandler, WrapLifeSpanHandler,
@@ -1002,14 +1002,14 @@ impl CefBrowserEngine {
         let frame_size = Arc::new(RwLock::new((0u32, 0u32)));
         let browser_created = Arc::new(AtomicBool::new(false));
 
-        // Create render handler using v144 wrap macro structs
+        // Create render handler using v144 API
         let render_handler_impl = KiBrowserRenderHandlerImpl {
             tab_id,
             frame_buffer: frame_buffer.clone(),
             frame_size: frame_size.clone(),
             viewport_size,
         };
-        let render_handler = render_handler_impl.into_render_handler();
+        let render_handler = RenderHandler::new(render_handler_impl);
 
         // Create life span handler
         let life_span_handler_impl = KiBrowserLifeSpanHandlerImpl {
@@ -1017,7 +1017,7 @@ impl CefBrowserEngine {
             tabs: tabs.clone(),
             browser_created: browser_created.clone(),
         };
-        let life_span_handler = life_span_handler_impl.into_life_span_handler();
+        let life_span_handler = LifeSpanHandler::new(life_span_handler_impl);
 
         // Create load handler
         let load_handler_impl = KiBrowserLoadHandlerImpl {
@@ -1025,9 +1025,9 @@ impl CefBrowserEngine {
             tabs: tabs.clone(),
             stealth_config: stealth_config.clone(),
         };
-        let load_handler = load_handler_impl.into_load_handler();
+        let load_handler = LoadHandler::new(load_handler_impl);
 
-        // Create client using v144 wrap macro struct
+        // Create client using v144 API
         let client_impl = KiBrowserClient {
             tab_id,
             tabs: tabs.clone(),
@@ -1036,7 +1036,7 @@ impl CefBrowserEngine {
             life_span_handler,
             load_handler,
         };
-        let mut client = client_impl.into_client();
+        let mut client = Client::new(client_impl);
 
         // Browser settings
         let mut browser_settings = BrowserSettings::default();
@@ -1221,7 +1221,7 @@ impl CefBrowserEngine {
             let event = cef::MouseEvent {
                 x,
                 y,
-                modifiers: EventFlags::default(),
+                modifiers: 0u32,
             };
             host.send_mouse_move_event(Some(&event), 0);
             trace!("Mouse move sent to tab {}: ({}, {})", tab_id, x, y);
@@ -1252,7 +1252,7 @@ impl CefBrowserEngine {
             let event = cef::MouseEvent {
                 x,
                 y,
-                modifiers: EventFlags::default(),
+                modifiers: 0u32,
             };
 
             // Decode click_count: positive = down, negative = up
@@ -1298,7 +1298,7 @@ impl CefBrowserEngine {
             let event = cef::MouseEvent {
                 x,
                 y,
-                modifiers: EventFlags::default(),
+                modifiers: 0u32,
             };
             host.send_mouse_wheel_event(Some(&event), delta_x, delta_y);
             trace!(
@@ -1337,10 +1337,8 @@ impl CefBrowserEngine {
                 _ => cef::KeyEventType::KEYDOWN,
             };
 
-            // Convert u32 modifiers to EventFlags - use default for now
-            // TODO: Properly convert modifiers once we understand the EventFlags API
-            let _modifiers = modifiers; // Suppress unused warning
-            let key_modifiers = EventFlags::default();
+            // Use modifiers directly as u32
+            let key_modifiers = modifiers;
 
             let event = cef::KeyEvent {
                 size: std::mem::size_of::<cef::KeyEvent>(),
@@ -1387,7 +1385,7 @@ impl CefBrowserEngine {
                 let key_down = cef::KeyEvent {
                     size: std::mem::size_of::<cef::KeyEvent>(),
                     type_: cef::KeyEventType::KEYDOWN,
-                    modifiers: EventFlags::default(),
+                    modifiers: 0u32,
                     windows_key_code: char_code as i32,
                     native_key_code: 0,
                     is_system_key: 0,
@@ -1401,7 +1399,7 @@ impl CefBrowserEngine {
                 let char_event = cef::KeyEvent {
                     size: std::mem::size_of::<cef::KeyEvent>(),
                     type_: cef::KeyEventType::CHAR,
-                    modifiers: EventFlags::default(),
+                    modifiers: 0u32,
                     windows_key_code: char_code as i32,
                     native_key_code: 0,
                     is_system_key: 0,
@@ -1415,7 +1413,7 @@ impl CefBrowserEngine {
                 let key_up = cef::KeyEvent {
                     size: std::mem::size_of::<cef::KeyEvent>(),
                     type_: cef::KeyEventType::KEYUP,
-                    modifiers: EventFlags::default(),
+                    modifiers: 0u32,
                     windows_key_code: char_code as i32,
                     native_key_code: 0,
                     is_system_key: 0,
