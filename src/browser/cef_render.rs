@@ -647,14 +647,14 @@ impl OffScreenRenderHandler {
             ScreenshotFormat::Png => {
                 let encoder = image::codecs::png::PngEncoder::new(&mut buffer);
                 encoder
-                    .write_image(&img, width, height, image::ExtendedColorType::Rgba8)
+                    .write_image(&img, width, height, image::ColorType::Rgba8)
                     .map_err(|e| anyhow!("PNG encoding failed: {}", e))?;
             }
             ScreenshotFormat::Jpeg => {
                 let encoder =
                     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, quality);
                 encoder
-                    .write_image(&img, width, height, image::ExtendedColorType::Rgba8)
+                    .write_image(&img, width, height, image::ColorType::Rgba8)
                     .map_err(|e| anyhow!("JPEG encoding failed: {}", e))?;
             }
             ScreenshotFormat::WebP => {
@@ -672,7 +672,7 @@ impl OffScreenRenderHandler {
                     // Fallback to PNG if WebP encoding isn't available
                     let encoder = image::codecs::png::PngEncoder::new(&mut buffer);
                     encoder
-                        .write_image(&img, width, height, image::ExtendedColorType::Rgba8)
+                        .write_image(&img, width, height, image::ColorType::Rgba8)
                         .map_err(|e| anyhow!("PNG encoding (WebP fallback) failed: {}", e))?;
                 }
             }
