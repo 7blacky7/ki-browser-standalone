@@ -319,15 +319,15 @@ wrap_app! {
         ) {
             if let Some(cmd) = command_line {
                 // Add arguments for stealth mode
-                cmd.append_switch_with_value(&CefString::from("disable-blink-features"), &CefString::from("AutomationControlled"));
-                cmd.append_switch(&CefString::from("disable-infobars"));
-                cmd.append_switch(&CefString::from("disable-extensions"));
-                cmd.append_switch(&CefString::from("no-first-run"));
-                cmd.append_switch(&CefString::from("no-default-browser-check"));
+                cmd.append_switch_with_value(&CefString::new_from_str("disable-blink-features"), &CefString::new_from_str("AutomationControlled"));
+                cmd.append_switch(&CefString::new_from_str("disable-infobars"));
+                cmd.append_switch(&CefString::new_from_str("disable-extensions"));
+                cmd.append_switch(&CefString::new_from_str("no-first-run"));
+                cmd.append_switch(&CefString::new_from_str("no-default-browser-check"));
 
                 // Disable GPU in headless mode for stability
-                cmd.append_switch(&CefString::from("disable-gpu"));
-                cmd.append_switch(&CefString::from("disable-gpu-compositing"));
+                cmd.append_switch(&CefString::new_from_str("disable-gpu"));
+                cmd.append_switch(&CefString::new_from_str("disable-gpu-compositing"));
 
                 debug!("CEF command line configured for stealth mode");
             }
@@ -526,7 +526,7 @@ wrap_load_handler! {
                 if f.is_main() != 0 {
                     // Inject stealth scripts BEFORE any page scripts run
                     let stealth_script = self.stealth_config.get_complete_override_script();
-                    f.execute_java_script(&CefString::from(&stealth_script), &CefString::from(""), 0);
+                    f.execute_java_script(&CefString::new_from_str(&stealth_script), &CefString::new_from_str(""), 0);
 
                     debug!(
                         "Stealth scripts injected for tab {} on load start",
@@ -1054,7 +1054,7 @@ impl CefBrowserEngine {
         let result = cef::browser_host_create_browser(
             &window_info,
             &mut client,
-            &CefString::from(url),
+            &CefString::new_from_str(url),
             &browser_settings,
             None,
             None,
@@ -1100,7 +1100,7 @@ impl CefBrowserEngine {
             // Close the browser
             if let Some(ref browser) = tab.browser {
                 if let Some(host) = browser.host() {
-                    host.close_browser(true);
+                    host.close_browser(1);
                 }
             }
             info!("Browser closed for tab {}", tab_id);
@@ -1124,8 +1124,8 @@ impl CefBrowserEngine {
         let browser = tab.browser.as_ref()
             .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?;
 
-        if let Some(frame) = browser.get_main_frame() {
-            frame.load_url(&CefString::from(url));
+        if let Some(frame) = browser.main_frame() {
+            frame.load_url(&CefString::new_from_str(url));
             info!("Navigating tab {} to: {}", tab_id, url);
             Ok(())
         } else {
@@ -1147,8 +1147,8 @@ impl CefBrowserEngine {
         let browser = tab.browser.as_ref()
             .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?;
 
-        if let Some(frame) = browser.get_main_frame() {
-            frame.execute_java_script(&CefString::from(script), &CefString::from(""), 0);
+        if let Some(frame) = browser.main_frame() {
+            frame.execute_java_script(&CefString::new_from_str(script), &CefString::new_from_str(""), 0);
             debug!("JavaScript executed on tab {}", tab_id);
             // Note: CEF doesn't provide synchronous JS execution results
             // For result capture, use V8 context and message passing
