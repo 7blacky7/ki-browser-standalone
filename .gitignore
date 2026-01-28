@@ -1,0 +1,157 @@
+# =============================================================================
+# Rust / Cargo
+# =============================================================================
+
+# Build output directory
+/target/
+
+# Note: Cargo.lock is kept for binary projects (not ignored)
+# For libraries, you would add: Cargo.lock
+
+# =============================================================================
+# Environment & Secrets
+# =============================================================================
+
+# Environment files (may contain sensitive data)
+.env
+.env.local
+.env.*.local
+*.env
+
+# Credentials and secrets
+credentials.json
+secrets.toml
+*.pem
+*.key
+
+# =============================================================================
+# Browser Profiles
+# =============================================================================
+
+# Browser profile directories (contain user data, cookies, cache)
+/profiles/
+profile/
+browser_data/
+
+# =============================================================================
+# Logs
+# =============================================================================
+
+# Log files
+*.log
+logs/
+*.log.*
+
+# =============================================================================
+# IDE & Editor Files
+# =============================================================================
+
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# JetBrains IDEs (IntelliJ, CLion, RustRover)
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Vim/Neovim
+*.swp
+*.swo
+*~
+.*.swp
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# Sublime Text
+*.sublime-workspace
+*.sublime-project
+
+# =============================================================================
+# Operating System Files
+# =============================================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+*~
+
+# =============================================================================
+# Build Artifacts & Temporary Files
+# =============================================================================
+
+# Backup files
+*.bak
+*.backup
+*.orig
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# Coverage reports
+coverage/
+*.gcno
+*.gcda
+tarpaulin-report.html
+
+# Profiling data
+*.profraw
+*.profdata
+
+# =============================================================================
+# Screenshots & Debug Output
+# =============================================================================
+
+# Screenshot captures (may be large)
+screenshots/
+*.screenshot.png
+debug_*.png
+
+# Debug output
+debug/
+debug_output/
+
+# =============================================================================
+# Documentation Build
+# =============================================================================
+
+# Generated documentation
+/doc/
+docs/_build/
+
+# =============================================================================
+# Package Files
+# =============================================================================
+
+# Distribution packages
+*.tar.gz
+*.zip
+dist/
+
+# =============================================================================
+# CEF (Chromium Embedded Framework)
+# =============================================================================
+
+# CEF binaries (large, downloaded separately)
+/cef/
+
+# CEF build artifacts
+cef_binary_*/
