@@ -200,7 +200,7 @@ impl ApiServer {
             return Ok(());
         }
 
-        let addr = SocketAddr::from(([127, 0, 0, 1], self.port));
+        let addr = SocketAddr::from(([0, 0, 0, 0], self.port));
         let router = self.build_router();
 
         // Create shutdown channel
