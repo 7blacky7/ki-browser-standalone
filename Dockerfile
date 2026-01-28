@@ -1,7 +1,7 @@
 # KI-Browser Standalone Docker Image
 # Multi-stage build for minimal image size
 
-FROM rust:1.75-slim-bookworm AS builder
+FROM rust:1.84-slim-bookworm AS builder
 
 WORKDIR /build
 
