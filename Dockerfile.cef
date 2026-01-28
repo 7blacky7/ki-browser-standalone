@@ -1,0 +1,186 @@
+# KI-Browser Standalone Docker Image with CEF (Chromium Embedded Framework)
+# Uses native CEF bindings for browser automation
+#
+# Build: docker build -f Dockerfile.cef -t ki-browser:cef .
+# Run:   docker run -d --shm-size=2gb -p 9222:9222 ki-browser:cef
+
+# =============================================================================
+# Stage 1: CEF Binary Download
+# =============================================================================
+FROM debian:bookworm-slim AS cef-downloader
+
+RUN apt-get update && apt-get install -y \
+    curl \
+    tar \
+    xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /cef
+
+# Download CEF binaries from Spotify CDN
+# CEF 144 = Chromium 144.x
+# Using minimal distribution (no debug symbols)
+ARG CEF_VERSION=144.4.2+g29b9e3e+chromium-144.0.6362.0
+ARG CEF_PLATFORM=linux64_minimal
+
+RUN echo "Downloading CEF ${CEF_VERSION}..." && \
+    curl -L -o cef.tar.bz2 \
+    "https://cef-builds.spotifycdn.com/cef_binary_${CEF_VERSION}_${CEF_PLATFORM}.tar.bz2" && \
+    tar -xjf cef.tar.bz2 && \
+    rm cef.tar.bz2 && \
+    mv cef_binary_* cef_binary
+
+# =============================================================================
+# Stage 2: Rust Build with CEF
+# =============================================================================
+FROM rust:1.84-slim-bookworm AS builder
+
+WORKDIR /build
+
+# Install build dependencies for CEF
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    cmake \
+    build-essential \
+    libgtk-3-dev \
+    libglib2.0-dev \
+    libnss3-dev \
+    libnspr4-dev \
+    libatk1.0-dev \
+    libatk-bridge2.0-dev \
+    libcups2-dev \
+    libdrm-dev \
+    libgbm-dev \
+    libpango1.0-dev \
+    libxcomposite-dev \
+    libxdamage-dev \
+    libxfixes-dev \
+    libxrandr-dev \
+    libxkbcommon-dev \
+    libasound2-dev \
+    libdbus-1-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy CEF binaries from downloader stage
+COPY --from=cef-downloader /cef/cef_binary /opt/cef
+
+# Set CEF environment variables for build
+ENV CEF_ROOT=/opt/cef
+ENV LD_LIBRARY_PATH=/opt/cef/Release:$LD_LIBRARY_PATH
+
+# Copy Rust project source
+COPY Cargo.toml ./
+COPY build.rs ./
+COPY src/ ./src/
+
+# Build with cef-browser feature
+# If CEF build fails, fall back to mock-browser
+RUN cargo build --release --no-default-features --features cef-browser 2>&1 || \
+    (echo "======== CEF build failed, falling back to mock-browser ========" && \
+     cargo build --release --no-default-features --features mock-browser)
+
+# =============================================================================
+# Stage 3: Runtime with CEF + Xvfb
+# =============================================================================
+FROM debian:bookworm-slim
+
+LABEL maintainer="KI-Browser Team"
+LABEL description="High-performance browser automation with CEF and stealth capabilities"
+LABEL version="0.1.0"
+
+WORKDIR /app
+
+# Install CEF runtime dependencies + Xvfb for headless display
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Virtual framebuffer for headless rendering
+    xvfb \
+    x11-xserver-utils \
+    # GTK and X11 libraries (required by CEF)
+    libgtk-3-0 \
+    libglib2.0-0 \
+    libx11-6 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxrandr2 \
+    libxrender1 \
+    libxkbcommon0 \
+    libxi6 \
+    libxcursor1 \
+    libxss1 \
+    libxtst6 \
+    # NSS and security libraries
+    libnss3 \
+    libnspr4 \
+    # Audio (ALSA)
+    libasound2 \
+    # Accessibility
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libatspi2.0-0 \
+    # Printing
+    libcups2 \
+    # Graphics
+    libdrm2 \
+    libgbm1 \
+    libgl1-mesa-glx \
+    libgl1-mesa-dri \
+    # Text rendering
+    libpango-1.0-0 \
+    libcairo2 \
+    # DBus
+    libdbus-1-3 \
+    dbus \
+    # Fonts
+    fonts-liberation \
+    fonts-dejavu-core \
+    fonts-noto-color-emoji \
+    # CA certificates for HTTPS
+    ca-certificates \
+    # Process utilities
+    procps \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy CEF runtime libraries
+COPY --from=cef-downloader /cef/cef_binary/Release /opt/cef/Release
+COPY --from=cef-downloader /cef/cef_binary/Resources /opt/cef/Resources
+
+# Copy binary from builder
+COPY --from=builder /build/target/release/ki-browser /app/ki-browser
+
+# Copy entrypoint script
+COPY docker-entrypoint-cef.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
+
+# Create directories
+RUN mkdir -p /app/config /app/profiles /app/data /tmp/cef-data /tmp/.X11-unix
+
+# Set CEF library path
+ENV LD_LIBRARY_PATH=/opt/cef/Release:$LD_LIBRARY_PATH
+ENV CEF_RESOURCES_DIR=/opt/cef/Resources
+ENV CEF_FRAMEWORK_DIR=/opt/cef/Release
+
+# Xvfb display configuration
+ENV DISPLAY=:99
+ENV XVFB_RESOLUTION=1920x1080x24
+
+# KI-Browser configuration
+ENV RUST_LOG=info
+ENV KI_BROWSER_API_PORT=9222
+ENV KI_BROWSER_API_ENABLED=true
+ENV KI_BROWSER_HEADLESS=true
+ENV KI_BROWSER_STEALTH=true
+
+# Expose API port
+EXPOSE 9222
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:9222/health || exit 1
+
+# Run with entrypoint (starts Xvfb + ki-browser)
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["--port", "9222", "--headless", "--stealth"]

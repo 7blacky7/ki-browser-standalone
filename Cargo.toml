@@ -88,6 +88,7 @@ cc = "1"
 [features]
 default = ["mock-browser"]
 chromium-browser = ["dep:chromiumoxide"]
+cef-browser = ["dep:cef"]
 mock-browser = []
 
 [dependencies.chromiumoxide]
@@ -96,6 +97,19 @@ optional = true
 default-features = false
 features = ["tokio-runtime"]
 
+[dependencies.cef]
+version = "144"
+optional = true
+
 # Pin home crate to version compatible with Rust 1.84
 [dependencies.home]
-version = "=0.5.9"
+version = "=0.5.11"
+
+# Pin wit-bindgen for Rust 1.84 compatibility
+[dependencies.wit-bindgen]
+version = "=0.49.0"
+
+# Patch transitive dependencies for Rust 1.84 compatibility
+[patch.crates-io]
+# wasip2 1.0.2 requires Rust 1.87, use 1.0.1 which requires Rust 1.82
+wasip2 = { version = "=1.0.1" }
