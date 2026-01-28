@@ -320,15 +320,15 @@ impl WrapApp for KiBrowserApp {
     ) {
         if let Some(cmd) = command_line {
             // Add arguments for stealth mode
-            cmd.append_switch_with_value(&CefString::from("disable-blink-features"), &CefString::from("AutomationControlled"));
-            cmd.append_switch(&CefString::from("disable-infobars"));
-            cmd.append_switch(&CefString::from("disable-extensions"));
-            cmd.append_switch(&CefString::from("no-first-run"));
-            cmd.append_switch(&CefString::from("no-default-browser-check"));
+            cmd.append_switch_with_value(Some(&CefString::from("disable-blink-features")), Some(&CefString::from("AutomationControlled")));
+            cmd.append_switch(Some(&CefString::from("disable-infobars")));
+            cmd.append_switch(Some(&CefString::from("disable-extensions")));
+            cmd.append_switch(Some(&CefString::from("no-first-run")));
+            cmd.append_switch(Some(&CefString::from("no-default-browser-check")));
 
             // Disable GPU in headless mode for stability
-            cmd.append_switch(&CefString::from("disable-gpu"));
-            cmd.append_switch(&CefString::from("disable-gpu-compositing"));
+            cmd.append_switch(Some(&CefString::from("disable-gpu")));
+            cmd.append_switch(Some(&CefString::from("disable-gpu-compositing")));
 
             debug!("CEF command line configured for stealth mode");
         }
@@ -550,9 +550,8 @@ impl WrapLoadHandler for KiBrowserLoadHandlerImpl {
                 // Update tab URL
                 let mut tabs = self.tabs.write();
                 if let Some(tab) = tabs.get_mut(&self.tab_id) {
-                    if let Some(url) = f.url() {
-                        tab.url = url.to_string();
-                    }
+                    let url = f.url();
+                    tab.url = url.to_string();
                 }
 
                 info!(
