@@ -8,6 +8,10 @@ use crate::browser::tab::Tab;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chromiumoxide::browser::{Browser, BrowserConfig as ChromeConfig};
+use chromiumoxide::cdp::browser_protocol::input::{
+    DispatchKeyEventParams, DispatchKeyEventType, DispatchMouseEventParams, DispatchMouseEventType,
+    MouseButton,
+};
 use chromiumoxide::Page;
 use futures::StreamExt;
 use std::collections::HashMap;
@@ -35,47 +39,85 @@ struct ChromiumTab {
 }
 
 impl ChromiumBrowserEngine {
-    /// Click at coordinates on a page
+    /// Click at coordinates on a page using CDP Input.dispatchMouseEvent
     pub async fn click(&self, tab_id: Uuid, x: i32, y: i32) -> Result<()> {
         let tabs = self.tabs.read().await;
         let chrome_tab = tabs
             .get(&tab_id)
             .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
 
-        chrome_tab
-            .page
-            .click_point(chromiumoxide::cdp::browser_protocol::dom::Point {
-                x: x as f64,
-                y: y as f64,
-            })
-            .await?;
+        // Mouse down
+        let mouse_down = DispatchMouseEventParams::builder()
+            .r#type(DispatchMouseEventType::MousePressed)
+            .x(x as f64)
+            .y(y as f64)
+            .button(MouseButton::Left)
+            .click_count(1)
+            .build()
+            .map_err(|e| anyhow!("Failed to build mouse down event: {}", e))?;
+        chrome_tab.page.execute(mouse_down).await?;
+
+        // Mouse up
+        let mouse_up = DispatchMouseEventParams::builder()
+            .r#type(DispatchMouseEventType::MouseReleased)
+            .x(x as f64)
+            .y(y as f64)
+            .button(MouseButton::Left)
+            .click_count(1)
+            .build()
+            .map_err(|e| anyhow!("Failed to build mouse up event: {}", e))?;
+        chrome_tab.page.execute(mouse_up).await?;
 
         Ok(())
     }
 
-    /// Type text on the focused element
+    /// Type text using CDP Input.dispatchKeyEvent
     pub async fn type_text(&self, tab_id: Uuid, text: &str) -> Result<()> {
         let tabs = self.tabs.read().await;
         let chrome_tab = tabs
             .get(&tab_id)
             .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
 
-        // Type each character
+        // Type each character using keyDown/keyUp events
         for c in text.chars() {
-            chrome_tab.page.type_str(&c.to_string()).await?;
+            let key_down = DispatchKeyEventParams::builder()
+                .r#type(DispatchKeyEventType::KeyDown)
+                .text(c.to_string())
+                .build()
+                .map_err(|e| anyhow!("Failed to build key down event: {}", e))?;
+            chrome_tab.page.execute(key_down).await?;
+
+            let key_up = DispatchKeyEventParams::builder()
+                .r#type(DispatchKeyEventType::KeyUp)
+                .text(c.to_string())
+                .build()
+                .map_err(|e| anyhow!("Failed to build key up event: {}", e))?;
+            chrome_tab.page.execute(key_up).await?;
         }
 
         Ok(())
     }
 
-    /// Press a key
+    /// Press a special key
     pub async fn press_key(&self, tab_id: Uuid, key: &str) -> Result<()> {
         let tabs = self.tabs.read().await;
         let chrome_tab = tabs
             .get(&tab_id)
             .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
 
-        chrome_tab.page.press_key(key).await?;
+        let key_down = DispatchKeyEventParams::builder()
+            .r#type(DispatchKeyEventType::KeyDown)
+            .key(key.to_string())
+            .build()
+            .map_err(|e| anyhow!("Failed to build key down event: {}", e))?;
+        chrome_tab.page.execute(key_down).await?;
+
+        let key_up = DispatchKeyEventParams::builder()
+            .r#type(DispatchKeyEventType::KeyUp)
+            .key(key.to_string())
+            .build()
+            .map_err(|e| anyhow!("Failed to build key up event: {}", e))?;
+        chrome_tab.page.execute(key_up).await?;
 
         Ok(())
     }
@@ -99,13 +141,18 @@ impl ChromiumBrowserEngine {
             .get(&tab_id)
             .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
 
-        let screenshot = chrome_tab.page.screenshot(
-            chromiumoxide::page::ScreenshotParams::builder()
-                .format(chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat::Png)
-                .build(),
-        ).await?;
+        let screenshot = chrome_tab
+            .page
+            .screenshot(
+                chromiumoxide::page::ScreenshotParams::builder()
+                    .format(
+                        chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat::Png,
+                    )
+                    .build(),
+            )
+            .await?;
 
-        Ok(screenshot.inner().to_vec())
+        Ok(screenshot)
     }
 
     /// Execute JavaScript
@@ -115,7 +162,7 @@ impl ChromiumBrowserEngine {
             .get(&tab_id)
             .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
 
-        let result = chrome_tab.page.evaluate(script).await?;
+        let result = chrome_tab.page.evaluate(script.to_string()).await?;
 
         Ok(result.value().cloned().unwrap_or(serde_json::Value::Null))
     }
@@ -147,7 +194,12 @@ impl ChromiumBrowserEngine {
     }
 
     /// Type into element by selector
-    pub async fn type_into_element(&self, tab_id: Uuid, selector: &str, text: &str) -> Result<()> {
+    pub async fn type_into_element(
+        &self,
+        tab_id: Uuid,
+        selector: &str,
+        text: &str,
+    ) -> Result<()> {
         let tabs = self.tabs.read().await;
         let chrome_tab = tabs
             .get(&tab_id)
@@ -168,11 +220,8 @@ impl ChromiumBrowserEngine {
             .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
 
         // Use JavaScript to scroll
-        let script = format!(
-            "window.scrollBy({}, {})",
-            delta_x, delta_y
-        );
-        chrome_tab.page.evaluate(&script).await?;
+        let script = format!("window.scrollBy({}, {})", delta_x, delta_y);
+        chrome_tab.page.evaluate(script).await?;
 
         Ok(())
     }
@@ -227,24 +276,23 @@ impl BrowserEngine for ChromiumBrowserEngine {
     async fn new(config: BrowserConfig) -> Result<Self> {
         info!("Initializing Chromiumoxide browser engine...");
 
-        // Build chromiumoxide config
+        // Build chromiumoxide config using args
         let mut chrome_config = ChromeConfig::builder();
 
         if config.headless {
-            chrome_config = chrome_config.no_sandbox().disable_gpu();
+            chrome_config = chrome_config.no_sandbox();
+            chrome_config = chrome_config.arg("--headless=new");
+            chrome_config = chrome_config.arg("--disable-gpu");
         } else {
             chrome_config = chrome_config.with_head();
         }
 
         // Set window size
-        chrome_config = chrome_config.window_size(
-            config.window_size.0,
-            config.window_size.1,
-        );
+        chrome_config = chrome_config.window_size(config.window_size.0, config.window_size.1);
 
-        // Set user agent if provided
+        // Set user agent if provided (via arg)
         if let Some(ref ua) = config.user_agent {
-            chrome_config = chrome_config.user_agent(ua);
+            chrome_config = chrome_config.arg(format!("--user-agent={}", ua));
         }
 
         // Add custom args
@@ -263,7 +311,9 @@ impl BrowserEngine for ChromiumBrowserEngine {
             chrome_config = chrome_config.arg("--ignore-certificate-errors");
         }
 
-        let chrome_config = chrome_config.build()?;
+        let chrome_config = chrome_config
+            .build()
+            .map_err(|e| anyhow!("Failed to build browser config: {}", e))?;
 
         // Launch browser
         let (browser, mut handler) = Browser::launch(chrome_config).await?;
@@ -328,8 +378,15 @@ impl BrowserEngine for ChromiumBrowserEngine {
         let _ = page.wait_for_navigation().await;
 
         // Get page info
-        let title = page.get_title().await?.unwrap_or_else(|| "New Tab".to_string());
-        let current_url = page.url().await?.map(|u| u.to_string()).unwrap_or_else(|| url.to_string());
+        let title = page
+            .get_title()
+            .await?
+            .unwrap_or_else(|| "New Tab".to_string());
+        let current_url = page
+            .url()
+            .await?
+            .map(|u| u.to_string())
+            .unwrap_or_else(|| url.to_string());
 
         // Create Tab
         let mut tab = Tab::new(current_url);
