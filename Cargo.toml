@@ -98,7 +98,8 @@ default-features = false
 features = ["tokio-runtime"]
 
 [dependencies.cef]
-version = "144"
+# Use older version 140 which may have more compatible dependencies
+version = "140"
 optional = true
 default-features = false
 # Only enable sandbox and linux-x11, skip build-util which requires Rust 1.88+
