@@ -1100,7 +1100,7 @@ impl CefBrowserEngine {
         if let Some(tab) = tab {
             // Close the browser
             if let Some(ref browser) = tab.browser {
-                if let Some(host) = browser.get_host() {
+                if let Some(host) = browser.host() {
                     host.close_browser(1);
                 }
             }
@@ -1212,7 +1212,7 @@ impl CefBrowserEngine {
         let browser = tab.browser.as_ref()
             .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?;
 
-        if let Some(host) = browser.get_host() {
+        if let Some(host) = browser.host() {
             let event = cef::MouseEvent {
                 x,
                 y,
@@ -1243,7 +1243,7 @@ impl CefBrowserEngine {
         let browser = tab.browser.as_ref()
             .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?;
 
-        if let Some(host) = browser.get_host() {
+        if let Some(host) = browser.host() {
             let event = cef::MouseEvent {
                 x,
                 y,
@@ -1255,10 +1255,10 @@ impl CefBrowserEngine {
             let actual_count = click_count.abs();
 
             let button_type = match button {
-                0 => cef::MouseButtonType::Left,
-                1 => cef::MouseButtonType::Middle,
-                2 => cef::MouseButtonType::Right,
-                _ => cef::MouseButtonType::Left,
+                0 => cef::MouseButtonType::LEFT,
+                1 => cef::MouseButtonType::MIDDLE,
+                2 => cef::MouseButtonType::RIGHT,
+                _ => cef::MouseButtonType::LEFT,
             };
 
             host.send_mouse_click_event(&event, button_type, mouse_up, actual_count);
@@ -1289,7 +1289,7 @@ impl CefBrowserEngine {
         let browser = tab.browser.as_ref()
             .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?;
 
-        if let Some(host) = browser.get_host() {
+        if let Some(host) = browser.host() {
             let event = cef::MouseEvent {
                 x,
                 y,
@@ -1323,17 +1323,17 @@ impl CefBrowserEngine {
         let browser = tab.browser.as_ref()
             .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?;
 
-        if let Some(host) = browser.get_host() {
+        if let Some(host) = browser.host() {
             let key_event_type = match event_type {
-                0 => cef::KeyEventType::RawKeyDown,
-                1 => cef::KeyEventType::KeyDown,
-                2 => cef::KeyEventType::KeyUp,
-                3 => cef::KeyEventType::Char,
-                _ => cef::KeyEventType::KeyDown,
+                0 => cef::KeyEventType::RAWKEYDOWN,
+                1 => cef::KeyEventType::KEYDOWN,
+                2 => cef::KeyEventType::KEYUP,
+                3 => cef::KeyEventType::CHAR,
+                _ => cef::KeyEventType::KEYDOWN,
             };
 
             let event = cef::KeyEvent {
-                event_type: key_event_type,
+                type_: key_event_type,
                 modifiers,
                 windows_key_code,
                 native_key_code: 0,
@@ -1368,13 +1368,13 @@ impl CefBrowserEngine {
         let browser = tab.browser.as_ref()
             .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?;
 
-        if let Some(host) = browser.get_host() {
+        if let Some(host) = browser.host() {
             for c in text.chars() {
                 let char_code = c as u16;
 
                 // Send KeyDown
                 let key_down = cef::KeyEvent {
-                    event_type: cef::KeyEventType::KeyDown,
+                    type_: cef::KeyEventType::KEYDOWN,
                     modifiers: 0,
                     windows_key_code: char_code as i32,
                     native_key_code: 0,
@@ -1387,7 +1387,7 @@ impl CefBrowserEngine {
 
                 // Send Char event
                 let char_event = cef::KeyEvent {
-                    event_type: cef::KeyEventType::Char,
+                    type_: cef::KeyEventType::CHAR,
                     modifiers: 0,
                     windows_key_code: char_code as i32,
                     native_key_code: 0,
@@ -1400,7 +1400,7 @@ impl CefBrowserEngine {
 
                 // Send KeyUp
                 let key_up = cef::KeyEvent {
-                    event_type: cef::KeyEventType::KeyUp,
+                    type_: cef::KeyEventType::KEYUP,
                     modifiers: 0,
                     windows_key_code: char_code as i32,
                     native_key_code: 0,
