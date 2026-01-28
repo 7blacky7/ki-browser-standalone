@@ -46,7 +46,7 @@ use cef::{
     Errorcode, MainArgs,
     // Traits for handler implementations
     ImplApp, ImplRenderHandler, ImplLoadHandler, ImplLifeSpanHandler,
-    ImplBrowser, ImplBrowserHost, ImplFrame,
+    ImplBrowser, ImplBrowserHost, ImplFrame, ImplCommandLine,
     // Traits for wrapper implementations
     WrapApp, WrapClient, WrapRenderHandler, WrapLoadHandler, WrapLifeSpanHandler,
 };
@@ -415,7 +415,7 @@ impl WrapRenderHandler for KiBrowserRenderHandlerImpl {
         width: i32,
         height: i32,
     ) {
-        if element_type == PaintElementType::View {
+        if element_type == PaintElementType::VIEW {
             // Store the frame buffer for screenshot capture
             let buffer_size = (width * height * 4) as usize;
             let buffer_slice = unsafe { std::slice::from_raw_parts(buffer, buffer_size) };
@@ -550,7 +550,7 @@ impl WrapLoadHandler for KiBrowserLoadHandlerImpl {
                 // Update tab URL
                 let mut tabs = self.tabs.write();
                 if let Some(tab) = tabs.get_mut(&self.tab_id) {
-                    if let Some(url) = f.get_url() {
+                    if let Some(url) = f.url() {
                         tab.url = url.to_string();
                     }
                 }
@@ -819,9 +819,10 @@ impl CefBrowserEngine {
         settings.log_severity = LogSeverity::WARNING;
 
         // Create app with v144 API
-        let mut app = KiBrowserApp {
+        let app_impl = KiBrowserApp {
             stealth_config: stealth_config.clone(),
         };
+        let mut app = App::new(app_impl);
 
         // Create main args
         let args = MainArgs::default();
