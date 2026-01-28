@@ -20,7 +20,7 @@ WORKDIR /cef
 # Download CEF minimal distribution (Linux 64-bit)
 # Using version 143.0.13 to match the cef crate version 143.3.0
 # Check https://cef-builds.spotifycdn.com/index.html for available versions
-ARG CEF_VERSION="cef_binary_143.0.13+g3e2bbd8+chromium-143.0.7035.49_linux64_minimal"
+ARG CEF_VERSION="cef_binary_143.0.13+g30cb3bd+chromium-143.0.7499.170_linux64_minimal"
 ARG CEF_URL="https://cef-builds.spotifycdn.com/${CEF_VERSION}.tar.bz2"
 
 RUN echo "Downloading CEF from ${CEF_URL}..." && \
