@@ -95,3 +95,7 @@ version = "0.7"
 optional = true
 default-features = false
 features = ["tokio-runtime"]
+
+# Pin home crate to version compatible with Rust 1.84
+[dependencies.home]
+version = "=0.5.9"
