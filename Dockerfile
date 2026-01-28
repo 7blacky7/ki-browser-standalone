@@ -18,18 +18,16 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /cef
 
 # Download CEF minimal distribution (Linux 64-bit)
-# Using stable version 131 (Chromium 131.x)
+# Using version 143.0.13 to match the cef crate version 143.3.0
 # Check https://cef-builds.spotifycdn.com/index.html for available versions
-ARG CEF_VERSION="cef_binary_131.3.5+g56d0459+chromium-131.0.6778.205_linux64_minimal"
+ARG CEF_VERSION="cef_binary_143.0.13+g3e2bbd8+chromium-143.0.7035.49_linux64_minimal"
 ARG CEF_URL="https://cef-builds.spotifycdn.com/${CEF_VERSION}.tar.bz2"
 
-# Try to download CEF, create dummy directory if fails (for mock-browser fallback)
 RUN echo "Downloading CEF from ${CEF_URL}..." && \
-    (curl -fsSL "${CEF_URL}" -o cef.tar.bz2 && \
+    curl -fsSL "${CEF_URL}" -o cef.tar.bz2 && \
     tar -xjf cef.tar.bz2 && \
     rm cef.tar.bz2 && \
-    mv ${CEF_VERSION}* cef_binary) || \
-    (echo "CEF download failed, creating dummy for mock build" && mkdir -p cef_binary/Release cef_binary/Resources)
+    mv cef_binary_* cef_binary
 
 # =============================================================================
 # Stage 2: Rust Build with CEF Feature

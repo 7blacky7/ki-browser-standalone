@@ -91,5 +91,5 @@ cef-browser = ["dep:cef"]
 mock-browser = []
 
 [dependencies.cef]
-version = "143"
+version = "143.3.0"
 optional = true
