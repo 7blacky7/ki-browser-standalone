@@ -87,9 +87,11 @@ cc = "1"
 
 [features]
 default = ["mock-browser"]
-cef-browser = ["dep:cef"]
+chromium-browser = ["dep:chromiumoxide"]
 mock-browser = []
 
-[dependencies.cef]
-version = "143.3.0"
+[dependencies.chromiumoxide]
+version = "0.7"
 optional = true
+default-features = false
+features = ["tokio-runtime"]

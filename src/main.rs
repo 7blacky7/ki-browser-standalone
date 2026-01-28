@@ -403,6 +403,42 @@ async fn main() -> Result<()> {
     // Initialize browser engine
     info!("Initializing browser engine...");
 
+    // Chromiumoxide browser engine (CDP-based)
+    #[cfg(feature = "chromium-browser")]
+    let _browser_engine = {
+        use ki_browser_standalone::browser::{BrowserConfig, ChromiumBrowserEngine, BrowserEngine};
+
+        let mut browser_config = BrowserConfig::new()
+            .headless(settings.headless)
+            .window_size(settings.window_width, settings.window_height);
+
+        if let Some(ref ua) = settings.user_agent {
+            browser_config = browser_config.user_agent(ua);
+        }
+
+        if let Some(ref proxy) = settings.proxy {
+            browser_config = browser_config.proxy(proxy.to_url());
+        }
+
+        // Add stealth args
+        browser_config = browser_config
+            .add_arg("--disable-blink-features=AutomationControlled")
+            .add_arg("--disable-infobars");
+
+        match ChromiumBrowserEngine::new(browser_config).await {
+            Ok(engine) => {
+                info!("Chromiumoxide browser engine initialized successfully");
+                Some(engine)
+            }
+            Err(e) => {
+                error!("Failed to initialize Chromiumoxide browser engine: {}", e);
+                warn!("Falling back to mock mode");
+                None
+            }
+        }
+    };
+
+    // CEF browser engine (legacy)
     #[cfg(feature = "cef-browser")]
     let _browser_engine = {
         use ki_browser_standalone::browser::{BrowserConfig, CefBrowserEngine, BrowserEngine};
@@ -436,9 +472,9 @@ async fn main() -> Result<()> {
         }
     };
 
-    #[cfg(not(feature = "cef-browser"))]
+    #[cfg(not(any(feature = "chromium-browser", feature = "cef-browser")))]
     {
-        info!("Browser engine initialized (mock mode - CEF feature not enabled)");
+        info!("Browser engine initialized (mock mode - no browser feature enabled)");
     }
 
     // Start API server if enabled

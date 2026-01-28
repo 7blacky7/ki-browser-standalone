@@ -119,6 +119,10 @@ pub use browser::{
     MockDomAccessor, ScreenshotFormat, ScreenshotOptions, Tab, TabManager, TabStatus,
 };
 
+// Chromiumoxide types (when feature enabled)
+#[cfg(feature = "chromium-browser")]
+pub use browser::ChromiumBrowserEngine;
+
 // CEF-specific types (when feature enabled)
 #[cfg(feature = "cef-browser")]
 pub use browser::{
