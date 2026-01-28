@@ -45,7 +45,7 @@ use cef::{
     Rect, ScreenInfo, WindowInfo, Settings, LogSeverity,
     Errorcode, MainArgs,
     // Traits for handler implementations
-    ImplApp, ImplClient, ImplRenderHandler, ImplLoadHandler, ImplLifeSpanHandler,
+    ImplApp, ImplClient, ImplRenderHandler, ImplLoadHandler, ImplLifeSpanHandler, ImplBrowser,
     // Macros for wrapping handlers
     wrap_app, wrap_client, wrap_render_handler, wrap_load_handler, wrap_life_span_handler,
 };
@@ -1333,6 +1333,7 @@ impl CefBrowserEngine {
             };
 
             let event = cef::KeyEvent {
+                size: std::mem::size_of::<cef::KeyEvent>(),
                 type_: key_event_type,
                 modifiers,
                 windows_key_code,
@@ -1374,6 +1375,7 @@ impl CefBrowserEngine {
 
                 // Send KeyDown
                 let key_down = cef::KeyEvent {
+                    size: std::mem::size_of::<cef::KeyEvent>(),
                     type_: cef::KeyEventType::KEYDOWN,
                     modifiers: 0,
                     windows_key_code: char_code as i32,
@@ -1387,6 +1389,7 @@ impl CefBrowserEngine {
 
                 // Send Char event
                 let char_event = cef::KeyEvent {
+                    size: std::mem::size_of::<cef::KeyEvent>(),
                     type_: cef::KeyEventType::CHAR,
                     modifiers: 0,
                     windows_key_code: char_code as i32,
@@ -1400,6 +1403,7 @@ impl CefBrowserEngine {
 
                 // Send KeyUp
                 let key_up = cef::KeyEvent {
+                    size: std::mem::size_of::<cef::KeyEvent>(),
                     type_: cef::KeyEventType::KEYUP,
                     modifiers: 0,
                     windows_key_code: char_code as i32,
