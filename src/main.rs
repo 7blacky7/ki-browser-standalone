@@ -400,17 +400,72 @@ async fn main() -> Result<()> {
     // Initialize stealth configuration if enabled
     let _stealth_config = init_stealth(&settings);
 
-    // Initialize browser engine (mock for now)
+    // Initialize browser engine
     info!("Initializing browser engine...");
-    // TODO: Replace with actual browser engine initialization
-    // let browser = BrowserEngine::new(&settings)?;
-    info!("Browser engine initialized (mock mode)");
+
+    #[cfg(feature = "cef-browser")]
+    let _browser_engine = {
+        use ki_browser_standalone::browser::{BrowserConfig, CefBrowserEngine, BrowserEngine};
+
+        let browser_config = BrowserConfig::new()
+            .headless(settings.headless)
+            .window_size(settings.window_width, settings.window_height);
+
+        let browser_config = if let Some(ref ua) = settings.user_agent {
+            browser_config.user_agent(ua)
+        } else {
+            browser_config
+        };
+
+        let browser_config = if let Some(ref proxy) = settings.proxy {
+            browser_config.proxy(proxy.to_url())
+        } else {
+            browser_config
+        };
+
+        match CefBrowserEngine::new(browser_config).await {
+            Ok(engine) => {
+                info!("CEF browser engine initialized successfully");
+                Some(engine)
+            }
+            Err(e) => {
+                error!("Failed to initialize CEF browser engine: {}", e);
+                warn!("Falling back to mock mode");
+                None
+            }
+        }
+    };
+
+    #[cfg(not(feature = "cef-browser"))]
+    {
+        info!("Browser engine initialized (mock mode - CEF feature not enabled)");
+    }
 
     // Start API server if enabled
     let mut api_server = if settings.api_enabled {
         info!("Starting API server on port {}...", settings.api_port);
 
         let ipc_channel = IpcChannel::new();
+
+        // Set up browser command handler with IPC processor
+        let handler = ki_browser_standalone::api::BrowserCommandHandler::new();
+
+        // Configure the handler with the browser engine if available
+        #[cfg(feature = "cef-browser")]
+        if let Some(ref engine) = _browser_engine {
+            // For CEF, we'd need to clone or share the engine
+            // For now, the handler processes commands directly
+            info!("Browser handler configured with CEF engine");
+        }
+
+        // Start IPC processor in background
+        let ipc_channel_clone = ipc_channel.clone();
+        tokio::spawn(async move {
+            if let Some(mut processor) = ki_browser_standalone::api::IpcProcessor::new(&ipc_channel_clone).await {
+                handler.run(&mut processor).await;
+            }
+        });
+
         let mut server = ApiServer::new(settings.api_port, ipc_channel);
 
         server

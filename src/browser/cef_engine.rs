@@ -160,9 +160,137 @@ enum CefCommand {
         options: ScreenshotOptions,
         response: oneshot::Sender<Result<Screenshot>>,
     },
+    // Input commands
+    MouseMove {
+        tab_id: Uuid,
+        x: i32,
+        y: i32,
+        response: oneshot::Sender<Result<()>>,
+    },
+    MouseClick {
+        tab_id: Uuid,
+        x: i32,
+        y: i32,
+        button: i32,
+        click_count: i32,
+        response: oneshot::Sender<Result<()>>,
+    },
+    MouseWheel {
+        tab_id: Uuid,
+        x: i32,
+        y: i32,
+        delta_x: i32,
+        delta_y: i32,
+        response: oneshot::Sender<Result<()>>,
+    },
+    KeyEvent {
+        tab_id: Uuid,
+        event_type: i32,
+        modifiers: u32,
+        windows_key_code: i32,
+        character: u16,
+        response: oneshot::Sender<Result<()>>,
+    },
+    TypeText {
+        tab_id: Uuid,
+        text: String,
+        response: oneshot::Sender<Result<()>>,
+    },
     Shutdown {
         response: oneshot::Sender<Result<()>>,
     },
+}
+
+// ============================================================================
+// CEF Browser Event Sender Implementation
+// ============================================================================
+
+/// Event sender implementation for connecting CefInputHandler to CefBrowserEngine.
+///
+/// This struct bridges the input handler with the CEF browser by sending
+/// input events through the command channel to be processed on the CEF thread.
+#[cfg(feature = "cef-browser")]
+pub struct CefBrowserEventSender {
+    /// Tab ID this sender is associated with.
+    tab_id: Uuid,
+    /// Command sender for the CEF message loop.
+    command_tx: mpsc::Sender<CefCommand>,
+    /// Runtime handle for blocking send operations.
+    runtime: tokio::runtime::Handle,
+}
+
+#[cfg(feature = "cef-browser")]
+impl CefBrowserEventSender {
+    /// Creates a new event sender for a specific tab.
+    pub fn new(tab_id: Uuid, command_tx: mpsc::Sender<CefCommand>, runtime: tokio::runtime::Handle) -> Self {
+        Self {
+            tab_id,
+            command_tx,
+            runtime,
+        }
+    }
+}
+
+#[cfg(feature = "cef-browser")]
+impl crate::browser::cef_input::CefEventSender for CefBrowserEventSender {
+    fn send_mouse_move_event(&self, event: &crate::browser::cef_input::CefMouseEvent, _mouse_leave: bool) {
+        let (tx, _rx) = oneshot::channel();
+        let cmd = CefCommand::MouseMove {
+            tab_id: self.tab_id,
+            x: event.x,
+            y: event.y,
+            response: tx,
+        };
+        // Fire and forget - we don't wait for response on move events
+        let _ = self.runtime.block_on(self.command_tx.send(cmd));
+    }
+
+    fn send_mouse_click_event(
+        &self,
+        event: &crate::browser::cef_input::CefMouseEvent,
+        button: crate::browser::cef_input::CefMouseButton,
+        mouse_up: bool,
+        click_count: i32,
+    ) {
+        let (tx, _rx) = oneshot::channel();
+        // Encode mouse_up in the click_count (negative = up)
+        let encoded_count = if mouse_up { -click_count } else { click_count };
+        let cmd = CefCommand::MouseClick {
+            tab_id: self.tab_id,
+            x: event.x,
+            y: event.y,
+            button: button.to_cef_type(),
+            click_count: encoded_count,
+            response: tx,
+        };
+        let _ = self.runtime.block_on(self.command_tx.send(cmd));
+    }
+
+    fn send_mouse_wheel_event(&self, event: &crate::browser::cef_input::CefMouseEvent, delta_x: i32, delta_y: i32) {
+        let (tx, _rx) = oneshot::channel();
+        let cmd = CefCommand::MouseWheel {
+            tab_id: self.tab_id,
+            x: event.x,
+            y: event.y,
+            delta_x,
+            delta_y,
+            response: tx,
+        };
+        let _ = self.runtime.block_on(self.command_tx.send(cmd));
+    }
+
+    fn send_key_event(&self, event: &crate::browser::cef_input::CefKeyEvent) {
+        let (tx, _rx) = oneshot::channel();
+        let cmd = CefCommand::KeyEvent {
+            tab_id: self.tab_id,
+            event_type: event.event_type.to_cef_type(),
+            modifiers: event.modifiers,
+            windows_key_code: event.windows_key_code,
+            character: event.character,
+            response: tx,
+        };
+        let _ = self.runtime.block_on(self.command_tx.send(cmd));
+    }
 }
 
 // ============================================================================
@@ -717,6 +845,56 @@ impl CefBrowserEngine {
                             let result = Self::screenshot_internal(tab_id, &options, tabs.clone());
                             let _ = response.send(result);
                         }
+                        CefCommand::MouseMove {
+                            tab_id,
+                            x,
+                            y,
+                            response,
+                        } => {
+                            let result = Self::mouse_move_internal(tab_id, x, y, tabs.clone());
+                            let _ = response.send(result);
+                        }
+                        CefCommand::MouseClick {
+                            tab_id,
+                            x,
+                            y,
+                            button,
+                            click_count,
+                            response,
+                        } => {
+                            let result = Self::mouse_click_internal(tab_id, x, y, button, click_count, tabs.clone());
+                            let _ = response.send(result);
+                        }
+                        CefCommand::MouseWheel {
+                            tab_id,
+                            x,
+                            y,
+                            delta_x,
+                            delta_y,
+                            response,
+                        } => {
+                            let result = Self::mouse_wheel_internal(tab_id, x, y, delta_x, delta_y, tabs.clone());
+                            let _ = response.send(result);
+                        }
+                        CefCommand::KeyEvent {
+                            tab_id,
+                            event_type,
+                            modifiers,
+                            windows_key_code,
+                            character,
+                            response,
+                        } => {
+                            let result = Self::key_event_internal(tab_id, event_type, modifiers, windows_key_code, character, tabs.clone());
+                            let _ = response.send(result);
+                        }
+                        CefCommand::TypeText {
+                            tab_id,
+                            text,
+                            response,
+                        } => {
+                            let result = Self::type_text_internal(tab_id, &text, tabs.clone());
+                            let _ = response.send(result);
+                        }
                         CefCommand::Shutdown { response } => {
                             info!("Processing shutdown command");
 
@@ -949,6 +1127,217 @@ impl CefBrowserEngine {
         Ok(Screenshot::new(data, options.format, width, height, 1.0))
     }
 
+    // ========================================================================
+    // Internal Input Methods (CEF Thread)
+    // ========================================================================
+
+    /// Sends a mouse move event internally on the CEF thread.
+    fn mouse_move_internal(
+        tab_id: Uuid,
+        x: i32,
+        y: i32,
+        tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
+    ) -> Result<()> {
+        let tabs_guard = tabs.read();
+        let tab = tabs_guard
+            .get(&tab_id)
+            .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
+
+        if let Some(host) = tab.browser.get_host() {
+            let event = cef::MouseEvent {
+                x,
+                y,
+                modifiers: 0,
+            };
+            host.send_mouse_move_event(&event, false);
+            trace!("Mouse move sent to tab {}: ({}, {})", tab_id, x, y);
+            Ok(())
+        } else {
+            Err(anyhow!("No browser host for tab: {}", tab_id))
+        }
+    }
+
+    /// Sends a mouse click event internally on the CEF thread.
+    fn mouse_click_internal(
+        tab_id: Uuid,
+        x: i32,
+        y: i32,
+        button: i32,
+        click_count: i32,
+        tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
+    ) -> Result<()> {
+        let tabs_guard = tabs.read();
+        let tab = tabs_guard
+            .get(&tab_id)
+            .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
+
+        if let Some(host) = tab.browser.get_host() {
+            let event = cef::MouseEvent {
+                x,
+                y,
+                modifiers: 0,
+            };
+
+            // Decode click_count: positive = down, negative = up
+            let mouse_up = click_count < 0;
+            let actual_count = click_count.abs();
+
+            let button_type = match button {
+                0 => cef::MouseButtonType::Left,
+                1 => cef::MouseButtonType::Middle,
+                2 => cef::MouseButtonType::Right,
+                _ => cef::MouseButtonType::Left,
+            };
+
+            host.send_mouse_click_event(&event, button_type, mouse_up, actual_count);
+            trace!(
+                "Mouse click sent to tab {}: ({}, {}), button={}, up={}, count={}",
+                tab_id, x, y, button, mouse_up, actual_count
+            );
+            Ok(())
+        } else {
+            Err(anyhow!("No browser host for tab: {}", tab_id))
+        }
+    }
+
+    /// Sends a mouse wheel event internally on the CEF thread.
+    fn mouse_wheel_internal(
+        tab_id: Uuid,
+        x: i32,
+        y: i32,
+        delta_x: i32,
+        delta_y: i32,
+        tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
+    ) -> Result<()> {
+        let tabs_guard = tabs.read();
+        let tab = tabs_guard
+            .get(&tab_id)
+            .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
+
+        if let Some(host) = tab.browser.get_host() {
+            let event = cef::MouseEvent {
+                x,
+                y,
+                modifiers: 0,
+            };
+            host.send_mouse_wheel_event(&event, delta_x, delta_y);
+            trace!(
+                "Mouse wheel sent to tab {}: ({}, {}), delta=({}, {})",
+                tab_id, x, y, delta_x, delta_y
+            );
+            Ok(())
+        } else {
+            Err(anyhow!("No browser host for tab: {}", tab_id))
+        }
+    }
+
+    /// Sends a keyboard event internally on the CEF thread.
+    fn key_event_internal(
+        tab_id: Uuid,
+        event_type: i32,
+        modifiers: u32,
+        windows_key_code: i32,
+        character: u16,
+        tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
+    ) -> Result<()> {
+        let tabs_guard = tabs.read();
+        let tab = tabs_guard
+            .get(&tab_id)
+            .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
+
+        if let Some(host) = tab.browser.get_host() {
+            let key_event_type = match event_type {
+                0 => cef::KeyEventType::RawKeyDown,
+                1 => cef::KeyEventType::KeyDown,
+                2 => cef::KeyEventType::KeyUp,
+                3 => cef::KeyEventType::Char,
+                _ => cef::KeyEventType::KeyDown,
+            };
+
+            let event = cef::KeyEvent {
+                event_type: key_event_type,
+                modifiers,
+                windows_key_code,
+                native_key_code: 0,
+                is_system_key: false,
+                character,
+                unmodified_character: character,
+                focus_on_editable_field: false,
+            };
+
+            host.send_key_event(&event);
+            trace!(
+                "Key event sent to tab {}: type={}, code={}, char={}",
+                tab_id, event_type, windows_key_code, character
+            );
+            Ok(())
+        } else {
+            Err(anyhow!("No browser host for tab: {}", tab_id))
+        }
+    }
+
+    /// Types text by sending character events internally on the CEF thread.
+    fn type_text_internal(
+        tab_id: Uuid,
+        text: &str,
+        tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
+    ) -> Result<()> {
+        let tabs_guard = tabs.read();
+        let tab = tabs_guard
+            .get(&tab_id)
+            .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
+
+        if let Some(host) = tab.browser.get_host() {
+            for c in text.chars() {
+                let char_code = c as u16;
+
+                // Send KeyDown
+                let key_down = cef::KeyEvent {
+                    event_type: cef::KeyEventType::KeyDown,
+                    modifiers: 0,
+                    windows_key_code: char_code as i32,
+                    native_key_code: 0,
+                    is_system_key: false,
+                    character: char_code,
+                    unmodified_character: char_code,
+                    focus_on_editable_field: false,
+                };
+                host.send_key_event(&key_down);
+
+                // Send Char event
+                let char_event = cef::KeyEvent {
+                    event_type: cef::KeyEventType::Char,
+                    modifiers: 0,
+                    windows_key_code: char_code as i32,
+                    native_key_code: 0,
+                    is_system_key: false,
+                    character: char_code,
+                    unmodified_character: char_code,
+                    focus_on_editable_field: false,
+                };
+                host.send_key_event(&char_event);
+
+                // Send KeyUp
+                let key_up = cef::KeyEvent {
+                    event_type: cef::KeyEventType::KeyUp,
+                    modifiers: 0,
+                    windows_key_code: char_code as i32,
+                    native_key_code: 0,
+                    is_system_key: false,
+                    character: char_code,
+                    unmodified_character: char_code,
+                    focus_on_editable_field: false,
+                };
+                host.send_key_event(&key_up);
+            }
+
+            debug!("Typed text on tab {}: {} chars", tab_id, text.len());
+            Ok(())
+        } else {
+            Err(anyhow!("No browser host for tab: {}", tab_id))
+        }
+    }
+
     /// Converts raw BGRA frame buffer to encoded image.
     fn convert_frame_to_image(
         buffer: &[u8],
@@ -1092,6 +1481,148 @@ impl CefBrowserEngine {
     /// Returns the stealth configuration.
     pub fn stealth_config(&self) -> &StealthConfig {
         &self.stealth_config
+    }
+
+    /// Creates an event sender for a specific tab.
+    ///
+    /// This can be used to create a `CefInputHandler` for input simulation.
+    pub fn create_event_sender(&self, tab_id: Uuid) -> CefBrowserEventSender {
+        CefBrowserEventSender::new(
+            tab_id,
+            self.command_tx.clone(),
+            tokio::runtime::Handle::current(),
+        )
+    }
+
+    // ========================================================================
+    // Input Operations
+    // ========================================================================
+
+    /// Clicks at the specified coordinates in a tab.
+    ///
+    /// # Arguments
+    ///
+    /// * `tab_id` - The UUID of the tab
+    /// * `x` - X coordinate
+    /// * `y` - Y coordinate
+    /// * `button` - Mouse button (0 = left, 1 = middle, 2 = right)
+    pub async fn click(&self, tab_id: Uuid, x: i32, y: i32, button: i32) -> Result<()> {
+        if !self.is_running.load(Ordering::SeqCst) {
+            return Err(anyhow!("Browser engine is not running"));
+        }
+
+        // Mouse down
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .send(CefCommand::MouseClick {
+                tab_id,
+                x,
+                y,
+                button,
+                click_count: 1, // Positive = down
+                response: response_tx,
+            })
+            .await
+            .context("Failed to send mouse down command")?;
+        response_rx.await.context("Failed to receive mouse down response")??;
+
+        // Small delay between down and up
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Mouse up
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .send(CefCommand::MouseClick {
+                tab_id,
+                x,
+                y,
+                button,
+                click_count: -1, // Negative = up
+                response: response_tx,
+            })
+            .await
+            .context("Failed to send mouse up command")?;
+        response_rx.await.context("Failed to receive mouse up response")?
+    }
+
+    /// Types text in the currently focused element of a tab.
+    ///
+    /// # Arguments
+    ///
+    /// * `tab_id` - The UUID of the tab
+    /// * `text` - The text to type
+    pub async fn type_text(&self, tab_id: Uuid, text: &str) -> Result<()> {
+        if !self.is_running.load(Ordering::SeqCst) {
+            return Err(anyhow!("Browser engine is not running"));
+        }
+
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .send(CefCommand::TypeText {
+                tab_id,
+                text: text.to_string(),
+                response: response_tx,
+            })
+            .await
+            .context("Failed to send type text command")?;
+
+        response_rx.await.context("Failed to receive type text response")?
+    }
+
+    /// Scrolls at the specified position in a tab.
+    ///
+    /// # Arguments
+    ///
+    /// * `tab_id` - The UUID of the tab
+    /// * `x` - X coordinate for scroll location
+    /// * `y` - Y coordinate for scroll location
+    /// * `delta_x` - Horizontal scroll amount
+    /// * `delta_y` - Vertical scroll amount
+    pub async fn scroll(&self, tab_id: Uuid, x: i32, y: i32, delta_x: i32, delta_y: i32) -> Result<()> {
+        if !self.is_running.load(Ordering::SeqCst) {
+            return Err(anyhow!("Browser engine is not running"));
+        }
+
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .send(CefCommand::MouseWheel {
+                tab_id,
+                x,
+                y,
+                delta_x,
+                delta_y,
+                response: response_tx,
+            })
+            .await
+            .context("Failed to send scroll command")?;
+
+        response_rx.await.context("Failed to receive scroll response")?
+    }
+
+    /// Moves the mouse to the specified coordinates in a tab.
+    ///
+    /// # Arguments
+    ///
+    /// * `tab_id` - The UUID of the tab
+    /// * `x` - X coordinate
+    /// * `y` - Y coordinate
+    pub async fn mouse_move(&self, tab_id: Uuid, x: i32, y: i32) -> Result<()> {
+        if !self.is_running.load(Ordering::SeqCst) {
+            return Err(anyhow!("Browser engine is not running"));
+        }
+
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .send(CefCommand::MouseMove {
+                tab_id,
+                x,
+                y,
+                response: response_tx,
+            })
+            .await
+            .context("Failed to send mouse move command")?;
+
+        response_rx.await.context("Failed to receive mouse move response")?
     }
 
     /// Waits for a tab to be ready for interaction.

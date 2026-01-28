@@ -119,6 +119,14 @@ pub use browser::{
     MockDomAccessor, ScreenshotFormat, ScreenshotOptions, Tab, TabManager, TabStatus,
 };
 
+// CEF-specific types (when feature enabled)
+#[cfg(feature = "cef-browser")]
+pub use browser::{
+    CefBrowserEngine, CefBrowserEventSender, CefEventSender, CefInputConfig, CefInputHandler,
+    CefKeyEvent, CefKeyEventType, CefMouseButton, CefMouseEvent, CefRenderHandler, DirtyRect,
+    OffScreenRenderHandler, ScreenInfo,
+};
+
 // Input types
 pub use input::{
     BezierCurve, HumanTiming, InputError, InputResult, KeyboardEvent, KeyboardSimulator, Modifier,
@@ -133,8 +141,8 @@ pub use stealth::{
 
 // API types
 pub use api::{
-    ApiServer, AppState, BrowserEvent, IpcChannel, IpcCommand, IpcMessage, IpcResponse,
-    WebSocketHandler,
+    ApiServer, AppState, BrowserCommandHandler, BrowserEngineWrapper, BrowserEvent, IpcChannel,
+    IpcCommand, IpcMessage, IpcProcessor, IpcResponse, WebSocketHandler,
 };
 
 // Config types

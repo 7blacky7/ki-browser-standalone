@@ -1,0 +1,76 @@
+# KI-Browser Docker Compose Configuration
+# For deployment on Unraid or similar environments
+#
+# Usage:
+#   docker-compose up -d
+#   docker-compose logs -f
+#   docker-compose down
+
+version: '3.8'
+
+services:
+  ki-browser:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ki-browser:cef
+    container_name: ki-browser
+    restart: unless-stopped
+
+    # CRITICAL: Chrome/CEF requires at least 2GB shared memory
+    shm_size: 2gb
+
+    # Port mapping
+    ports:
+      - "9222:9222"
+
+    # Environment variables
+    environment:
+      - RUST_LOG=info
+      - DISPLAY=:99
+      - XVFB_RESOLUTION=1920x1080x24
+      - KI_BROWSER_API_PORT=9222
+      - KI_BROWSER_API_ENABLED=true
+      - KI_BROWSER_HEADLESS=true
+      - KI_BROWSER_STEALTH=true
+
+    # Volumes for persistent data
+    volumes:
+      - ki-browser-config:/app/config
+      - ki-browser-profiles:/app/profiles
+      - ki-browser-data:/app/data
+
+    # Security settings
+    # For production, consider removing privileged and adding specific capabilities
+    security_opt:
+      - seccomp=unconfined
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9222/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    # Resource limits (adjust based on available resources)
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 1G
+
+volumes:
+  ki-browser-config:
+    driver: local
+  ki-browser-profiles:
+    driver: local
+  ki-browser-data:
+    driver: local
+
+# Network configuration (optional)
+networks:
+  default:
+    name: ki-browser-network
+    driver: bridge

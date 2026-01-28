@@ -38,7 +38,7 @@ pub use tab::{Tab, TabManager, TabStatus};
 pub use cef_render::{CefRenderHandler, DirtyRect, OffScreenRenderHandler, ScreenInfo};
 
 #[cfg(feature = "cef-browser")]
-pub use cef_engine::CefBrowserEngine;
+pub use cef_engine::{CefBrowserEngine, CefBrowserEventSender};
 
 #[cfg(feature = "cef-browser")]
 pub use cef_input::{

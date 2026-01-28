@@ -384,10 +384,20 @@ pub struct IpcChannel {
     command_tx: mpsc::Sender<(u64, IpcCommand, oneshot::Sender<IpcResponse>)>,
 
     /// Channel for receiving commands (browser side)
-    command_rx: RwLock<Option<mpsc::Receiver<(u64, IpcCommand, oneshot::Sender<IpcResponse>)>>>,
+    command_rx: std::sync::Arc<RwLock<Option<mpsc::Receiver<(u64, IpcCommand, oneshot::Sender<IpcResponse>)>>>>,
 
     /// Default timeout for commands
     default_timeout: Duration,
+}
+
+impl Clone for IpcChannel {
+    fn clone(&self) -> Self {
+        Self {
+            command_tx: self.command_tx.clone(),
+            command_rx: self.command_rx.clone(),
+            default_timeout: self.default_timeout,
+        }
+    }
 }
 
 impl IpcChannel {
@@ -397,7 +407,7 @@ impl IpcChannel {
 
         Self {
             command_tx,
-            command_rx: RwLock::new(Some(command_rx)),
+            command_rx: std::sync::Arc::new(RwLock::new(Some(command_rx))),
             default_timeout: Duration::from_secs(30),
         }
     }
@@ -408,7 +418,7 @@ impl IpcChannel {
 
         Self {
             command_tx,
-            command_rx: RwLock::new(Some(command_rx)),
+            command_rx: std::sync::Arc::new(RwLock::new(Some(command_rx))),
             default_timeout: Duration::from_secs(30),
         }
     }
