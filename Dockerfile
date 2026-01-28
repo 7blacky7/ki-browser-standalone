@@ -77,9 +77,9 @@ COPY build.rs ./
 COPY src/ ./src/
 
 # Build with CEF feature enabled
-# Note: If CEF crate build fails, fall back to mock-browser
-RUN cargo build --release --features cef-browser 2>/dev/null || \
-    (echo "CEF build failed, falling back to mock-browser" && \
+# Show errors if CEF build fails, then fall back to mock-browser
+RUN cargo build --release --features cef-browser 2>&1 || \
+    (echo "======== CEF build failed, falling back to mock-browser ========" && \
      cargo build --release --no-default-features --features mock-browser)
 
 # =============================================================================
