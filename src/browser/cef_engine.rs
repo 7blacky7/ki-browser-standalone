@@ -315,20 +315,19 @@ wrap_app! {
     impl App {
         fn on_before_command_line_processing(
             &mut self,
-            _process_type: Option<&CefString>,
             command_line: Option<&mut cef::CommandLine>,
         ) {
             if let Some(cmd) = command_line {
                 // Add arguments for stealth mode
-                cmd.append_switch_with_value(&CefString::new("disable-blink-features"), &CefString::new("AutomationControlled"));
-                cmd.append_switch(&CefString::new("disable-infobars"));
-                cmd.append_switch(&CefString::new("disable-extensions"));
-                cmd.append_switch(&CefString::new("no-first-run"));
-                cmd.append_switch(&CefString::new("no-default-browser-check"));
+                cmd.append_switch_with_value(&CefString::from("disable-blink-features"), &CefString::from("AutomationControlled"));
+                cmd.append_switch(&CefString::from("disable-infobars"));
+                cmd.append_switch(&CefString::from("disable-extensions"));
+                cmd.append_switch(&CefString::from("no-first-run"));
+                cmd.append_switch(&CefString::from("no-default-browser-check"));
 
                 // Disable GPU in headless mode for stability
-                cmd.append_switch(&CefString::new("disable-gpu"));
-                cmd.append_switch(&CefString::new("disable-gpu-compositing"));
+                cmd.append_switch(&CefString::from("disable-gpu"));
+                cmd.append_switch(&CefString::from("disable-gpu-compositing"));
 
                 debug!("CEF command line configured for stealth mode");
             }
@@ -410,8 +409,7 @@ wrap_render_handler! {
             &mut self,
             _browser: Option<&mut Browser>,
             element_type: PaintElementType,
-            _dirty_rects_count: usize,
-            _dirty_rects: *const Rect,
+            _dirty_rects: &[Rect],
             buffer: *const u8,
             width: i32,
             height: i32,
@@ -528,7 +526,7 @@ wrap_load_handler! {
                 if f.is_main() != 0 {
                     // Inject stealth scripts BEFORE any page scripts run
                     let stealth_script = self.stealth_config.get_complete_override_script();
-                    f.execute_java_script(&CefString::new(&stealth_script), &CefString::new(""), 0);
+                    f.execute_java_script(&CefString::from(&stealth_script), &CefString::from(""), 0);
 
                     debug!(
                         "Stealth scripts injected for tab {} on load start",
@@ -812,7 +810,7 @@ impl CefBrowserEngine {
 
         // Set user agent if provided
         if let Some(ref user_agent) = config.user_agent {
-            settings.user_agent = CefString::new(user_agent);
+            settings.user_agent = CefString::from(user_agent);
         }
 
         // Set log level
@@ -1056,7 +1054,7 @@ impl CefBrowserEngine {
         let result = cef::browser_host_create_browser(
             &window_info,
             &mut client,
-            &CefString::new(url),
+            &CefString::from(url),
             &browser_settings,
             None,
             None,
@@ -1127,7 +1125,7 @@ impl CefBrowserEngine {
             .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?;
 
         if let Some(frame) = browser.get_main_frame() {
-            frame.load_url(&CefString::new(url));
+            frame.load_url(&CefString::from(url));
             info!("Navigating tab {} to: {}", tab_id, url);
             Ok(())
         } else {
@@ -1150,7 +1148,7 @@ impl CefBrowserEngine {
             .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?;
 
         if let Some(frame) = browser.get_main_frame() {
-            frame.execute_java_script(&CefString::new(script), &CefString::new(""), 0);
+            frame.execute_java_script(&CefString::from(script), &CefString::from(""), 0);
             debug!("JavaScript executed on tab {}", tab_id);
             // Note: CEF doesn't provide synchronous JS execution results
             // For result capture, use V8 context and message passing
