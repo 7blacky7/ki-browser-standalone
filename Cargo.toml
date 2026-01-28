@@ -98,12 +98,11 @@ default-features = false
 features = ["tokio-runtime"]
 
 [dependencies.cef]
-# Use older version 140 which may have more compatible dependencies
-version = "140"
+version = "144"
 optional = true
 default-features = false
-# Only enable sandbox, skip build-util which requires Rust 1.88+
-features = ["sandbox"]
+# Enable sandbox and linux-x11 for full Linux support
+features = ["sandbox", "linux-x11"]
 
 # Pin home crate to version compatible with Rust 1.84
 [dependencies.home]
