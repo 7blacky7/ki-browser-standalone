@@ -45,10 +45,8 @@ use cef::{
     Rect, ScreenInfo, WindowInfo, Settings, LogSeverity,
     Errorcode, MainArgs,
     // Traits for handler implementations
-    ImplApp, ImplRenderHandler, ImplLoadHandler, ImplLifeSpanHandler,
+    ImplApp, ImplClient, ImplRenderHandler, ImplLoadHandler, ImplLifeSpanHandler,
     ImplBrowser, ImplBrowserHost, ImplFrame, ImplCommandLine,
-    // Traits for wrapper implementations
-    WrapApp, WrapClient, WrapRenderHandler, WrapLoadHandler, WrapLifeSpanHandler,
 };
 #[cfg(feature = "cef-browser")]
 use parking_lot::RwLock;
@@ -313,7 +311,7 @@ struct KiBrowserApp {
 }
 
 #[cfg(feature = "cef-browser")]
-impl WrapApp for KiBrowserApp {
+impl ImplApp for KiBrowserApp {
     fn on_before_command_line_processing(
         &mut self,
         command_line: Option<&mut cef::CommandLine>,
@@ -348,7 +346,7 @@ struct KiBrowserClient {
 }
 
 #[cfg(feature = "cef-browser")]
-impl WrapClient for KiBrowserClient {
+impl ImplClient for KiBrowserClient {
     fn get_render_handler(&mut self) -> Option<RenderHandler> {
         Some(self.render_handler.clone())
     }
@@ -373,7 +371,7 @@ struct KiBrowserRenderHandlerImpl {
 }
 
 #[cfg(feature = "cef-browser")]
-impl WrapRenderHandler for KiBrowserRenderHandlerImpl {
+impl ImplRenderHandler for KiBrowserRenderHandlerImpl {
     fn get_view_rect(&mut self, _browser: Option<&mut Browser>, rect: Option<&mut Rect>) -> i32 {
         if let Some(r) = rect {
             r.x = 0;
@@ -448,7 +446,7 @@ struct KiBrowserLifeSpanHandlerImpl {
 }
 
 #[cfg(feature = "cef-browser")]
-impl WrapLifeSpanHandler for KiBrowserLifeSpanHandlerImpl {
+impl ImplLifeSpanHandler for KiBrowserLifeSpanHandlerImpl {
     fn on_after_created(&mut self, browser: Option<&mut Browser>) {
         info!("Browser created for tab {}", self.tab_id);
 
@@ -488,7 +486,7 @@ struct KiBrowserLoadHandlerImpl {
 }
 
 #[cfg(feature = "cef-browser")]
-impl WrapLoadHandler for KiBrowserLoadHandlerImpl {
+impl ImplLoadHandler for KiBrowserLoadHandlerImpl {
     fn on_loading_state_change(
         &mut self,
         _browser: Option<&mut Browser>,
@@ -551,7 +549,8 @@ impl WrapLoadHandler for KiBrowserLoadHandlerImpl {
                 let mut tabs = self.tabs.write();
                 if let Some(tab) = tabs.get_mut(&self.tab_id) {
                     let url = f.url();
-                    tab.url = url.to_string();
+                    // CefStringUserfreeUtf16 doesn't implement Display, use debug format
+                    tab.url = format!("{:?}", url);
                 }
 
                 info!(
