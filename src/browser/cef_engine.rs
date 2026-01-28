@@ -37,14 +37,17 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 #[cfg(feature = "cef-browser")]
 use cef::{
-    // All types are re-exported directly from cef:: via bindings
-    App, AppCallbacks, Browser, BrowserHost, BrowserSettings,
-    CefString, Client, ClientCallbacks, Frame,
-    LifeSpanHandler, LifeSpanHandlerCallbacks,
-    LoadHandler, LoadHandlerCallbacks, TransitionType,
-    PaintElementType, RenderHandler, RenderHandlerCallbacks,
+    // CEF v144 API - uses wrap_* macros and Impl* traits
+    App, Browser, BrowserSettings,
+    CefString, Client, Frame,
+    LifeSpanHandler, LoadHandler, RenderHandler,
+    PaintElementType, TransitionType,
     Rect, ScreenInfo, WindowInfo, Settings, LogSeverity,
-    ErrorCode, RuntimeStyle,
+    Errorcode, MainArgs,
+    // Traits for handler implementations
+    ImplApp, ImplClient, ImplRenderHandler, ImplLoadHandler, ImplLifeSpanHandler,
+    // Macros for wrapping handlers
+    wrap_app, wrap_client, wrap_render_handler, wrap_load_handler, wrap_life_span_handler,
 };
 #[cfg(feature = "cef-browser")]
 use parking_lot::RwLock;
@@ -89,8 +92,8 @@ const DEFAULT_FRAME_RATE: i32 = 30;
 struct CefTab {
     /// Unique identifier for the tab.
     id: Uuid,
-    /// CEF browser instance.
-    browser: Browser,
+    /// CEF browser instance (set asynchronously after on_after_created).
+    browser: Option<Browser>,
     /// Current URL of the tab.
     url: String,
     /// Page title.
@@ -107,17 +110,21 @@ struct CefTab {
 
 #[cfg(feature = "cef-browser")]
 impl CefTab {
-    fn new(id: Uuid, browser: Browser, url: String) -> Self {
+    fn new(id: Uuid, url: String, frame_buffer: Arc<RwLock<Vec<u8>>>, frame_size: Arc<RwLock<(u32, u32)>>) -> Self {
         Self {
             id,
-            browser,
+            browser: None,
             url,
             title: String::new(),
             status: TabStatus::Loading,
-            frame_buffer: Arc::new(RwLock::new(Vec::new())),
-            frame_size: Arc::new(RwLock::new((0, 0))),
+            frame_buffer,
+            frame_size,
             is_ready: AtomicBool::new(false),
         }
+    }
+
+    fn set_browser(&mut self, browser: Browser) {
+        self.browser = Some(browser);
     }
 
     fn to_tab(&self) -> Tab {
@@ -297,253 +304,291 @@ impl crate::browser::cef_input::CefEventSender for CefBrowserEventSender {
 // CEF Callbacks Implementation
 // ============================================================================
 
-/// Application callbacks for CEF lifecycle.
+/// Application handler for CEF lifecycle using v144 API.
 #[cfg(feature = "cef-browser")]
-struct KiBrowserAppCallbacks {
-    stealth_config: Arc<StealthConfig>,
-}
-
-#[cfg(feature = "cef-browser")]
-impl AppCallbacks for KiBrowserAppCallbacks {
-    fn on_before_command_line_processing(
-        &self,
-        _process_type: &CefString,
-        command_line: &mut cef::command_line::CommandLine,
-    ) {
-        // Add arguments for stealth mode
-        command_line.append_switch("disable-blink-features", "AutomationControlled");
-        command_line.append_switch("disable-infobars", "");
-        command_line.append_switch("disable-extensions", "");
-        command_line.append_switch("no-first-run", "");
-        command_line.append_switch("no-default-browser-check", "");
-
-        // Disable GPU in headless mode for stability
-        command_line.append_switch("disable-gpu", "");
-        command_line.append_switch("disable-gpu-compositing", "");
-
-        debug!("CEF command line configured for stealth mode");
-    }
-}
-
-/// Client callbacks for browser events.
-#[cfg(feature = "cef-browser")]
-struct KiBrowserClientCallbacks {
-    tab_id: Uuid,
-    tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
-    stealth_config: Arc<StealthConfig>,
-    render_handler: RenderHandler,
-    life_span_handler: LifeSpanHandler,
-    load_handler: LoadHandler,
-}
-
-#[cfg(feature = "cef-browser")]
-impl ClientCallbacks for KiBrowserClientCallbacks {
-    fn get_render_handler(&self) -> Option<RenderHandler> {
-        Some(self.render_handler.clone())
+wrap_app! {
+    struct KiBrowserApp {
+        stealth_config: Arc<StealthConfig>,
     }
 
-    fn get_life_span_handler(&self) -> Option<LifeSpanHandler> {
-        Some(self.life_span_handler.clone())
-    }
+    impl App {
+        fn on_before_command_line_processing(
+            &mut self,
+            _process_type: Option<&CefString>,
+            command_line: Option<&mut cef::CommandLine>,
+        ) {
+            if let Some(cmd) = command_line {
+                // Add arguments for stealth mode
+                cmd.append_switch_with_value(&CefString::new("disable-blink-features"), &CefString::new("AutomationControlled"));
+                cmd.append_switch(&CefString::new("disable-infobars"));
+                cmd.append_switch(&CefString::new("disable-extensions"));
+                cmd.append_switch(&CefString::new("no-first-run"));
+                cmd.append_switch(&CefString::new("no-default-browser-check"));
 
-    fn get_load_handler(&self) -> Option<LoadHandler> {
-        Some(self.load_handler.clone())
-    }
-}
+                // Disable GPU in headless mode for stability
+                cmd.append_switch(&CefString::new("disable-gpu"));
+                cmd.append_switch(&CefString::new("disable-gpu-compositing"));
 
-/// Render handler for off-screen rendering.
-#[cfg(feature = "cef-browser")]
-struct KiBrowserRenderHandler {
-    tab_id: Uuid,
-    frame_buffer: Arc<RwLock<Vec<u8>>>,
-    frame_size: Arc<RwLock<(u32, u32)>>,
-    viewport_size: (u32, u32),
-}
-
-#[cfg(feature = "cef-browser")]
-impl RenderHandlerCallbacks for KiBrowserRenderHandler {
-    fn get_view_rect(&self, _browser: &Browser) -> Rect {
-        Rect {
-            x: 0,
-            y: 0,
-            width: self.viewport_size.0 as i32,
-            height: self.viewport_size.1 as i32,
-        }
-    }
-
-    fn get_screen_info(&self, _browser: &Browser) -> Option<ScreenInfo> {
-        Some(ScreenInfo {
-            device_scale_factor: 1.0,
-            depth: 32,
-            depth_per_component: 8,
-            is_monochrome: false,
-            rect: Rect {
-                x: 0,
-                y: 0,
-                width: self.viewport_size.0 as i32,
-                height: self.viewport_size.1 as i32,
-            },
-            available_rect: Rect {
-                x: 0,
-                y: 0,
-                width: self.viewport_size.0 as i32,
-                height: self.viewport_size.1 as i32,
-            },
-        })
-    }
-
-    fn on_paint(
-        &self,
-        _browser: &Browser,
-        element_type: PaintElementType,
-        _dirty_rects: &[Rect],
-        buffer: &[u8],
-        width: i32,
-        height: i32,
-    ) {
-        if element_type == PaintElementType::View {
-            // Store the frame buffer for screenshot capture
-            let mut fb = self.frame_buffer.write();
-            fb.clear();
-            fb.extend_from_slice(buffer);
-
-            let mut size = self.frame_size.write();
-            *size = (width as u32, height as u32);
-
-            trace!(
-                "Frame painted for tab {}: {}x{}, {} bytes",
-                self.tab_id,
-                width,
-                height,
-                buffer.len()
-            );
-        }
-    }
-}
-
-/// Life span handler for tab lifecycle events.
-#[cfg(feature = "cef-browser")]
-struct KiBrowserLifeSpanHandler {
-    tab_id: Uuid,
-    tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
-    browser_created: Arc<AtomicBool>,
-}
-
-#[cfg(feature = "cef-browser")]
-impl LifeSpanHandlerCallbacks for KiBrowserLifeSpanHandler {
-    fn on_after_created(&self, browser: &Browser) {
-        info!("Browser created for tab {}", self.tab_id);
-        self.browser_created.store(true, Ordering::SeqCst);
-    }
-
-    fn on_before_close(&self, _browser: &Browser) {
-        info!("Browser closing for tab {}", self.tab_id);
-        let mut tabs = self.tabs.write();
-        if let Some(tab) = tabs.get_mut(&self.tab_id) {
-            tab.status = TabStatus::Closed;
-        }
-    }
-
-    fn do_close(&self, _browser: &Browser) -> bool {
-        // Return false to allow the browser to close
-        false
-    }
-}
-
-/// Load handler for navigation events and stealth injection.
-#[cfg(feature = "cef-browser")]
-struct KiBrowserLoadHandler {
-    tab_id: Uuid,
-    tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
-    stealth_config: Arc<StealthConfig>,
-}
-
-#[cfg(feature = "cef-browser")]
-impl LoadHandlerCallbacks for KiBrowserLoadHandler {
-    fn on_loading_state_change(
-        &self,
-        browser: &Browser,
-        is_loading: bool,
-        can_go_back: bool,
-        can_go_forward: bool,
-    ) {
-        let mut tabs = self.tabs.write();
-        if let Some(tab) = tabs.get_mut(&self.tab_id) {
-            if is_loading {
-                tab.status = TabStatus::Loading;
-                tab.is_ready.store(false, Ordering::SeqCst);
-            } else {
-                tab.status = TabStatus::Ready;
-                tab.is_ready.store(true, Ordering::SeqCst);
+                debug!("CEF command line configured for stealth mode");
             }
         }
+    }
+}
 
-        debug!(
-            "Loading state changed for tab {}: loading={}, back={}, forward={}",
-            self.tab_id, is_loading, can_go_back, can_go_forward
-        );
+/// Client handler for browser events using v144 API.
+#[cfg(feature = "cef-browser")]
+wrap_client! {
+    struct KiBrowserClient {
+        tab_id: Uuid,
+        tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
+        stealth_config: Arc<StealthConfig>,
+        render_handler: RenderHandler,
+        life_span_handler: LifeSpanHandler,
+        load_handler: LoadHandler,
     }
 
-    fn on_load_start(
-        &self,
-        browser: &Browser,
-        frame: &Frame,
-        transition_type: TransitionType,
-    ) {
-        if frame.is_main() {
-            // Inject stealth scripts BEFORE any page scripts run
-            let stealth_script = self.stealth_config.get_complete_override_script();
-            frame.execute_java_script(&CefString::new(&stealth_script), "", 0);
+    impl Client {
+        fn get_render_handler(&mut self) -> Option<RenderHandler> {
+            Some(self.render_handler.clone())
+        }
 
-            debug!(
-                "Stealth scripts injected for tab {} on load start",
-                self.tab_id
-            );
+        fn get_life_span_handler(&mut self) -> Option<LifeSpanHandler> {
+            Some(self.life_span_handler.clone())
+        }
+
+        fn get_load_handler(&mut self) -> Option<LoadHandler> {
+            Some(self.load_handler.clone())
         }
     }
+}
 
-    fn on_load_end(&self, browser: &Browser, frame: &Frame, http_status_code: i32) {
-        if frame.is_main() {
-            // Update tab URL and title
-            let mut tabs = self.tabs.write();
-            if let Some(tab) = tabs.get_mut(&self.tab_id) {
-                tab.url = frame.get_url().to_string();
+/// Render handler for off-screen rendering using v144 API.
+#[cfg(feature = "cef-browser")]
+wrap_render_handler! {
+    struct KiBrowserRenderHandlerImpl {
+        tab_id: Uuid,
+        frame_buffer: Arc<RwLock<Vec<u8>>>,
+        frame_size: Arc<RwLock<(u32, u32)>>,
+        viewport_size: (u32, u32),
+    }
 
-                // Get title asynchronously
-                if let Some(main_frame) = browser.get_main_frame() {
-                    // Title will be updated via title change callback
+    impl RenderHandler {
+        fn get_view_rect(&mut self, _browser: Option<&mut Browser>, rect: Option<&mut Rect>) -> i32 {
+            if let Some(r) = rect {
+                r.x = 0;
+                r.y = 0;
+                r.width = self.viewport_size.0 as i32;
+                r.height = self.viewport_size.1 as i32;
+            }
+            1 // Return true
+        }
+
+        fn get_screen_info(&mut self, _browser: Option<&mut Browser>, screen_info: Option<&mut ScreenInfo>) -> i32 {
+            if let Some(info) = screen_info {
+                info.device_scale_factor = 1.0;
+                info.depth = 32;
+                info.depth_per_component = 8;
+                info.is_monochrome = 0;
+                info.rect = Rect {
+                    x: 0,
+                    y: 0,
+                    width: self.viewport_size.0 as i32,
+                    height: self.viewport_size.1 as i32,
+                };
+                info.available_rect = Rect {
+                    x: 0,
+                    y: 0,
+                    width: self.viewport_size.0 as i32,
+                    height: self.viewport_size.1 as i32,
+                };
+            }
+            1 // Return true
+        }
+
+        fn on_paint(
+            &mut self,
+            _browser: Option<&mut Browser>,
+            element_type: PaintElementType,
+            _dirty_rects_count: usize,
+            _dirty_rects: *const Rect,
+            buffer: *const u8,
+            width: i32,
+            height: i32,
+        ) {
+            if element_type == PaintElementType::View {
+                // Store the frame buffer for screenshot capture
+                let buffer_size = (width * height * 4) as usize;
+                let buffer_slice = unsafe { std::slice::from_raw_parts(buffer, buffer_size) };
+
+                let mut fb = self.frame_buffer.write();
+                fb.clear();
+                fb.extend_from_slice(buffer_slice);
+
+                let mut size = self.frame_size.write();
+                *size = (width as u32, height as u32);
+
+                trace!(
+                    "Frame painted for tab {}: {}x{}, {} bytes",
+                    self.tab_id,
+                    width,
+                    height,
+                    buffer_size
+                );
+            }
+        }
+    }
+}
+
+/// Life span handler for tab lifecycle events using v144 API.
+#[cfg(feature = "cef-browser")]
+wrap_life_span_handler! {
+    struct KiBrowserLifeSpanHandlerImpl {
+        tab_id: Uuid,
+        tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
+        browser_created: Arc<AtomicBool>,
+    }
+
+    impl LifeSpanHandler {
+        fn on_after_created(&mut self, browser: Option<&mut Browser>) {
+            info!("Browser created for tab {}", self.tab_id);
+
+            // Store browser reference in tab
+            if let Some(b) = browser {
+                let mut tabs = self.tabs.write();
+                if let Some(tab) = tabs.get_mut(&self.tab_id) {
+                    tab.set_browser(b.clone());
                 }
             }
 
-            info!(
-                "Page loaded for tab {}: status={}",
-                self.tab_id, http_status_code
-            );
+            self.browser_created.store(true, Ordering::SeqCst);
+        }
+
+        fn on_before_close(&mut self, _browser: Option<&mut Browser>) {
+            info!("Browser closing for tab {}", self.tab_id);
+            let mut tabs = self.tabs.write();
+            if let Some(tab) = tabs.get_mut(&self.tab_id) {
+                tab.status = TabStatus::Closed;
+                tab.browser = None;
+            }
+        }
+
+        fn do_close(&mut self, _browser: Option<&mut Browser>) -> i32 {
+            // Return 0 (false) to allow the browser to close
+            0
         }
     }
+}
 
-    fn on_load_error(
-        &self,
-        _browser: &Browser,
-        frame: &Frame,
-        error_code: ErrorCode,
-        error_text: &CefString,
-        failed_url: &CefString,
-    ) {
-        if frame.is_main() {
-            let error_msg = format!(
-                "Failed to load {}: {:?} - {}",
-                failed_url.to_string(),
-                error_code,
-                error_text.to_string()
-            );
+/// Load handler for navigation events and stealth injection using v144 API.
+#[cfg(feature = "cef-browser")]
+wrap_load_handler! {
+    struct KiBrowserLoadHandlerImpl {
+        tab_id: Uuid,
+        tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
+        stealth_config: Arc<StealthConfig>,
+    }
+
+    impl LoadHandler {
+        fn on_loading_state_change(
+            &mut self,
+            _browser: Option<&mut Browser>,
+            is_loading: i32,
+            can_go_back: i32,
+            can_go_forward: i32,
+        ) {
+            let is_loading = is_loading != 0;
+            let can_go_back = can_go_back != 0;
+            let can_go_forward = can_go_forward != 0;
 
             let mut tabs = self.tabs.write();
             if let Some(tab) = tabs.get_mut(&self.tab_id) {
-                tab.status = TabStatus::Error(error_msg.clone());
+                if is_loading {
+                    tab.status = TabStatus::Loading;
+                    tab.is_ready.store(false, Ordering::SeqCst);
+                } else {
+                    tab.status = TabStatus::Ready;
+                    tab.is_ready.store(true, Ordering::SeqCst);
+                }
             }
 
-            error!("Load error for tab {}: {}", self.tab_id, error_msg);
+            debug!(
+                "Loading state changed for tab {}: loading={}, back={}, forward={}",
+                self.tab_id, is_loading, can_go_back, can_go_forward
+            );
+        }
+
+        fn on_load_start(
+            &mut self,
+            _browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            _transition_type: TransitionType,
+        ) {
+            if let Some(f) = frame {
+                if f.is_main() != 0 {
+                    // Inject stealth scripts BEFORE any page scripts run
+                    let stealth_script = self.stealth_config.get_complete_override_script();
+                    f.execute_java_script(&CefString::new(&stealth_script), &CefString::new(""), 0);
+
+                    debug!(
+                        "Stealth scripts injected for tab {} on load start",
+                        self.tab_id
+                    );
+                }
+            }
+        }
+
+        fn on_load_end(
+            &mut self,
+            browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            http_status_code: i32,
+        ) {
+            if let Some(f) = frame {
+                if f.is_main() != 0 {
+                    // Update tab URL
+                    let mut tabs = self.tabs.write();
+                    if let Some(tab) = tabs.get_mut(&self.tab_id) {
+                        if let Some(url) = f.get_url() {
+                            tab.url = url.to_string();
+                        }
+                    }
+
+                    info!(
+                        "Page loaded for tab {}: status={}",
+                        self.tab_id, http_status_code
+                    );
+                }
+            }
+        }
+
+        fn on_load_error(
+            &mut self,
+            _browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            error_code: Errorcode,
+            error_text: Option<&CefString>,
+            failed_url: Option<&CefString>,
+        ) {
+            if let Some(f) = frame {
+                if f.is_main() != 0 {
+                    let url_str = failed_url.map(|u| u.to_string()).unwrap_or_default();
+                    let err_str = error_text.map(|e| e.to_string()).unwrap_or_default();
+
+                    let error_msg = format!(
+                        "Failed to load {}: {:?} - {}",
+                        url_str,
+                        error_code,
+                        err_str
+                    );
+
+                    let mut tabs = self.tabs.write();
+                    if let Some(tab) = tabs.get_mut(&self.tab_id) {
+                        tab.status = TabStatus::Error(error_msg.clone());
+                    }
+
+                    error!("Load error for tab {}: {}", self.tab_id, error_msg);
+                }
+            }
         }
     }
 }
@@ -569,8 +614,8 @@ pub struct CefBrowserEngine {
     command_tx: mpsc::Sender<CefCommand>,
     /// Whether the engine is running.
     is_running: Arc<AtomicBool>,
-    /// CEF context handle.
-    cef_context: Arc<Mutex<Option<CefContext>>>,
+    /// CEF initialized flag (v144 doesn't have CefContext).
+    cef_initialized: Arc<AtomicBool>,
     /// Browser ID counter.
     browser_id_counter: Arc<AtomicI32>,
 }
@@ -611,9 +656,9 @@ impl BrowserEngine for CefBrowserEngine {
         let stealth_config_clone = stealth_config.clone();
         let browser_id_counter_clone = browser_id_counter.clone();
 
-        // CEF context will be set by the message loop thread
-        let cef_context = Arc::new(Mutex::new(None));
-        let cef_context_clone = cef_context.clone();
+        // CEF initialized flag (v144 doesn't have CefContext)
+        let cef_initialized = Arc::new(AtomicBool::new(false));
+        let cef_initialized_clone = cef_initialized.clone();
 
         // Spawn CEF message loop thread
         std::thread::spawn(move || {
@@ -623,7 +668,7 @@ impl BrowserEngine for CefBrowserEngine {
                 tabs_clone,
                 is_running_clone,
                 browser_id_counter_clone,
-                cef_context_clone,
+                cef_initialized_clone,
                 command_rx,
             );
 
@@ -647,7 +692,7 @@ impl BrowserEngine for CefBrowserEngine {
             tabs,
             command_tx,
             is_running,
-            cef_context,
+            cef_initialized,
             browser_id_counter,
         })
     }
@@ -750,18 +795,18 @@ impl CefBrowserEngine {
         tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
         is_running: Arc<AtomicBool>,
         browser_id_counter: Arc<AtomicI32>,
-        cef_context: Arc<Mutex<Option<CefContext>>>,
+        cef_initialized: Arc<AtomicBool>,
         mut command_rx: mpsc::Receiver<CefCommand>,
     ) -> Result<()> {
         // Configure CEF settings
         let mut settings = Settings::default();
-        settings.windowless_rendering_enabled = true;
-        settings.no_sandbox = true;
-        settings.multi_threaded_message_loop = false;
-        settings.external_message_pump = true;
+        settings.windowless_rendering_enabled = 1;
+        settings.no_sandbox = 1;
+        settings.multi_threaded_message_loop = 0;
+        settings.external_message_pump = 1;
 
         if config.headless {
-            settings.windowless_rendering_enabled = true;
+            settings.windowless_rendering_enabled = 1;
         }
 
         // Set user agent if provided
@@ -770,27 +815,31 @@ impl CefBrowserEngine {
         }
 
         // Set log level
-        settings.log_severity = LogSeverity::WARNING;
+        settings.log_severity = LogSeverity::Warning;
 
-        // Create app callbacks
-        let app_callbacks = KiBrowserAppCallbacks {
+        // Create app with v144 API
+        let mut app = KiBrowserApp {
             stealth_config: stealth_config.clone(),
         };
 
-        let app = App::new(app_callbacks);
+        // Create main args
+        let args = MainArgs::default();
 
-        // Initialize CEF
-        let context = CefContext::initialize(settings, Some(app), None)
-            .context("Failed to initialize CEF context")?;
+        // Initialize CEF using v144 API
+        let result = cef::initialize(
+            Some(&args),
+            Some(&settings),
+            Some(&mut app),
+            std::ptr::null_mut(),
+        );
 
-        info!("CEF context initialized");
-
-        // Store context
-        {
-            let mut ctx_guard = futures::executor::block_on(cef_context.lock());
-            *ctx_guard = Some(context);
+        if result == 0 {
+            return Err(anyhow!("Failed to initialize CEF"));
         }
 
+        info!("CEF initialized successfully");
+
+        cef_initialized.store(true, Ordering::SeqCst);
         is_running.store(true, Ordering::SeqCst);
 
         // Message loop
@@ -952,77 +1001,86 @@ impl CefBrowserEngine {
         let frame_size = Arc::new(RwLock::new((0u32, 0u32)));
         let browser_created = Arc::new(AtomicBool::new(false));
 
-        // Create render handler
-        let render_handler = RenderHandler::new(KiBrowserRenderHandler {
+        // Create render handler using v144 wrap macro structs
+        let render_handler_impl = KiBrowserRenderHandlerImpl {
             tab_id,
             frame_buffer: frame_buffer.clone(),
             frame_size: frame_size.clone(),
             viewport_size,
-        });
+        };
+        let render_handler = render_handler_impl.into_render_handler();
 
         // Create life span handler
-        let life_span_handler = LifeSpanHandler::new(KiBrowserLifeSpanHandler {
+        let life_span_handler_impl = KiBrowserLifeSpanHandlerImpl {
             tab_id,
             tabs: tabs.clone(),
             browser_created: browser_created.clone(),
-        });
+        };
+        let life_span_handler = life_span_handler_impl.into_life_span_handler();
 
         // Create load handler
-        let load_handler = LoadHandler::new(KiBrowserLoadHandler {
+        let load_handler_impl = KiBrowserLoadHandlerImpl {
             tab_id,
             tabs: tabs.clone(),
             stealth_config: stealth_config.clone(),
-        });
+        };
+        let load_handler = load_handler_impl.into_load_handler();
 
-        // Create client
-        let client = Client::new(KiBrowserClientCallbacks {
+        // Create client using v144 wrap macro struct
+        let client_impl = KiBrowserClient {
             tab_id,
             tabs: tabs.clone(),
             stealth_config: stealth_config.clone(),
             render_handler,
             life_span_handler,
             load_handler,
-        });
+        };
+        let mut client = client_impl.into_client();
 
         // Browser settings
         let mut browser_settings = BrowserSettings::default();
         browser_settings.windowless_frame_rate = DEFAULT_FRAME_RATE;
 
         // Window info for OSR (off-screen rendering)
-        let window_info = WindowInfo {
-            bounds: Rect {
-                x: 0,
-                y: 0,
-                width: viewport_size.0 as i32,
-                height: viewport_size.1 as i32,
-            },
-            ..WindowInfo::default()
-        }.set_as_windowless(0);
+        let mut window_info = WindowInfo::default();
+        window_info.bounds = Rect {
+            x: 0,
+            y: 0,
+            width: viewport_size.0 as i32,
+            height: viewport_size.1 as i32,
+        };
+        window_info.windowless_rendering_enabled = 1;
 
-        // Create browser
-        let browser = Browser::create(
+        // Create browser using v144 API
+        let result = cef::browser_host_create_browser(
             &window_info,
-            &client,
+            &mut client,
             &CefString::new(url),
             &browser_settings,
             None,
             None,
-        )
-        .context("Failed to create CEF browser")?;
+        );
 
-        // Store tab
-        let cef_tab = CefTab {
-            id: tab_id,
-            browser,
-            url: url.to_string(),
-            title: String::new(),
-            status: TabStatus::Loading,
-            frame_buffer,
-            frame_size,
-            is_ready: AtomicBool::new(false),
-        };
+        if result == 0 {
+            return Err(anyhow!("Failed to create CEF browser"));
+        }
 
+        // Store tab BEFORE browser creation (browser will be set in on_after_created)
+        let cef_tab = CefTab::new(tab_id, url.to_string(), frame_buffer, frame_size);
         tabs.write().insert(tab_id, cef_tab);
+
+        // Wait for browser to be created (callback will be triggered)
+        let start = std::time::Instant::now();
+        while !browser_created.load(Ordering::SeqCst) {
+            if start.elapsed() > std::time::Duration::from_secs(10) {
+                // Remove the tab if browser creation failed
+                tabs.write().remove(&tab_id);
+                return Err(anyhow!("Timeout waiting for browser creation"));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            cef::do_message_loop_work();
+        }
+
         browser_id_counter.fetch_add(1, Ordering::SeqCst);
 
         info!("Browser created for tab {} with URL: {}", tab_id, url);
@@ -1041,8 +1099,10 @@ impl CefBrowserEngine {
 
         if let Some(tab) = tab {
             // Close the browser
-            if let Some(host) = tab.browser.get_host() {
-                host.close_browser(true);
+            if let Some(ref browser) = tab.browser {
+                if let Some(host) = browser.get_host() {
+                    host.close_browser(1);
+                }
             }
             info!("Browser closed for tab {}", tab_id);
             Ok(())
@@ -1062,7 +1122,10 @@ impl CefBrowserEngine {
             .get(&tab_id)
             .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
 
-        if let Some(frame) = tab.browser.get_main_frame() {
+        let browser = tab.browser.as_ref()
+            .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?;
+
+        if let Some(frame) = browser.get_main_frame() {
             frame.load_url(&CefString::new(url));
             info!("Navigating tab {} to: {}", tab_id, url);
             Ok(())
@@ -1082,8 +1145,11 @@ impl CefBrowserEngine {
             .get(&tab_id)
             .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
 
-        if let Some(frame) = tab.browser.get_main_frame() {
-            frame.execute_java_script(&CefString::new(script), "", 0);
+        let browser = tab.browser.as_ref()
+            .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?;
+
+        if let Some(frame) = browser.get_main_frame() {
+            frame.execute_java_script(&CefString::new(script), &CefString::new(""), 0);
             debug!("JavaScript executed on tab {}", tab_id);
             // Note: CEF doesn't provide synchronous JS execution results
             // For result capture, use V8 context and message passing
@@ -1143,13 +1209,16 @@ impl CefBrowserEngine {
             .get(&tab_id)
             .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
 
-        if let Some(host) = tab.browser.get_host() {
+        let browser = tab.browser.as_ref()
+            .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?;
+
+        if let Some(host) = browser.get_host() {
             let event = cef::MouseEvent {
                 x,
                 y,
                 modifiers: 0,
             };
-            host.send_mouse_move_event(&event, false);
+            host.send_mouse_move_event(&event, 0);
             trace!("Mouse move sent to tab {}: ({}, {})", tab_id, x, y);
             Ok(())
         } else {
@@ -1171,7 +1240,10 @@ impl CefBrowserEngine {
             .get(&tab_id)
             .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
 
-        if let Some(host) = tab.browser.get_host() {
+        let browser = tab.browser.as_ref()
+            .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?;
+
+        if let Some(host) = browser.get_host() {
             let event = cef::MouseEvent {
                 x,
                 y,
@@ -1179,7 +1251,7 @@ impl CefBrowserEngine {
             };
 
             // Decode click_count: positive = down, negative = up
-            let mouse_up = click_count < 0;
+            let mouse_up = if click_count < 0 { 1 } else { 0 };
             let actual_count = click_count.abs();
 
             let button_type = match button {
@@ -1214,7 +1286,10 @@ impl CefBrowserEngine {
             .get(&tab_id)
             .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
 
-        if let Some(host) = tab.browser.get_host() {
+        let browser = tab.browser.as_ref()
+            .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?;
+
+        if let Some(host) = browser.get_host() {
             let event = cef::MouseEvent {
                 x,
                 y,
@@ -1245,7 +1320,10 @@ impl CefBrowserEngine {
             .get(&tab_id)
             .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
 
-        if let Some(host) = tab.browser.get_host() {
+        let browser = tab.browser.as_ref()
+            .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?;
+
+        if let Some(host) = browser.get_host() {
             let key_event_type = match event_type {
                 0 => cef::KeyEventType::RawKeyDown,
                 1 => cef::KeyEventType::KeyDown,
@@ -1259,10 +1337,10 @@ impl CefBrowserEngine {
                 modifiers,
                 windows_key_code,
                 native_key_code: 0,
-                is_system_key: false,
+                is_system_key: 0,
                 character,
                 unmodified_character: character,
-                focus_on_editable_field: false,
+                focus_on_editable_field: 0,
             };
 
             host.send_key_event(&event);
@@ -1287,7 +1365,10 @@ impl CefBrowserEngine {
             .get(&tab_id)
             .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
 
-        if let Some(host) = tab.browser.get_host() {
+        let browser = tab.browser.as_ref()
+            .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?;
+
+        if let Some(host) = browser.get_host() {
             for c in text.chars() {
                 let char_code = c as u16;
 
@@ -1297,10 +1378,10 @@ impl CefBrowserEngine {
                     modifiers: 0,
                     windows_key_code: char_code as i32,
                     native_key_code: 0,
-                    is_system_key: false,
+                    is_system_key: 0,
                     character: char_code,
                     unmodified_character: char_code,
-                    focus_on_editable_field: false,
+                    focus_on_editable_field: 0,
                 };
                 host.send_key_event(&key_down);
 
@@ -1310,10 +1391,10 @@ impl CefBrowserEngine {
                     modifiers: 0,
                     windows_key_code: char_code as i32,
                     native_key_code: 0,
-                    is_system_key: false,
+                    is_system_key: 0,
                     character: char_code,
                     unmodified_character: char_code,
-                    focus_on_editable_field: false,
+                    focus_on_editable_field: 0,
                 };
                 host.send_key_event(&char_event);
 
@@ -1323,10 +1404,10 @@ impl CefBrowserEngine {
                     modifiers: 0,
                     windows_key_code: char_code as i32,
                     native_key_code: 0,
-                    is_system_key: false,
+                    is_system_key: 0,
                     character: char_code,
                     unmodified_character: char_code,
-                    focus_on_editable_field: false,
+                    focus_on_editable_field: 0,
                 };
                 host.send_key_event(&key_up);
             }
