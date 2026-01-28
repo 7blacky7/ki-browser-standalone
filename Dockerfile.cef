@@ -5,33 +5,7 @@
 # Run:   docker run -d --shm-size=2gb -p 9222:9222 ki-browser:cef
 
 # =============================================================================
-# Stage 1: CEF Binary Download
-# =============================================================================
-FROM debian:bookworm-slim AS cef-downloader
-
-RUN apt-get update && apt-get install -y \
-    curl \
-    tar \
-    xz-utils \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /cef
-
-# Download CEF binaries from Spotify CDN
-# CEF 144 = Chromium 144.x
-# Using minimal distribution (no debug symbols)
-ARG CEF_VERSION=144.4.2+g29b9e3e+chromium-144.0.6362.0
-ARG CEF_PLATFORM=linux64_minimal
-
-RUN echo "Downloading CEF ${CEF_VERSION}..." && \
-    curl -L -o cef.tar.bz2 \
-    "https://cef-builds.spotifycdn.com/cef_binary_${CEF_VERSION}_${CEF_PLATFORM}.tar.bz2" && \
-    tar -xjf cef.tar.bz2 && \
-    rm cef.tar.bz2 && \
-    mv cef_binary_* cef_binary
-
-# =============================================================================
-# Stage 2: Rust Build with CEF
+# Stage 1: Rust Build with CEF (cef-dll-sys downloads CEF automatically)
 # =============================================================================
 FROM rust:1.84-slim-bookworm AS builder
 
@@ -43,6 +17,8 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     cmake \
     build-essential \
+    curl \
+    bzip2 \
     libgtk-3-dev \
     libglib2.0-dev \
     libnss3-dev \
@@ -62,26 +38,24 @@ RUN apt-get update && apt-get install -y \
     libdbus-1-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy CEF binaries from downloader stage
-COPY --from=cef-downloader /cef/cef_binary /opt/cef
-
-# Set CEF environment variables for build
-ENV CEF_ROOT=/opt/cef
-ENV LD_LIBRARY_PATH=/opt/cef/Release:$LD_LIBRARY_PATH
-
 # Copy Rust project source
 COPY Cargo.toml ./
 COPY build.rs ./
 COPY src/ ./src/
 
 # Build with cef-browser feature
+# The cef-dll-sys crate will download CEF binaries automatically
 # If CEF build fails, fall back to mock-browser
-RUN cargo build --release --no-default-features --features cef-browser 2>&1 || \
+RUN cargo build --release --no-default-features --features cef-browser 2>&1 && \
+    # Find and collect CEF files from OUT_DIR
+    mkdir -p /cef && \
+    find /build/target -name "cef_binary*" -type d | head -1 | xargs -I{} cp -r {} /cef/ 2>/dev/null || \
+    find /build/target -path "*cef*Release*" -name "*.so*" | xargs -I{} cp {} /cef/ 2>/dev/null || \
     (echo "======== CEF build failed, falling back to mock-browser ========" && \
      cargo build --release --no-default-features --features mock-browser)
 
 # =============================================================================
-# Stage 3: Runtime with CEF + Xvfb
+# Stage 2: Runtime with CEF + Xvfb
 # =============================================================================
 FROM debian:bookworm-slim
 
@@ -144,9 +118,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy CEF runtime libraries
-COPY --from=cef-downloader /cef/cef_binary/Release /opt/cef/Release
-COPY --from=cef-downloader /cef/cef_binary/Resources /opt/cef/Resources
+# Copy CEF runtime libraries (if available)
+COPY --from=builder /cef/ /opt/cef/ 2>/dev/null || true
 
 # Copy binary from builder
 COPY --from=builder /build/target/release/ki-browser /app/ki-browser
@@ -159,7 +132,7 @@ RUN chmod +x /app/docker-entrypoint.sh
 RUN mkdir -p /app/config /app/profiles /app/data /tmp/cef-data /tmp/.X11-unix
 
 # Set CEF library path
-ENV LD_LIBRARY_PATH=/opt/cef/Release:$LD_LIBRARY_PATH
+ENV LD_LIBRARY_PATH=/opt/cef:/opt/cef/Release:${LD_LIBRARY_PATH:-}
 ENV CEF_RESOURCES_DIR=/opt/cef/Resources
 ENV CEF_FRAMEWORK_DIR=/opt/cef/Release
 
