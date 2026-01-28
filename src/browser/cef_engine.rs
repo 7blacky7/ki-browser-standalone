@@ -313,7 +313,7 @@ struct KiBrowserApp {
 #[cfg(feature = "cef-browser")]
 impl ImplApp for KiBrowserApp {
     fn on_before_command_line_processing(
-        &mut self,
+        &self,
         command_line: Option<&mut cef::CommandLine>,
     ) {
         if let Some(cmd) = command_line {
@@ -347,15 +347,15 @@ struct KiBrowserClient {
 
 #[cfg(feature = "cef-browser")]
 impl ImplClient for KiBrowserClient {
-    fn get_render_handler(&mut self) -> Option<RenderHandler> {
+    fn get_render_handler(&self) -> Option<RenderHandler> {
         Some(self.render_handler.clone())
     }
 
-    fn get_life_span_handler(&mut self) -> Option<LifeSpanHandler> {
+    fn get_life_span_handler(&self) -> Option<LifeSpanHandler> {
         Some(self.life_span_handler.clone())
     }
 
-    fn get_load_handler(&mut self) -> Option<LoadHandler> {
+    fn get_load_handler(&self) -> Option<LoadHandler> {
         Some(self.load_handler.clone())
     }
 }
@@ -372,7 +372,7 @@ struct KiBrowserRenderHandlerImpl {
 
 #[cfg(feature = "cef-browser")]
 impl ImplRenderHandler for KiBrowserRenderHandlerImpl {
-    fn get_view_rect(&mut self, _browser: Option<&mut Browser>, rect: Option<&mut Rect>) -> i32 {
+    fn get_view_rect(&self, _browser: Option<&mut Browser>, rect: Option<&mut Rect>) -> i32 {
         if let Some(r) = rect {
             r.x = 0;
             r.y = 0;
@@ -382,7 +382,7 @@ impl ImplRenderHandler for KiBrowserRenderHandlerImpl {
         1 // Return true
     }
 
-    fn get_screen_info(&mut self, _browser: Option<&mut Browser>, screen_info: Option<&mut ScreenInfo>) -> i32 {
+    fn get_screen_info(&self, _browser: Option<&mut Browser>, screen_info: Option<&mut ScreenInfo>) -> i32 {
         if let Some(info) = screen_info {
             info.device_scale_factor = 1.0;
             info.depth = 32;
@@ -405,7 +405,7 @@ impl ImplRenderHandler for KiBrowserRenderHandlerImpl {
     }
 
     fn on_paint(
-        &mut self,
+        &self,
         _browser: Option<&mut Browser>,
         element_type: PaintElementType,
         _dirty_rects: &[Rect],
@@ -447,7 +447,7 @@ struct KiBrowserLifeSpanHandlerImpl {
 
 #[cfg(feature = "cef-browser")]
 impl ImplLifeSpanHandler for KiBrowserLifeSpanHandlerImpl {
-    fn on_after_created(&mut self, browser: Option<&mut Browser>) {
+    fn on_after_created(&self, browser: Option<&mut Browser>) {
         info!("Browser created for tab {}", self.tab_id);
 
         // Store browser reference in tab
@@ -461,7 +461,7 @@ impl ImplLifeSpanHandler for KiBrowserLifeSpanHandlerImpl {
         self.browser_created.store(true, Ordering::SeqCst);
     }
 
-    fn on_before_close(&mut self, _browser: Option<&mut Browser>) {
+    fn on_before_close(&self, _browser: Option<&mut Browser>) {
         info!("Browser closing for tab {}", self.tab_id);
         let mut tabs = self.tabs.write();
         if let Some(tab) = tabs.get_mut(&self.tab_id) {
@@ -470,7 +470,7 @@ impl ImplLifeSpanHandler for KiBrowserLifeSpanHandlerImpl {
         }
     }
 
-    fn do_close(&mut self, _browser: Option<&mut Browser>) -> i32 {
+    fn do_close(&self, _browser: Option<&mut Browser>) -> i32 {
         // Return 0 (false) to allow the browser to close
         0
     }
@@ -488,7 +488,7 @@ struct KiBrowserLoadHandlerImpl {
 #[cfg(feature = "cef-browser")]
 impl ImplLoadHandler for KiBrowserLoadHandlerImpl {
     fn on_loading_state_change(
-        &mut self,
+        &self,
         _browser: Option<&mut Browser>,
         is_loading: i32,
         can_go_back: i32,
@@ -516,7 +516,7 @@ impl ImplLoadHandler for KiBrowserLoadHandlerImpl {
     }
 
     fn on_load_start(
-        &mut self,
+        &self,
         _browser: Option<&mut Browser>,
         frame: Option<&mut Frame>,
         _transition_type: TransitionType,
@@ -538,7 +538,7 @@ impl ImplLoadHandler for KiBrowserLoadHandlerImpl {
     }
 
     fn on_load_end(
-        &mut self,
+        &self,
         _browser: Option<&mut Browser>,
         frame: Option<&mut Frame>,
         http_status_code: i32,
@@ -562,7 +562,7 @@ impl ImplLoadHandler for KiBrowserLoadHandlerImpl {
     }
 
     fn on_load_error(
-        &mut self,
+        &self,
         _browser: Option<&mut Browser>,
         frame: Option<&mut Frame>,
         error_code: Errorcode,
