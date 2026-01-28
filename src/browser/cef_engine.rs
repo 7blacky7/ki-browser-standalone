@@ -43,9 +43,10 @@ use cef::{
     LifeSpanHandler, LoadHandler, RenderHandler,
     PaintElementType, TransitionType,
     Rect, ScreenInfo, WindowInfo, Settings, LogSeverity,
-    Errorcode, MainArgs,
+    Errorcode, MainArgs, KeyEventModifiers,
     // Traits for handler implementations
-    ImplApp, ImplClient, ImplRenderHandler, ImplLoadHandler, ImplLifeSpanHandler, ImplBrowser,
+    ImplApp, ImplClient, ImplRenderHandler, ImplLoadHandler, ImplLifeSpanHandler,
+    ImplBrowser, ImplBrowserHost, ImplFrame,
     // Macros for wrapping handlers
     wrap_app, wrap_client, wrap_render_handler, wrap_load_handler, wrap_life_span_handler,
 };
@@ -1101,7 +1102,7 @@ impl CefBrowserEngine {
             // Close the browser
             if let Some(ref browser) = tab.browser {
                 if let Some(host) = browser.host() {
-                    host.close_browser(1);
+                    host.close_browser(true);
                 }
             }
             info!("Browser closed for tab {}", tab_id);
@@ -1216,9 +1217,9 @@ impl CefBrowserEngine {
             let event = cef::MouseEvent {
                 x,
                 y,
-                modifiers: 0,
+                modifiers: KeyEventModifiers::empty(),
             };
-            host.send_mouse_move_event(&event, 0);
+            host.send_mouse_move_event(Some(&event), false);
             trace!("Mouse move sent to tab {}: ({}, {})", tab_id, x, y);
             Ok(())
         } else {
@@ -1247,11 +1248,11 @@ impl CefBrowserEngine {
             let event = cef::MouseEvent {
                 x,
                 y,
-                modifiers: 0,
+                modifiers: KeyEventModifiers::empty(),
             };
 
             // Decode click_count: positive = down, negative = up
-            let mouse_up = if click_count < 0 { 1 } else { 0 };
+            let mouse_up = click_count < 0;
             let actual_count = click_count.abs();
 
             let button_type = match button {
@@ -1261,7 +1262,7 @@ impl CefBrowserEngine {
                 _ => cef::MouseButtonType::LEFT,
             };
 
-            host.send_mouse_click_event(&event, button_type, mouse_up, actual_count);
+            host.send_mouse_click_event(Some(&event), button_type, mouse_up, actual_count);
             trace!(
                 "Mouse click sent to tab {}: ({}, {}), button={}, up={}, count={}",
                 tab_id, x, y, button, mouse_up, actual_count
@@ -1293,9 +1294,9 @@ impl CefBrowserEngine {
             let event = cef::MouseEvent {
                 x,
                 y,
-                modifiers: 0,
+                modifiers: KeyEventModifiers::empty(),
             };
-            host.send_mouse_wheel_event(&event, delta_x, delta_y);
+            host.send_mouse_wheel_event(Some(&event), delta_x, delta_y);
             trace!(
                 "Mouse wheel sent to tab {}: ({}, {}), delta=({}, {})",
                 tab_id, x, y, delta_x, delta_y
@@ -1332,10 +1333,13 @@ impl CefBrowserEngine {
                 _ => cef::KeyEventType::KEYDOWN,
             };
 
+            // Convert u32 modifiers to KeyEventModifiers bitflags
+            let key_modifiers = KeyEventModifiers::from_bits_truncate(modifiers);
+
             let event = cef::KeyEvent {
                 size: std::mem::size_of::<cef::KeyEvent>(),
                 type_: key_event_type,
-                modifiers,
+                modifiers: key_modifiers,
                 windows_key_code,
                 native_key_code: 0,
                 is_system_key: 0,
@@ -1344,7 +1348,7 @@ impl CefBrowserEngine {
                 focus_on_editable_field: 0,
             };
 
-            host.send_key_event(&event);
+            host.send_key_event(Some(&event));
             trace!(
                 "Key event sent to tab {}: type={}, code={}, char={}",
                 tab_id, event_type, windows_key_code, character
@@ -1377,7 +1381,7 @@ impl CefBrowserEngine {
                 let key_down = cef::KeyEvent {
                     size: std::mem::size_of::<cef::KeyEvent>(),
                     type_: cef::KeyEventType::KEYDOWN,
-                    modifiers: 0,
+                    modifiers: KeyEventModifiers::empty(),
                     windows_key_code: char_code as i32,
                     native_key_code: 0,
                     is_system_key: 0,
@@ -1385,13 +1389,13 @@ impl CefBrowserEngine {
                     unmodified_character: char_code,
                     focus_on_editable_field: 0,
                 };
-                host.send_key_event(&key_down);
+                host.send_key_event(Some(&key_down));
 
                 // Send Char event
                 let char_event = cef::KeyEvent {
                     size: std::mem::size_of::<cef::KeyEvent>(),
                     type_: cef::KeyEventType::CHAR,
-                    modifiers: 0,
+                    modifiers: KeyEventModifiers::empty(),
                     windows_key_code: char_code as i32,
                     native_key_code: 0,
                     is_system_key: 0,
@@ -1399,13 +1403,13 @@ impl CefBrowserEngine {
                     unmodified_character: char_code,
                     focus_on_editable_field: 0,
                 };
-                host.send_key_event(&char_event);
+                host.send_key_event(Some(&char_event));
 
                 // Send KeyUp
                 let key_up = cef::KeyEvent {
                     size: std::mem::size_of::<cef::KeyEvent>(),
                     type_: cef::KeyEventType::KEYUP,
-                    modifiers: 0,
+                    modifiers: KeyEventModifiers::empty(),
                     windows_key_code: char_code as i32,
                     native_key_code: 0,
                     is_system_key: 0,
@@ -1413,7 +1417,7 @@ impl CefBrowserEngine {
                     unmodified_character: char_code,
                     focus_on_editable_field: 0,
                 };
-                host.send_key_event(&key_up);
+                host.send_key_event(Some(&key_up));
             }
 
             debug!("Typed text on tab {}: {} chars", tab_id, text.len());
