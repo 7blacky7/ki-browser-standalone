@@ -1,0 +1,149 @@
+# Ki-Browser Configuration File
+# =============================
+# Copy this file to config.toml and customize as needed.
+# All settings can also be overridden via environment variables
+# (prefixed with KI_BROWSER_) or command-line arguments.
+
+# =============================================================================
+# Window Settings
+# =============================================================================
+
+# Browser window width in pixels (100-7680)
+# Default: 1280
+window_width = 1280
+
+# Browser window height in pixels (100-4320)
+# Default: 720
+window_height = 720
+
+# Run browser in headless mode (no visible window)
+# Useful for server environments and automated testing
+# Default: false
+headless = false
+
+# =============================================================================
+# API Server Settings
+# =============================================================================
+
+# Enable the HTTP REST API server
+# Default: true
+api_enabled = true
+
+# Port for the HTTP API server (1-65535)
+# Default: 9222
+api_port = 9222
+
+# =============================================================================
+# Browser Behavior
+# =============================================================================
+
+# Maximum number of concurrent tabs allowed (1-100)
+# Prevents resource exhaustion from too many open tabs
+# Default: 10
+max_tabs = 10
+
+# Default timeout for operations in milliseconds (1000-300000)
+# Applies to navigation, element waits, and script execution
+# Default: 30000 (30 seconds)
+default_timeout_ms = 30000
+
+# =============================================================================
+# Stealth Mode
+# =============================================================================
+
+# Enable stealth mode to avoid bot detection
+# When enabled, applies fingerprint spoofing, navigator overrides,
+# and human-like behavior patterns
+# Default: false
+stealth_mode = false
+
+# =============================================================================
+# User Agent
+# =============================================================================
+
+# Custom user agent string (optional)
+# Leave commented to use default browser user agent
+# When stealth_mode is enabled, this may be overridden by fingerprint settings
+# user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+# =============================================================================
+# Profile Persistence
+# =============================================================================
+
+# Path to browser profile directory for persistent storage (optional)
+# Stores cookies, local storage, cache, and session data
+# If not set, uses a temporary profile that is cleared on exit
+# profile_path = "./profiles/default"
+
+# =============================================================================
+# Proxy Configuration (Optional)
+# =============================================================================
+# Uncomment and configure to route browser traffic through a proxy server
+
+# [proxy]
+# Proxy server hostname or IP address
+# host = "proxy.example.com"
+
+# Proxy server port
+# port = 8080
+
+# Proxy type: "http", "https", or "socks5"
+# Default: "http"
+# proxy_type = "http"
+
+# Proxy authentication credentials (optional)
+# username = "proxy_user"
+# password = "proxy_password"
+
+# =============================================================================
+# Example Configurations
+# =============================================================================
+
+# --- Headless Server Configuration ---
+# Uncomment for running on a server without display
+#
+# headless = true
+# window_width = 1920
+# window_height = 1080
+# api_port = 9222
+# stealth_mode = true
+# max_tabs = 20
+# default_timeout_ms = 60000
+
+# --- Development Configuration ---
+# Uncomment for local development and testing
+#
+# headless = false
+# window_width = 1280
+# window_height = 720
+# api_port = 9222
+# stealth_mode = false
+# max_tabs = 5
+# default_timeout_ms = 30000
+
+# --- High-Performance Scraping Configuration ---
+# Uncomment for web scraping workloads
+#
+# headless = true
+# window_width = 1920
+# window_height = 1080
+# api_port = 9222
+# stealth_mode = true
+# max_tabs = 50
+# default_timeout_ms = 45000
+# profile_path = "./profiles/scraper"
+#
+# [proxy]
+# host = "residential-proxy.example.com"
+# port = 8080
+# proxy_type = "http"
+# username = "scraper_user"
+# password = "secure_password"
+
+# --- SOCKS5 Proxy Example ---
+# Uncomment to use a SOCKS5 proxy (e.g., Tor, SSH tunnel)
+#
+# [proxy]
+# host = "127.0.0.1"
+# port = 9050
+# proxy_type = "socks5"
