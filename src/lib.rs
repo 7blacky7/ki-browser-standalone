@@ -94,6 +94,9 @@ pub const FULL_VERSION: &str = concat!(env!("CARGO_PKG_NAME"), " v", env!("CARGO
 // Module Exports
 // ============================================================================
 
+/// Unified error types for the entire crate.
+pub mod error;
+
 /// Browser engine, tab management, DOM access, and screenshot functionality.
 pub mod browser;
 
@@ -149,8 +152,20 @@ pub use api::{
     IpcCommand, IpcMessage, IpcProcessor, IpcResponse, WebSocketHandler,
 };
 
+// Batch operation types
+pub use api::{
+    BatchCommand, BatchNavigateExtract, BatchNavigateResult, BatchOperation, BatchRequest,
+    BatchResponse, ExtractOptions, LinkInfo, PageResult, WaitCondition,
+};
+
+// Session management types
+pub use api::{CookieInfo, HistoryEntry, Session, SessionManager, SessionSnapshot, TabSnapshot};
+
 // Config types
 pub use config::{BrowserSettings, CliArgs, ConfigError, ProxyConfig, ProxyType};
+
+// Error types
+pub use error::{BrowserError, BrowserResult};
 
 // ============================================================================
 // Prelude Module
@@ -165,6 +180,7 @@ pub mod prelude {
     pub use crate::api::{ApiServer, AppState};
     pub use crate::browser::{BrowserEngine, DomElement, Tab, TabManager};
     pub use crate::config::{BrowserSettings, CliArgs};
+    pub use crate::error::{BrowserError, BrowserResult};
     pub use crate::input::{KeyboardSimulator, MouseButton, MouseSimulator};
     pub use crate::stealth::{FingerprintProfile, StealthConfig};
     pub use crate::{FULL_VERSION, NAME, VERSION};

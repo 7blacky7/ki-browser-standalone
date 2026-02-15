@@ -28,6 +28,8 @@
 //! let js = overrides.get_override_script();
 //! ```
 
+use tracing::error;
+
 use crate::stealth::fingerprint::BrowserFingerprint;
 
 /// Information about a browser plugin
@@ -235,14 +237,25 @@ impl NavigatorOverrides {
         }
     }
 
-    /// CRITICAL FUNCTION: Ensure webdriver is never true
+    /// Ensure webdriver is never true.
     ///
     /// This function MUST be called before using the configuration.
-    /// It is a safety check that will panic if webdriver is true.
-    pub fn ensure_no_webdriver(&self) {
+    /// If webdriver is somehow set to `true`, it logs a critical error and
+    /// returns `false` so callers can take corrective action.  The JavaScript
+    /// override script always forces `webdriver = false` on the browser side
+    /// regardless, so this is a defence-in-depth check rather than a reason
+    /// to crash the whole process.
+    pub fn ensure_no_webdriver(&self) -> bool {
         if self.webdriver {
-            panic!("CRITICAL SECURITY ERROR: navigator.webdriver MUST be false! Current value is true, which will expose automation detection.");
+            error!(
+                "CRITICAL SECURITY: navigator.webdriver is true! \
+                 The JS override will still force it to false on the page, \
+                 but the Rust-side config is misconfigured. \
+                 Callers should set webdriver = false explicitly."
+            );
+            return false;
         }
+        true
     }
 
     /// Generate JavaScript override script
@@ -252,8 +265,9 @@ impl NavigatorOverrides {
     ///
     /// CRITICAL: This script MUST be injected before any page scripts run.
     pub fn get_override_script(&self) -> String {
-        // Safety check
-        self.ensure_no_webdriver();
+        // Safety check -- logs an error but never crashes.  The JS output
+        // always forces `navigator.webdriver = false` regardless.
+        let _ = self.ensure_no_webdriver();
 
         let languages_json = self.languages_to_json();
         let plugins_json = self.plugins_to_json();
@@ -934,16 +948,15 @@ mod tests {
     #[test]
     fn test_ensure_no_webdriver() {
         let overrides = NavigatorOverrides::default();
-        // This should not panic
-        overrides.ensure_no_webdriver();
+        assert!(overrides.ensure_no_webdriver(), "should return true when webdriver is false");
     }
 
     #[test]
-    #[should_panic(expected = "CRITICAL SECURITY ERROR")]
-    fn test_ensure_no_webdriver_panics_on_true() {
+    fn test_ensure_no_webdriver_returns_false_on_true() {
         let mut overrides = NavigatorOverrides::default();
         overrides.webdriver = true; // This should never happen in real code
-        overrides.ensure_no_webdriver(); // Should panic
+        // No longer panics -- returns false and logs an error instead
+        assert!(!overrides.ensure_no_webdriver());
     }
 
     #[test]

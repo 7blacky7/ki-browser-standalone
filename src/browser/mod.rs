@@ -9,15 +9,21 @@
 //! - [`tab`] - Tab management and state tracking
 //! - [`dom`] - DOM element access and manipulation
 //! - [`screenshot`] - Screenshot capture functionality
+//! - [`structured_data`] - Structured data extraction (JSON-LD, OpenGraph, microdata)
+//! - [`content_extractor`] - Intelligent content extraction and page structure analysis
+//! - [`forms`] - Form detection, analysis, and auto-fill
 //! - [`chromium_engine`] - Chromiumoxide browser engine (requires `chromium-browser` feature)
 //! - [`cef_input`] - CEF-specific native input simulation (requires `cef-browser` feature)
 //! - [`cef_render`] - CEF offscreen rendering (requires `cef-browser` feature)
 //! - [`cef_engine`] - CEF browser engine implementation (requires `cef-browser` feature)
 
 pub mod annotate;
+pub mod content_extractor;
 pub mod dom;
 pub mod engine;
+pub mod forms;
 pub mod screenshot;
+pub mod structured_data;
 pub mod tab;
 
 /// Chromiumoxide browser engine (requires `chromium-browser` feature).
@@ -35,9 +41,21 @@ pub mod cef_render;
 pub mod cef_engine;
 
 // Re-export commonly used types for convenience
+pub use content_extractor::{
+    ContentExtractor, ExtractedContent, NavElement, PageSection, PageStructure, PageType,
+    SectionRole,
+};
 pub use dom::{BoundingBox, DomAccessor, DomElement, MockDomAccessor};
+pub use forms::{
+    FieldOption, FieldType, FormButton, FormField, FormFillError, FormFillRequest, FormFillResult,
+    FormHandler, FormInfo, FormValidationResult, ValidationError,
+};
 pub use engine::{BrowserConfig, BrowserEngine, MockBrowserEngine};
 pub use screenshot::{ClipRegion, ScreenshotFormat, ScreenshotOptions};
+pub use structured_data::{
+    AlternateUrl, MetaData, MicrodataItem, OpenGraphData, StructuredDataExtractor,
+    StructuredPageData, TwitterCardData,
+};
 pub use tab::{Tab, TabManager, TabStatus};
 
 #[cfg(feature = "chromium-browser")]

@@ -12,6 +12,7 @@ use chromiumoxide::cdp::browser_protocol::input::{
     DispatchKeyEventParams, DispatchKeyEventType, DispatchMouseEventParams, DispatchMouseEventType,
     MouseButton,
 };
+use chromiumoxide::cdp::browser_protocol::page::CloseParams;
 use chromiumoxide::Page;
 use futures::StreamExt;
 use std::collections::HashMap;
@@ -578,8 +579,13 @@ impl BrowserEngine for ChromiumBrowserEngine {
         drop(running);
 
         let mut tabs = self.tabs.write().await;
-        tabs.remove(&tab_id)
+        let chrome_tab = tabs.remove(&tab_id)
             .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
+
+        // CDP-Befehl senden um den Tab tatsaechlich im Browser zu schliessen
+        if let Err(e) = chrome_tab.page.execute(CloseParams::default()).await {
+            warn!("Failed to close tab via CDP: {}", e);
+        }
 
         info!("Tab closed: {}", tab_id);
         Ok(())

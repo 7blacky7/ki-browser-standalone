@@ -15,6 +15,8 @@ use tracing::{error, info};
 use crate::api::server::{AppState, TabState};
 use crate::api::ipc::{IpcCommand, IpcMessage};
 use crate::api::websocket::BrowserEvent;
+use crate::api::extraction_routes::extraction_routes;
+use crate::api::batch_routes::batch_session_routes;
 
 // ============================================================================
 // Request/Response Structs
@@ -465,9 +467,8 @@ pub async fn navigate(
         ).into_response();
     }
 
-    let tab_id = match request.tab_id.or_else(|| {
-        // Use active tab if not specified
-        let browser_state = futures::executor::block_on(state.browser_state.read());
+    let tab_id = match request.tab_id.or({
+        let browser_state = state.browser_state.read().await;
         browser_state.active_tab_id.clone()
     }) {
         Some(id) => id,
@@ -526,8 +527,8 @@ pub async fn click(
         ).into_response();
     }
 
-    let tab_id = match request.tab_id.or_else(|| {
-        let browser_state = futures::executor::block_on(state.browser_state.read());
+    let tab_id = match request.tab_id.or({
+        let browser_state = state.browser_state.read().await;
         browser_state.active_tab_id.clone()
     }) {
         Some(id) => id,
@@ -594,8 +595,8 @@ pub async fn type_text(
         ).into_response();
     }
 
-    let tab_id = match request.tab_id.or_else(|| {
-        let browser_state = futures::executor::block_on(state.browser_state.read());
+    let tab_id = match request.tab_id.or({
+        let browser_state = state.browser_state.read().await;
         browser_state.active_tab_id.clone()
     }) {
         Some(id) => id,
@@ -647,8 +648,8 @@ pub async fn evaluate(
         ).into_response();
     }
 
-    let tab_id = match request.tab_id.or_else(|| {
-        let browser_state = futures::executor::block_on(state.browser_state.read());
+    let tab_id = match request.tab_id.or({
+        let browser_state = state.browser_state.read().await;
         browser_state.active_tab_id.clone()
     }) {
         Some(id) => id,
@@ -700,8 +701,8 @@ pub async fn screenshot(
         ).into_response();
     }
 
-    let tab_id = match query.tab_id.or_else(|| {
-        let browser_state = futures::executor::block_on(state.browser_state.read());
+    let tab_id = match query.tab_id.or({
+        let browser_state = state.browser_state.read().await;
         browser_state.active_tab_id.clone()
     }) {
         Some(id) => id,
@@ -771,8 +772,8 @@ pub async fn scroll(
         ).into_response();
     }
 
-    let tab_id = match request.tab_id.or_else(|| {
-        let browser_state = futures::executor::block_on(state.browser_state.read());
+    let tab_id = match request.tab_id.or({
+        let browser_state = state.browser_state.read().await;
         browser_state.active_tab_id.clone()
     }) {
         Some(id) => id,
@@ -827,8 +828,8 @@ pub async fn find_element(
         ).into_response();
     }
 
-    let tab_id = match query.tab_id.or_else(|| {
-        let browser_state = futures::executor::block_on(state.browser_state.read());
+    let tab_id = match query.tab_id.or({
+        let browser_state = state.browser_state.read().await;
         browser_state.active_tab_id.clone()
     }) {
         Some(id) => id,
@@ -908,8 +909,8 @@ pub async fn annotate_elements(
         ).into_response();
     }
 
-    let tab_id = match request.tab_id.or_else(|| {
-        let browser_state = futures::executor::block_on(state.browser_state.read());
+    let tab_id = match request.tab_id.or({
+        let browser_state = state.browser_state.read().await;
         browser_state.active_tab_id.clone()
     }) {
         Some(id) => id,
@@ -1032,6 +1033,12 @@ pub fn create_router(state: AppState) -> Router {
         // API management
         .route("/api/toggle", post(toggle_api))
         .route("/api/status", get(api_status))
+
+        // DOM extraction routes (structured data, content, forms)
+        .merge(extraction_routes())
+
+        // Batch operations and session management routes
+        .merge(batch_session_routes())
 
         // WebSocket endpoint is handled separately
 
