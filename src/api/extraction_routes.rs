@@ -152,12 +152,26 @@ async fn evaluate_script_in_tab(
         Ok(response) => {
             if response.success {
                 if let Some(data) = response.data {
-                    // The evaluate result is a JSON value. For our extraction
-                    // scripts the JS returns a JSON *string*, so the IPC
-                    // response `data` will be a serde_json::Value::String
-                    // containing the serialized JSON.
-                    match data {
+                    // The IPC response wraps evaluate results as {"result": <value>}.
+                    // Our extraction scripts return JSON.stringify(...), so the
+                    // result field will be a JSON string containing serialized JSON.
+                    // We need to extract that string for deserialization.
+                    let result_value = match &data {
+                        serde_json::Value::Object(map) => {
+                            map.get("result").cloned().unwrap_or(data.clone())
+                        }
+                        _ => data.clone(),
+                    };
+                    match result_value {
                         serde_json::Value::String(s) => Ok(s),
+                        serde_json::Value::Null => {
+                            Err((
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(ApiResponse::<()>::error(
+                                    "Script returned null",
+                                )),
+                            ))
+                        }
                         other => {
                             // If the browser returned the data already parsed
                             // (not as a string), re-serialize it so we can
