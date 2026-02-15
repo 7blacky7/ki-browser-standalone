@@ -629,12 +629,18 @@ impl BrowserEngine for CefBrowserEngine {
         info!("Initializing CEF browser engine");
 
         // Create stealth configuration
-        let stealth_config = Arc::new(if let Some(ref user_agent) = config.user_agent {
+        let mut stealth = if let Some(ref user_agent) = config.user_agent {
             // Use consistent fingerprint based on user agent
             StealthConfig::consistent(user_agent)
         } else {
             StealthConfig::random()
-        });
+        };
+
+        // Sync screen resolution to the actual viewport so that
+        // screen.width >= outerWidth >= innerWidth and orientation is correct.
+        stealth.sync_screen_to_viewport(config.window_size.0, config.window_size.1);
+
+        let stealth_config = Arc::new(stealth);
 
         // Validate stealth config
         stealth_config

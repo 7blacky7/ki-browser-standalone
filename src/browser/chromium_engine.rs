@@ -5,6 +5,7 @@
 
 use crate::browser::engine::{BrowserConfig, BrowserEngine};
 use crate::browser::tab::Tab;
+use crate::stealth::StealthConfig;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chromiumoxide::browser::{Browser, BrowserConfig as ChromeConfig};
@@ -18,7 +19,7 @@ use futures::StreamExt;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 /// Chromiumoxide-based browser engine.
@@ -30,6 +31,7 @@ pub struct ChromiumBrowserEngine {
     browser: Arc<Browser>,
     tabs: Arc<RwLock<HashMap<Uuid, ChromiumTab>>>,
     is_running: Arc<RwLock<bool>>,
+    stealth_config: Arc<StealthConfig>,
     _handler_task: tokio::task::JoinHandle<()>,
 }
 
@@ -329,6 +331,27 @@ impl BrowserEngine for ChromiumBrowserEngine {
 
         info!("Browser launched successfully");
 
+        // Create stealth configuration - use Chrome-only profiles for Chromium engine
+        // to avoid detectable mismatches (e.g. Safari UA on a Chrome browser)
+        let mut stealth = if let Some(ref user_agent) = config.user_agent {
+            StealthConfig::consistent(user_agent)
+        } else {
+            StealthConfig::random_chrome()
+        };
+
+        // Sync screen resolution to the actual viewport so that
+        // screen.width >= outerWidth >= innerWidth and orientation is correct.
+        stealth.sync_screen_to_viewport(config.window_size.0, config.window_size.1);
+
+        let stealth_config = Arc::new(stealth);
+
+        stealth_config
+            .validate()
+            .map_err(|e| anyhow!("Invalid stealth config: {}", e))?;
+
+        info!("Stealth config initialized with WebRTC, Canvas, Audio protection (screen synced to {}x{} viewport)",
+              config.window_size.0, config.window_size.1);
+
         // Spawn handler task
         let handler_task = tokio::spawn(async move {
             loop {
@@ -349,6 +372,7 @@ impl BrowserEngine for ChromiumBrowserEngine {
             browser: Arc::new(browser),
             tabs: Arc::new(RwLock::new(HashMap::new())),
             is_running: Arc::new(RwLock::new(true)),
+            stealth_config,
             _handler_task: handler_task,
         })
     }
@@ -383,17 +407,21 @@ impl BrowserEngine for ChromiumBrowserEngine {
         // Seite erstellen und Stealth injizieren
         let page = self.browser.new_page("about:blank").await?;
 
-        // Stealth-Script fuer ALLE zukuenftigen Navigationen registrieren
-        let stealth_js = r#"
-            // === 1. WebDriver-Erkennung komplett eliminieren ===
-            // Muss auf Navigator.prototype gesetzt werden (wie echtes Chrome)
-            // und false zurueckgeben (nicht undefined, nicht delete)
-            Object.defineProperty(Navigator.prototype, 'webdriver', {
-                get: () => false,
-                configurable: true
-            });
+        // === StealthConfig: Comprehensive anti-detection overrides ===
+        // Each section (Navigator, WebGL, Fingerprint, WebRTC, Canvas, Audio) is
+        // injected as a SEPARATE evaluate_on_new_document call.  This ensures
+        // that a failure in one section (e.g. WebGL prototype override failing at
+        // document-creation time) does not prevent the other sections from running.
+        let stealth_sections = self.stealth_config.get_section_scripts();
 
-            // === 2. Chrome Runtime faken (fehlt in Headless) ===
+        // === Chrome-specific supplement ===
+        // StealthConfig does NOT cover Chrome-specific APIs that are absent in
+        // headless mode or automation artifacts injected by ChromeDriver/CDP.
+        let chrome_supplement_js = r#"
+            (function() {
+            'use strict';
+
+            // === 1. Chrome Runtime faking (missing in headless) ===
             if (!window.chrome) window.chrome = {};
             if (!window.chrome.runtime) {
                 window.chrome.runtime = {
@@ -413,55 +441,37 @@ impl BrowserEngine for ChromiumBrowserEngine {
                 };
             }
 
-            // === 3. Sprachen ===
-            Object.defineProperty(navigator, 'languages', {
-                get: () => ['de-DE', 'de', 'en-US', 'en']
-            });
-            Object.defineProperty(navigator, 'language', {
-                get: () => 'de-DE'
-            });
+            // === 2. CDC/Automation artifacts removal ===
+            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
 
-            // === 4. Plugins - headless=new liefert echte PluginArrays ===
-            // NUR ueberschreiben wenn wirklich leer, und dann mit echtem Prototype
-            if (navigator.plugins.length === 0) {
-                try {
-                    const fakePlugins = Object.create(PluginArray.prototype);
-                    const mkPlugin = (name, desc, fn) => {
-                        const p = Object.create(Plugin.prototype);
-                        Object.defineProperties(p, {
-                            name: { value: name, enumerable: true },
-                            description: { value: desc, enumerable: true },
-                            filename: { value: fn, enumerable: true },
-                            length: { value: 1, enumerable: true }
-                        });
-                        return p;
-                    };
-                    const list = [
-                        mkPlugin('Chrome PDF Plugin', 'Portable Document Format', 'internal-pdf-viewer'),
-                        mkPlugin('Chrome PDF Viewer', '', 'mhjfbmdgcfjbbpaeojofohoefgiehjai'),
-                        mkPlugin('Native Client', '', 'internal-nacl-plugin')
-                    ];
-                    for (let i = 0; i < list.length; i++) fakePlugins[i] = list[i];
-                    Object.defineProperty(fakePlugins, 'length', { value: 3, enumerable: true });
-                    fakePlugins.item = function(i) { return this[i] || null; };
-                    fakePlugins.namedItem = function(n) {
-                        for (let j = 0; j < this.length; j++) if (this[j].name === n) return this[j];
-                        return null;
-                    };
-                    fakePlugins.refresh = function() {};
-                    Object.defineProperty(navigator, 'plugins', { get: () => fakePlugins });
-                } catch(e) {}
+            // Clean automation traces from Error stack traces
+            const originalError = Error;
+            window.Error = function(...args) {
+                const err = new originalError(...args);
+                const stack = err.stack || '';
+                err.stack = stack.replace(/at Object\.apply \(<anonymous>\)/g, '');
+                return err;
+            };
+            window.Error.prototype = originalError.prototype;
+
+            // === 3. navigator.connection.rtt (Chrome-specific NetworkInformation API) ===
+            if (navigator.connection) {
+                Object.defineProperty(navigator.connection, 'rtt', { get: () => 50 });
             }
 
-            // === 5. Headless-spezifische Erkennung blockieren ===
-            if (window.outerHeight === 0) {
-                Object.defineProperty(window, 'outerHeight', { get: () => window.innerHeight + 85 });
-            }
-            if (window.outerWidth === 0) {
-                Object.defineProperty(window, 'outerWidth', { get: () => window.innerWidth + 16 });
+            // === 4. outerWidth/outerHeight ===
+            // Now handled by BrowserFingerprint::to_js_overrides() with values
+            // consistent with screen resolution and orientation.
+            // Only apply a minimal fallback if outerHeight is still 0 (headless
+            // mode before the fingerprint script has run).
+            if (window.outerHeight === 0 && !window.__fp_outer_applied) {
+                Object.defineProperty(window, 'outerHeight', { get: () => window.innerHeight + 85, configurable: true });
+                Object.defineProperty(window, 'outerWidth', { get: () => window.innerWidth + 16, configurable: true });
             }
 
-            // === 6. Permissions API spoofing ===
+            // === 5. Permissions API spoofing ===
             const originalQuery = window.navigator.permissions?.query;
             if (originalQuery) {
                 window.navigator.permissions.query = function(parameters) {
@@ -472,67 +482,21 @@ impl BrowserEngine for ChromiumBrowserEngine {
                 };
             }
 
-            // === 7. WebGL Vendor/Renderer - SwiftShader verstecken ===
-            const VENDOR = 'Google Inc. (NVIDIA)';
-            const RENDERER = 'ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Ti Direct3D11 vs_5_0 ps_5_0, D3D11)';
-
-            const origGetParam1 = WebGLRenderingContext.prototype.getParameter;
-            WebGLRenderingContext.prototype.getParameter = function(p) {
-                if (p === 37445) return VENDOR;
-                if (p === 37446) return RENDERER;
-                return origGetParam1.call(this, p);
-            };
-
-            if (typeof WebGL2RenderingContext !== 'undefined') {
-                const origGetParam2 = WebGL2RenderingContext.prototype.getParameter;
-                WebGL2RenderingContext.prototype.getParameter = function(p) {
-                    if (p === 37445) return VENDOR;
-                    if (p === 37446) return RENDERER;
-                    return origGetParam2.call(this, p);
-                };
-            }
-
-            const origGetContext = HTMLCanvasElement.prototype.getContext;
-            HTMLCanvasElement.prototype.getContext = function(type, attrs) {
-                const ctx = origGetContext.call(this, type, attrs);
-                if (ctx && (type === 'webgl' || type === 'webgl2' || type === 'experimental-webgl')) {
-                    const origCtxGetParam = ctx.getParameter.bind(ctx);
-                    ctx.getParameter = function(p) {
-                        if (p === 37445) return VENDOR;
-                        if (p === 37446) return RENDERER;
-                        return origCtxGetParam(p);
-                    };
-                }
-                return ctx;
-            };
-
-            // === 8. Automation-Artefakte entfernen ===
-            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
-            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
-            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
-
-            const originalError = Error;
-            window.Error = function(...args) {
-                const err = new originalError(...args);
-                const stack = err.stack || '';
-                err.stack = stack.replace(/at Object\.apply \(<anonymous>\)/g, '');
-                return err;
-            };
-            window.Error.prototype = originalError.prototype;
-
-            // === 9. Connection/Hardware realistische Werte ===
-            Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
-            Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
-            if (navigator.connection) {
-                Object.defineProperty(navigator.connection, 'rtt', { get: () => 50 });
-            }
+            })();
         "#;
 
-        // Stealth via CDP fuer ALLE zukuenftigen Navigationen registrieren
-        page.evaluate_on_new_document(stealth_js.to_string()).await?;
+        // Inject each stealth section as a SEPARATE evaluate_on_new_document call
+        for section in &stealth_sections {
+            page.evaluate_on_new_document(section.clone()).await?;
+        }
+        // Then inject Chrome-specific supplement
+        page.evaluate_on_new_document(chrome_supplement_js.to_string()).await?;
 
-        // Auch sofort auf der aktuellen about:blank Seite ausfuehren
-        let _ = page.evaluate(stealth_js.to_string()).await;
+        // Also execute immediately on the current about:blank page
+        for section in &stealth_sections {
+            let _ = page.evaluate(section.clone()).await;
+        }
+        let _ = page.evaluate(chrome_supplement_js.to_string()).await;
 
         // JETZT erst zur Zielseite navigieren - Stealth-Scripts sind registriert
         if url != "about:blank" {

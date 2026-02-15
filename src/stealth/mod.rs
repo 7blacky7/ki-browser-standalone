@@ -121,6 +121,28 @@ impl StealthConfig {
         }
     }
 
+    /// Create a randomized stealth configuration restricted to Chrome-compatible profiles.
+    ///
+    /// Use this for Chromium-based engines where Safari/Firefox profiles would cause
+    /// detectable mismatches (e.g. Safari UA on a Chrome browser).
+    pub fn random_chrome() -> Self {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        let chrome_profiles = vec![
+            FingerprintProfile::WindowsChrome,
+            FingerprintProfile::MacChrome,
+            FingerprintProfile::LinuxChrome,
+            FingerprintProfile::WindowsEdge,
+        ];
+        let profile = chrome_profiles[seed as usize % chrome_profiles.len()].clone();
+
+        Self::from_profile(profile)
+    }
+
     /// Create a consistent stealth configuration based on a seed
     pub fn consistent(seed: &str) -> Self {
         let fingerprint = FingerprintGenerator::new().generate_consistent(seed);
@@ -140,6 +162,19 @@ impl StealthConfig {
         }
     }
 
+    /// Synchronize the fingerprint's screen resolution to match the actual browser viewport.
+    ///
+    /// This ensures consistency between screen dimensions, outerWidth/Height, innerWidth/Height,
+    /// and screen orientation. Must be called after construction with the actual viewport size
+    /// (from BrowserConfig::window_size).
+    ///
+    /// Guarantees: screen.width >= outerWidth >= viewport_width (innerWidth)
+    ///             screen.height >= outerHeight >= viewport_height (innerHeight)
+    pub fn sync_screen_to_viewport(&mut self, viewport_width: u32, viewport_height: u32) {
+        self.fingerprint
+            .sync_screen_to_viewport(viewport_width, viewport_height);
+    }
+
     /// Generate the complete JavaScript override script
     ///
     /// This script should be injected before any page scripts run.
@@ -151,39 +186,97 @@ impl StealthConfig {
         script.push_str("(function() {\n'use strict';\n\n");
 
         // Navigator overrides (MOST CRITICAL - must run first)
+        // Not wrapped in try/catch because a failure here is fatal
         script.push_str("// === NAVIGATOR OVERRIDES (CRITICAL) ===\n");
         script.push_str(&self.navigator.get_override_script());
         script.push_str("\n\n");
 
+        // Each subsequent section is wrapped in try/catch so that a failure
+        // in one section (e.g. WebGL not available at document-creation time)
+        // does not prevent the remaining sections from executing.
+
         // WebGL overrides
         script.push_str("// === WEBGL OVERRIDES ===\n");
+        script.push_str("try {\n");
         script.push_str(&self.webgl.get_js_override_script());
-        script.push_str("\n\n");
+        script.push_str("\n} catch(e) {}\n\n");
 
         // Fingerprint overrides
         script.push_str("// === FINGERPRINT OVERRIDES ===\n");
+        script.push_str("try {\n");
         script.push_str(&self.fingerprint.to_js_overrides());
-        script.push_str("\n\n");
+        script.push_str("\n} catch(e) {}\n\n");
 
         // WebRTC leak prevention
         script.push_str("// === WEBRTC LEAK PREVENTION ===\n");
+        script.push_str("try {\n");
         script.push_str(&self.webrtc.get_override_script());
-        script.push_str("\n\n");
+        script.push_str("\n} catch(e) {}\n\n");
 
         // Canvas fingerprint protection
         script.push_str("// === CANVAS FINGERPRINT PROTECTION ===\n");
+        script.push_str("try {\n");
         script.push_str(&self.canvas.get_override_script());
-        script.push_str("\n\n");
+        script.push_str("\n} catch(e) {}\n\n");
 
         // AudioContext fingerprint spoofing
         script.push_str("// === AUDIO FINGERPRINT SPOOFING ===\n");
+        script.push_str("try {\n");
         script.push_str(&self.audio.get_override_script());
-        script.push_str("\n\n");
+        script.push_str("\n} catch(e) {}\n\n");
 
         // Close IIFE
         script.push_str("})();\n");
 
         script
+    }
+
+    /// Returns each stealth section as a separate script string.
+    ///
+    /// Each script is self-contained (wrapped in an IIFE with try/catch) so it
+    /// can be injected independently via `evaluate_on_new_document`.  This
+    /// prevents a failure in one section (e.g. WebGL not available at document
+    /// creation time) from blocking other sections.
+    pub fn get_section_scripts(&self) -> Vec<String> {
+        let mut sections = Vec::new();
+
+        // Navigator overrides (MOST CRITICAL - must run first)
+        sections.push(format!(
+            "(function() {{ 'use strict';\ntry {{\n{}\n}} catch(e) {{}}\n}})();",
+            self.navigator.get_override_script()
+        ));
+
+        // WebGL overrides
+        sections.push(format!(
+            "(function() {{ 'use strict';\ntry {{\n{}\n}} catch(e) {{}}\n}})();",
+            self.webgl.get_js_override_script()
+        ));
+
+        // Fingerprint overrides
+        sections.push(format!(
+            "(function() {{ 'use strict';\ntry {{\n{}\n}} catch(e) {{}}\n}})();",
+            self.fingerprint.to_js_overrides()
+        ));
+
+        // WebRTC leak prevention
+        sections.push(format!(
+            "(function() {{ 'use strict';\ntry {{\n{}\n}} catch(e) {{}}\n}})();",
+            self.webrtc.get_override_script()
+        ));
+
+        // Canvas fingerprint protection
+        sections.push(format!(
+            "(function() {{ 'use strict';\ntry {{\n{}\n}} catch(e) {{}}\n}})();",
+            self.canvas.get_override_script()
+        ));
+
+        // AudioContext fingerprint spoofing
+        sections.push(format!(
+            "(function() {{ 'use strict';\ntry {{\n{}\n}} catch(e) {{}}\n}})();",
+            self.audio.get_override_script()
+        ));
+
+        sections
     }
 
     /// Verify that the configuration is safe for use

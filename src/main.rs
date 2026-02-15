@@ -359,11 +359,17 @@ fn init_tracing(verbosity: u8, quiet: bool) {
 /// Initialize stealth configuration if enabled
 fn init_stealth(settings: &BrowserSettings) -> Option<StealthConfig> {
     if settings.stealth_mode {
-        let config = StealthConfig::random();
+        let mut config = StealthConfig::random();
+        // Sync screen resolution to the actual viewport so that
+        // screen.width >= outerWidth >= innerWidth and orientation is correct.
+        config.sync_screen_to_viewport(settings.window_width, settings.window_height);
         if let Err(e) = config.validate() {
             warn!("Stealth configuration validation warning: {}", e);
         }
-        info!("Stealth mode initialized with random fingerprint");
+        info!(
+            "Stealth mode initialized with random fingerprint (screen synced to {}x{} viewport)",
+            settings.window_width, settings.window_height
+        );
         Some(config)
     } else {
         None
