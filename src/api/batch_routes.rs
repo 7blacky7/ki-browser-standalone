@@ -109,6 +109,36 @@ pub struct SnapshotSummary {
 }
 
 // ============================================================================
+// Helpers
+// ============================================================================
+
+/// Unwrap the IPC response `{"result": <value>}` wrapper from EvaluateScript.
+///
+/// The browser handler wraps evaluate results inside `{"result": value}`.
+/// This helper extracts the inner value, handling both string-encoded JSON
+/// and pre-parsed values.
+fn unwrap_ipc_result(data: &serde_json::Value) -> Option<serde_json::Value> {
+    if let serde_json::Value::Object(map) = data {
+        if let Some(result) = map.get("result") {
+            return Some(result.clone());
+        }
+    }
+    Some(data.clone())
+}
+
+/// Extract a JSON string from an IPC EvaluateScript response.
+///
+/// Handles the chain: IPC response → `{"result": "...json..."}` → parsed JSON Value.
+fn parse_ipc_json_result(data: &serde_json::Value) -> Option<serde_json::Value> {
+    let result = unwrap_ipc_result(data)?;
+    match &result {
+        serde_json::Value::String(s) => serde_json::from_str(s).ok(),
+        serde_json::Value::Null => None,
+        other => Some(other.clone()),
+    }
+}
+
+// ============================================================================
 // Router
 // ============================================================================
 
@@ -540,7 +570,12 @@ async fn batch_navigate_extract(
                     };
                     if let Ok(resp) = ipc.send_command(IpcMessage::Command(cmd)).await {
                         if resp.success {
-                            page_result.html = resp.data.and_then(|v| v.as_str().map(String::from));
+                            if let Some(data) = &resp.data {
+                                let result = unwrap_ipc_result(data);
+                                page_result.html = result.and_then(|v| {
+                                    v.as_str().map(String::from)
+                                });
+                            }
                         }
                     }
                 }
@@ -554,16 +589,12 @@ async fn batch_navigate_extract(
                     };
                     if let Ok(resp) = ipc.send_command(IpcMessage::Command(cmd)).await {
                         if resp.success {
-                            if let Some(data) = resp.data {
-                                // The script returns a JSON string; try to parse it
-                                if let Some(s) = data.as_str() {
-                                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s)
-                                    {
-                                        page_result.text = parsed
-                                            .get("text")
-                                            .and_then(|v| v.as_str())
-                                            .map(String::from);
-                                    }
+                            if let Some(data) = &resp.data {
+                                if let Some(parsed) = parse_ipc_json_result(data) {
+                                    page_result.text = parsed
+                                        .get("text")
+                                        .and_then(|v| v.as_str())
+                                        .map(String::from);
                                 }
                             }
                         }
@@ -579,15 +610,8 @@ async fn batch_navigate_extract(
                     };
                     if let Ok(resp) = ipc.send_command(IpcMessage::Command(cmd)).await {
                         if resp.success {
-                            if let Some(data) = resp.data {
-                                if let Some(s) = data.as_str() {
-                                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s)
-                                    {
-                                        page_result.metadata = Some(parsed);
-                                    }
-                                } else {
-                                    page_result.metadata = Some(data);
-                                }
+                            if let Some(data) = &resp.data {
+                                page_result.metadata = parse_ipc_json_result(data);
                             }
                         }
                     }
@@ -602,15 +626,8 @@ async fn batch_navigate_extract(
                     };
                     if let Ok(resp) = ipc.send_command(IpcMessage::Command(cmd)).await {
                         if resp.success {
-                            if let Some(data) = resp.data {
-                                if let Some(s) = data.as_str() {
-                                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s)
-                                    {
-                                        page_result.structured_data = Some(parsed);
-                                    }
-                                } else {
-                                    page_result.structured_data = Some(data);
-                                }
+                            if let Some(data) = &resp.data {
+                                page_result.structured_data = parse_ipc_json_result(data);
                             }
                         }
                     }
@@ -625,15 +642,8 @@ async fn batch_navigate_extract(
                     };
                     if let Ok(resp) = ipc.send_command(IpcMessage::Command(cmd)).await {
                         if resp.success {
-                            if let Some(data) = resp.data {
-                                if let Some(s) = data.as_str() {
-                                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s)
-                                    {
-                                        page_result.forms = Some(parsed);
-                                    }
-                                } else {
-                                    page_result.forms = Some(data);
-                                }
+                            if let Some(data) = &resp.data {
+                                page_result.forms = parse_ipc_json_result(data);
                             }
                         }
                     }
@@ -648,18 +658,11 @@ async fn batch_navigate_extract(
                     };
                     if let Ok(resp) = ipc.send_command(IpcMessage::Command(cmd)).await {
                         if resp.success {
-                            if let Some(data) = resp.data {
-                                let json_str = if let Some(s) = data.as_str() {
-                                    s.to_string()
-                                } else {
-                                    serde_json::to_string(&data).unwrap_or_default()
-                                };
-                                if let Ok(links) =
-                                    serde_json::from_str::<Vec<crate::api::batch::LinkInfo>>(
-                                        &json_str,
-                                    )
-                                {
-                                    page_result.links = Some(links);
+                            if let Some(data) = &resp.data {
+                                if let Some(parsed) = parse_ipc_json_result(data) {
+                                    if let Ok(links) = serde_json::from_value::<Vec<crate::api::batch::LinkInfo>>(parsed) {
+                                        page_result.links = Some(links);
+                                    }
                                 }
                             }
                         }
@@ -1116,15 +1119,12 @@ fn parse_cookies_from_response(data: Option<serde_json::Value>) -> Vec<CookieInf
         return Vec::new();
     };
 
-    // The script returns a JSON.stringify'd result, which may arrive as
-    // a string within the response data, or already parsed.
-    let json_str = if let Some(s) = data.as_str() {
-        s.to_string()
-    } else {
-        serde_json::to_string(&data).unwrap_or_default()
-    };
-
-    serde_json::from_str::<Vec<CookieInfo>>(&json_str).unwrap_or_default()
+    // Unwrap IPC {"result": ...} wrapper, then parse the JSON string
+    let parsed = parse_ipc_json_result(&data);
+    match parsed {
+        Some(val) => serde_json::from_value::<Vec<CookieInfo>>(val).unwrap_or_default(),
+        None => Vec::new(),
+    }
 }
 
 /// Parse a localStorage/sessionStorage map from an IPC response.
@@ -1133,23 +1133,18 @@ fn parse_storage_from_response(data: Option<serde_json::Value>) -> HashMap<Strin
         return HashMap::new();
     };
 
-    let json_str = if let Some(s) = data.as_str() {
-        s.to_string()
-    } else {
-        serde_json::to_string(&data).unwrap_or_default()
-    };
-
-    serde_json::from_str::<HashMap<String, String>>(&json_str).unwrap_or_default()
+    let parsed = parse_ipc_json_result(&data);
+    match parsed {
+        Some(val) => serde_json::from_value::<HashMap<String, String>>(val).unwrap_or_default(),
+        None => HashMap::new(),
+    }
 }
 
 /// Parse tab state data returned by `capture_tab_state_script()` into a `TabSnapshot`.
 fn parse_tab_snapshot(tab_id: &str, data: serde_json::Value) -> TabSnapshot {
-    // The script returns JSON.stringify'd data; may arrive as string or parsed.
-    let parsed: serde_json::Value = if let Some(s) = data.as_str() {
-        serde_json::from_str(s).unwrap_or(serde_json::Value::Null)
-    } else {
-        data
-    };
+    // Unwrap IPC {"result": ...} wrapper, then parse the JSON string
+    let parsed: serde_json::Value = parse_ipc_json_result(&data)
+        .unwrap_or(serde_json::Value::Null);
 
     let url = parsed
         .get("url")
