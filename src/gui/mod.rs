@@ -7,6 +7,7 @@
 pub mod browser_app;
 pub mod context_menu;
 pub mod devtools;
+pub mod element_inspector;
 pub mod handle;
 pub mod tab_bar;
 pub mod title_bar;

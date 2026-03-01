@@ -17,6 +17,7 @@ use crate::browser::tab::TabStatus;
 
 use super::context_menu::{self, ContextMenuAction, ContextMenuState};
 use super::devtools::{self, DevToolsAction, DevToolsShared, DevToolsTabInfo, PageInfo};
+use super::element_inspector::{self, ElementInspectorState, ElementDetails};
 use super::handle::{GuiHandle, GuiVisibility};
 use super::tab_bar::{self, TabInfo};
 use super::title_bar::{self, TitleBarAction};
@@ -72,6 +73,8 @@ pub struct KiBrowserApp {
     vision_overlay: VisionOverlayState,
     /// Element, auf das der User rechtsklickte (fuer Element-Inspector).
     inspected_element: Arc<Mutex<Option<vision_overlay::OverlayElement>>>,
+    /// Shared state for the Element-Inspector OS window (Arc-wrapped for deferred viewport).
+    inspector_state: Arc<ElementInspectorState>,
 }
 
 impl KiBrowserApp {
@@ -97,6 +100,7 @@ impl KiBrowserApp {
             devtools_shared: Arc::new(DevToolsShared::default()),
             vision_overlay: VisionOverlayState::default(),
             inspected_element: Arc::new(Mutex::new(None)),
+            inspector_state: Arc::new(ElementInspectorState::default()),
         }
     }
 
@@ -274,6 +278,9 @@ impl KiBrowserApp {
 
         // Close DevTools window if open
         self.devtools_shared.state.open.store(false, Ordering::Relaxed);
+
+        // Close Element-Inspector window if open
+        self.inspector_state.open.store(false, Ordering::Relaxed);
 
         // Clear our GUI-side tab list (prevents further rendering/interaction)
         self.tabs.clear();
@@ -835,6 +842,21 @@ impl eframe::App for KiBrowserApp {
                     self.engine.send_resize_viewport(tab.id, new_w, new_h);
                 }
             }
+        }
+
+        // --- Element-Inspector as separate OS window via show_viewport_deferred ---
+        if self.inspector_state.open.load(Ordering::Relaxed) {
+            let state = Arc::clone(&self.inspector_state);
+            ctx.show_viewport_deferred(
+                egui::ViewportId::from_hash_of("element_inspector"),
+                egui::ViewportBuilder::default()
+                    .with_title("Element-Details")
+                    .with_inner_size([400.0, 500.0])
+                    .with_min_inner_size([300.0, 200.0]),
+                move |ctx, _class| {
+                    element_inspector::render_standalone(ctx, &state);
+                },
+            );
         }
 
         // Request repainting at ~60fps (not unlimited)
