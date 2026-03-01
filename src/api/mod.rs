@@ -12,6 +12,7 @@ pub mod cdp_mapping;
 pub mod extraction_routes;
 pub mod gui_routes;
 pub mod ipc;
+pub mod ocr_routes;
 pub mod openapi;
 pub mod routes;
 pub mod server;
@@ -30,6 +31,7 @@ pub use cdp_mapping::CdpTabMapping;
 pub use ipc::{IpcChannel, IpcCommand, IpcMessage, IpcProcessor, IpcResponse};
 pub use batch_routes::batch_session_routes;
 pub use extraction_routes::extraction_routes;
+pub use ocr_routes::ocr_routes;
 pub use routes::create_router;
 pub use server::{ApiServer, AppState};
 pub use session::{

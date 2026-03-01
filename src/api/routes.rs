@@ -1561,6 +1561,9 @@ pub fn create_router(state: AppState) -> Router {
         // GUI window visibility control (toggle, show, hide, status)
         .merge(gui_routes())
 
+        // OCR endpoints
+        .merge(crate::api::ocr_routes::ocr_routes())
+
         // WebSocket endpoint
         .route("/ws", get(websocket::ws_handler))
 
