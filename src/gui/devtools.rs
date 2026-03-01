@@ -862,6 +862,11 @@ fn render_ocr_section(
 }
 
 /// Renders an image result (annotated screenshots).
+///
+/// Uses a texture cache (`texture`) to avoid re-decoding the PNG on every frame.
+/// The cache is only populated once per image load; callers must reset `texture`
+/// to `None` whenever a new analysis is triggered (i.e. when `image_state` is
+/// set back to `Loading`), so the next `Loaded` state causes a fresh decode.
 fn render_vision_image(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
@@ -875,24 +880,34 @@ fn render_vision_image(
             Some(ImageState::Empty) => None,
             Some(ImageState::Loading) => Some(Err("Laden...".to_string())),
             Some(ImageState::Loaded(bytes)) => {
-                // Decode PNG to egui texture
-                match image::load_from_memory(bytes) {
-                    Ok(img) => {
-                        let rgba = img.to_rgba8();
-                        let size = [rgba.width() as usize, rgba.height() as usize];
-                        let pixels = rgba.into_raw();
-                        let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
-                        let tex = ctx.load_texture(
-                            texture_key,
-                            color_image,
-                            egui::TextureOptions::LINEAR,
-                        );
-                        if let Ok(mut t) = texture.lock() {
-                            *t = Some(tex);
+                // Check the texture cache first — only decode PNG when the cache is empty.
+                let already_cached = texture.lock().ok()
+                    .map(|t| t.is_some())
+                    .unwrap_or(false);
+
+                if already_cached {
+                    // Cache hit: skip decoding, proceed directly to render.
+                    Some(Ok(()))
+                } else {
+                    // Cache miss: decode PNG and populate the texture cache.
+                    match image::load_from_memory(bytes) {
+                        Ok(img) => {
+                            let rgba = img.to_rgba8();
+                            let size = [rgba.width() as usize, rgba.height() as usize];
+                            let pixels = rgba.into_raw();
+                            let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+                            let tex = ctx.load_texture(
+                                texture_key,
+                                color_image,
+                                egui::TextureOptions::LINEAR,
+                            );
+                            if let Ok(mut t) = texture.lock() {
+                                *t = Some(tex);
+                            }
+                            Some(Ok(()))
                         }
-                        Some(Ok(()))
+                        Err(e) => Some(Err(format!("Bild-Dekodierung fehlgeschlagen: {}", e))),
                     }
-                    Err(e) => Some(Err(format!("Bild-Dekodierung fehlgeschlagen: {}", e))),
                 }
             }
             Some(ImageState::Error(e)) => Some(Err(e.clone())),

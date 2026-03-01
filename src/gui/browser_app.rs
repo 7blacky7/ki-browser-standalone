@@ -409,6 +409,11 @@ impl KiBrowserApp {
                             if let Ok(mut s) = handle.lock() {
                                 *s = devtools::ImageState::Loading;
                             }
+                            // Invalidate the texture cache so the next Loaded state
+                            // triggers a fresh PNG decode in render_vision_image.
+                            if let Ok(mut t) = self.devtools_shared.state.vision_texture.lock() {
+                                *t = None;
+                            }
                             let tactic = tactic.to_string();
                             std::thread::spawn(move || {
                                 let result = run_vision_image_direct(
@@ -466,6 +471,11 @@ impl KiBrowserApp {
                         }
                         if let Ok(mut img) = ocr_image.lock() {
                             *img = devtools::ImageState::Loading;
+                        }
+                        // Invalidate the OCR texture cache so the next Loaded state
+                        // triggers a fresh PNG decode in render_vision_image.
+                        if let Ok(mut t) = self.devtools_shared.state.ocr_texture.lock() {
+                            *t = None;
                         }
 
                         // Capture frame buffer and run OCR engines in background thread.
@@ -804,7 +814,9 @@ impl eframe::App for KiBrowserApp {
                                 ocr_surya: elem.ocr_surya.clone().unwrap_or_default(),
                                 ..Default::default()
                             };
-                            *self.inspector_state.element.lock().unwrap() = Some(details);
+                            if let Ok(mut el) = self.inspector_state.element.lock() {
+                                *el = Some(details);
+                            }
                             self.inspector_state.open.store(true, Ordering::Relaxed);
 
                             // 2. Im Hintergrund per JS detaillierte Infos abrufen
@@ -905,7 +917,9 @@ impl eframe::App for KiBrowserApp {
                                                             h: val["h"].as_f64().unwrap_or(0.0) as f32,
                                                             ..Default::default()
                                                         };
-                                                        *inspector.element.lock().unwrap() = Some(details);
+                                                        if let Ok(mut el) = inspector.element.lock() {
+                                                            *el = Some(details);
+                                                        }
                                                     }
                                                 }
                                             }
