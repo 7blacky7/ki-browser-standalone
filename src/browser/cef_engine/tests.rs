@@ -11,7 +11,7 @@ use super::CefBrowserEngine;
 fn test_cef_tab_creation() {
     // Create a mock browser for testing
     // Note: Full CEF tests require CEF runtime
-    let tab_id = Uuid::new_v4();
+    let _tab_id = Uuid::new_v4();
     let tab = Tab::new("https://example.com".to_string());
     assert!(!tab.url.is_empty());
 }

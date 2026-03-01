@@ -6,10 +6,12 @@
 
 use anyhow::{anyhow, Context, Result};
 use cef::CefString;
+use cef::{ImplBrowser, ImplBrowserHost, ImplFrame};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use tokio::sync::oneshot;
 use tracing::{debug, info};
 use uuid::Uuid;
 
@@ -17,26 +19,30 @@ use crate::browser::screenshot::{Screenshot, ScreenshotFormat, ScreenshotOptions
 use super::CefCommand;
 use super::engine::CefBrowserEngine;
 use super::tab::CefTab;
+use super::JS_RESULT_STORE;
 
 // ============================================================================
 // Internal methods (called on the CEF thread)
 // ============================================================================
 
 /// Navigates a tab to a URL internally on the CEF thread.
+/// IMPORTANT: Must NOT hold the tabs RwLock while calling CEF methods,
+/// because CEF may fire callbacks (e.g. on_loading_state_change) that
+/// need a write lock on tabs -- causing a deadlock on the same thread.
 pub(crate) fn navigate_internal(
     tab_id: Uuid,
     url: &str,
     tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
 ) -> Result<()> {
-    let tabs_guard = tabs.read();
-    let tab = tabs_guard
-        .get(&tab_id)
-        .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
-
-    let browser = tab
-        .browser
-        .as_ref()
-        .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?;
+    // Clone the browser reference, then release the lock BEFORE calling CEF.
+    let browser = {
+        let tabs_guard = tabs.read();
+        let tab = tabs_guard
+            .get(&tab_id)
+            .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
+        tab.browser.clone()
+            .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?
+    }; // Read lock released here.
 
     if let Some(frame) = browser.main_frame() {
         let url_string = CefString::from(url);
@@ -48,42 +54,183 @@ pub(crate) fn navigate_internal(
     }
 }
 
-/// Executes JavaScript internally on the CEF thread.
+/// Navigates the browser back in history on the CEF thread.
+pub(crate) fn go_back_internal(
+    tab_id: Uuid,
+    tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
+) -> Result<()> {
+    let browser = {
+        let tabs_guard = tabs.read();
+        let tab = tabs_guard
+            .get(&tab_id)
+            .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
+        tab.browser.clone()
+            .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?
+    };
+
+    browser.go_back();
+    info!("Go back on tab {}", tab_id);
+    Ok(())
+}
+
+/// Navigates the browser forward in history on the CEF thread.
+pub(crate) fn go_forward_internal(
+    tab_id: Uuid,
+    tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
+) -> Result<()> {
+    let browser = {
+        let tabs_guard = tabs.read();
+        let tab = tabs_guard
+            .get(&tab_id)
+            .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
+        tab.browser.clone()
+            .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?
+    };
+
+    browser.go_forward();
+    info!("Go forward on tab {}", tab_id);
+    Ok(())
+}
+
+/// Resizes the CEF viewport for a tab and notifies the browser host.
 ///
-/// Note: CEF doesn't provide synchronous JavaScript return values.
-/// For result capture, use V8 context and message passing.
+/// Updates the shared viewport dimensions (read by the render handler's
+/// `view_rect()` and `screen_info()` callbacks) then calls `was_resized()`
+/// on the browser host so CEF re-renders at the new size.
+pub(crate) fn resize_viewport_internal(
+    tab_id: Uuid,
+    width: u32,
+    height: u32,
+    tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
+) -> Result<()> {
+    let (browser, viewport_size) = {
+        let tabs_guard = tabs.read();
+        let tab = tabs_guard
+            .get(&tab_id)
+            .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
+        let browser = tab.browser.clone()
+            .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?;
+        (browser, tab.viewport_size.clone())
+    };
+
+    // Update the shared viewport dimensions before notifying CEF.
+    // The render handler reads these in view_rect() and screen_info().
+    {
+        let mut vp = viewport_size.write();
+        *vp = (width, height);
+    }
+
+    if let Some(host) = browser.host() {
+        host.was_resized();
+        info!("Viewport resized for tab {}: {}x{}", tab_id, width, height);
+        Ok(())
+    } else {
+        Err(anyhow!("No browser host for tab: {}", tab_id))
+    }
+}
+
+/// Executes JavaScript internally on the CEF thread.
 pub(crate) fn execute_js_internal(
     tab_id: Uuid,
     script: &str,
     tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
 ) -> Result<Option<String>> {
-    let tabs_guard = tabs.read();
-    let tab = tabs_guard
-        .get(&tab_id)
-        .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
-
-    let browser = tab
-        .browser
-        .as_ref()
-        .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?;
+    let browser = {
+        let tabs_guard = tabs.read();
+        let tab = tabs_guard
+            .get(&tab_id)
+            .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
+        tab.browser.clone()
+            .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?
+    };
 
     if let Some(frame) = browser.main_frame() {
         let script_string = CefString::from(script);
         let empty_url = CefString::from("");
         frame.execute_java_script(Some(&script_string), Some(&empty_url), 0);
         debug!("JavaScript executed on tab {}", tab_id);
-        // Note: CEF doesn't provide synchronous JS execution results
-        // For result capture, use V8 context and message passing
         Ok(None)
     } else {
         Err(anyhow!("No main frame for tab: {}", tab_id))
     }
 }
 
-/// Captures a screenshot internally on the CEF thread.
+/// Executes JavaScript and waits for the result via console.log interception.
 ///
-/// Reads the current off-screen rendering frame buffer and converts
-/// it from raw BGRA to the requested image format (PNG, JPEG, WebP).
+/// This wraps the user script in a console.log call with a special prefix
+/// ("KI_RESULT:<id>:<json>") that the DisplayHandler intercepts. This approach
+/// works reliably in single-process mode where CEF MessageRouter IPC fails.
+pub(crate) fn execute_js_with_result_internal(
+    tab_id: Uuid,
+    script: &str,
+    tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
+) -> Result<Option<String>> {
+    let browser = {
+        let tabs_guard = tabs.read();
+        let tab = tabs_guard
+            .get(&tab_id)
+            .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
+        tab.browser.clone()
+            .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?
+    };
+
+    if let Some(frame) = browser.main_frame() {
+        // Use a random i64 as query ID to correlate the console.log response.
+        let query_id = rand::random::<u32>() as i64;
+
+        // Wrap the user script: evaluate it, then send the JSON-serialised
+        // result back via console.log with KI_RESULT prefix so the
+        // DisplayHandler can capture it.
+        // Strategy: try as expression first (return (SCRIPT)), fall back to
+        // statement body (SCRIPT) for multi-statement scripts with own return.
+        let wrapped = format!(
+            r#"(function(){{var __r;try{{__r=(new Function('return ('+{script_escaped}+')'))()}}catch(_e1){{try{{__r=(new Function({script_escaped}))()}}catch(e){{__r={{"__error":e.message}}}}}};console.log('KI_RESULT:{qid}:'+JSON.stringify(__r))}})()"#,
+            script_escaped = serde_json::to_string(script).unwrap_or_else(|_| format!("\"{}\"", script)),
+            qid = query_id,
+        );
+
+        let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
+        JS_RESULT_STORE.lock().insert(query_id, tx);
+
+        let script_cef = CefString::from(wrapped.as_str());
+        let empty_url = CefString::from("");
+        frame.execute_java_script(Some(&script_cef), Some(&empty_url), 0);
+
+        // Pump the CEF message loop while waiting for the cefQuery callback.
+        // Without pumping we would deadlock because the JS response is
+        // delivered on this same CEF thread.
+        let start = std::time::Instant::now();
+        loop {
+            match rx.try_recv() {
+                Ok(Ok(result)) => {
+                    if result == "null" || result == "undefined" {
+                        return Ok(None);
+                    }
+                    return Ok(Some(result));
+                }
+                Ok(Err(e)) => {
+                    return Err(anyhow!("JS error: {}", e));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    if start.elapsed() > std::time::Duration::from_secs(10) {
+                        JS_RESULT_STORE.lock().remove(&query_id);
+                        return Err(anyhow!("JS execution timeout (10s) for tab {}", tab_id));
+                    }
+                    cef::do_message_loop_work();
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    JS_RESULT_STORE.lock().remove(&query_id);
+                    return Err(anyhow!("JS result channel disconnected for tab {}", tab_id));
+                }
+            }
+        }
+    } else {
+        Err(anyhow!("No main frame for tab: {}", tab_id))
+    }
+}
+
+/// Captures a screenshot internally on the CEF thread.
 pub(crate) fn screenshot_internal(
     tab_id: Uuid,
     options: &ScreenshotOptions,
@@ -166,14 +313,12 @@ fn convert_frame_to_image(
 
 impl CefBrowserEngine {
     /// Navigates a tab to the specified URL.
-    ///
-    /// Sends a Navigate command to the CEF thread and awaits the result.
     pub async fn navigate(&self, tab_id: Uuid, url: &str) -> Result<()> {
         if !self.is_running.load(Ordering::SeqCst) {
             return Err(anyhow!("Browser engine is not running"));
         }
 
-        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        let (response_tx, response_rx) = oneshot::channel();
 
         self.command_tx
             .send(CefCommand::Navigate {
@@ -181,17 +326,13 @@ impl CefBrowserEngine {
                 url: url.to_string(),
                 response: response_tx,
             })
-            .await
-            .context("Failed to send navigate command")?;
+            .map_err(|_| anyhow!("Failed to send navigate command"))?;
 
-        response_rx
-            .await
-            .context("Failed to receive navigate response")?
+        response_rx.await.context("Failed to receive navigate response")?
     }
 
     /// Executes JavaScript in a tab.
     ///
-    /// Sends an ExecuteJs command to the CEF thread and awaits the result.
     /// Note: CEF doesn't provide synchronous JavaScript return values.
     /// For complex interactions, use message passing via V8 context.
     pub async fn execute_js(&self, tab_id: Uuid, script: &str) -> Result<Option<String>> {
@@ -199,7 +340,7 @@ impl CefBrowserEngine {
             return Err(anyhow!("Browser engine is not running"));
         }
 
-        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        let (response_tx, response_rx) = oneshot::channel();
 
         self.command_tx
             .send(CefCommand::ExecuteJs {
@@ -207,18 +348,35 @@ impl CefBrowserEngine {
                 script: script.to_string(),
                 response: response_tx,
             })
-            .await
-            .context("Failed to send execute JS command")?;
+            .map_err(|_| anyhow!("Failed to send execute JS command"))?;
 
-        response_rx
-            .await
-            .context("Failed to receive execute JS response")?
+        response_rx.await.context("Failed to receive execute JS response")?
+    }
+
+    /// Executes JavaScript in a tab and waits for the return value via CEF MessageRouter.
+    ///
+    /// Unlike `execute_js`, this method actually captures and returns the JS
+    /// return value by routing it through `window.cefQuery`. The CEF message
+    /// loop is pumped on the command thread while waiting so no deadlock occurs.
+    pub async fn execute_js_with_result(&self, tab_id: Uuid, script: &str) -> Result<Option<String>> {
+        if !self.is_running.load(Ordering::SeqCst) {
+            return Err(anyhow!("Browser engine is not running"));
+        }
+
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(CefCommand::ExecuteJsWithResult {
+                tab_id,
+                script: script.to_string(),
+                response: response_tx,
+            })
+            .map_err(|_| anyhow!("Failed to send execute JS with result command"))?;
+
+        response_rx.await.context("Failed to receive JS with result response")?
     }
 
     /// Captures a screenshot of a tab.
-    ///
-    /// Sends a Screenshot command to the CEF thread and awaits the encoded
-    /// image result in the requested format.
     pub async fn screenshot(
         &self,
         tab_id: Uuid,
@@ -228,7 +386,7 @@ impl CefBrowserEngine {
             return Err(anyhow!("Browser engine is not running"));
         }
 
-        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        let (response_tx, response_rx) = oneshot::channel();
 
         self.command_tx
             .send(CefCommand::Screenshot {
@@ -236,18 +394,12 @@ impl CefBrowserEngine {
                 options,
                 response: response_tx,
             })
-            .await
-            .context("Failed to send screenshot command")?;
+            .map_err(|_| anyhow!("Failed to send screenshot command"))?;
 
-        response_rx
-            .await
-            .context("Failed to receive screenshot response")?
+        response_rx.await.context("Failed to receive screenshot response")?
     }
 
     /// Waits for a tab to be ready for interaction.
-    ///
-    /// Polls the tab's readiness flag with a 50ms interval until the tab
-    /// reports ready or the specified timeout elapses.
     pub async fn wait_for_ready(&self, tab_id: Uuid, timeout_ms: u64) -> Result<()> {
         let start = std::time::Instant::now();
         let timeout = std::time::Duration::from_millis(timeout_ms);

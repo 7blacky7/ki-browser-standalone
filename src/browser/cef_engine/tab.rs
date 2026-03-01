@@ -22,6 +22,8 @@ pub(crate) struct CefTab {
     pub(crate) id: Uuid,
     /// CEF browser instance (set asynchronously after on_after_created).
     pub(crate) browser: Option<Browser>,
+    /// CEF browser identifier used as CDP TargetId for remote debugging.
+    pub(crate) browser_id: Option<i32>,
     /// Current URL of the tab.
     pub(crate) url: String,
     /// Page title.
@@ -34,6 +36,12 @@ pub(crate) struct CefTab {
     pub(crate) frame_size: Arc<RwLock<(u32, u32)>>,
     /// Whether the tab is ready for interaction.
     pub(crate) is_ready: AtomicBool,
+    /// Whether the browser can navigate back in history.
+    pub(crate) can_go_back: AtomicBool,
+    /// Whether the browser can navigate forward in history.
+    pub(crate) can_go_forward: AtomicBool,
+    /// Shared viewport dimensions for the render handler (updated on resize).
+    pub(crate) viewport_size: Arc<RwLock<(u32, u32)>>,
 }
 
 impl CefTab {
@@ -43,16 +51,21 @@ impl CefTab {
         url: String,
         frame_buffer: Arc<RwLock<Vec<u8>>>,
         frame_size: Arc<RwLock<(u32, u32)>>,
+        viewport_size: Arc<RwLock<(u32, u32)>>,
     ) -> Self {
         Self {
             id,
             browser: None,
+            browser_id: None,
             url,
             title: String::new(),
             status: TabStatus::Loading,
             frame_buffer,
             frame_size,
             is_ready: AtomicBool::new(false),
+            can_go_back: AtomicBool::new(false),
+            can_go_forward: AtomicBool::new(false),
+            viewport_size,
         }
     }
 

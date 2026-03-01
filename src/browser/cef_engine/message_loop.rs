@@ -7,8 +7,9 @@
 
 use anyhow::{anyhow, Result};
 use cef::{
-    App, BrowserSettings, CefString, Client, LifeSpanHandler, LoadHandler, MainArgs, Rect,
-    RenderHandler, Settings, WindowInfo, LogSeverity,
+    BrowserSettings, CefString, MainArgs, Rect, Settings, WindowInfo, LogSeverity,
+    ImplBrowser, ImplBrowserHost,
+    sys,
 };
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -22,7 +23,7 @@ use crate::browser::engine::BrowserConfig;
 use crate::stealth::StealthConfig;
 use super::callbacks::{
     KiBrowserApp, KiBrowserClient, KiBrowserLifeSpanHandlerImpl, KiBrowserLoadHandlerImpl,
-    KiBrowserRenderHandlerImpl,
+    KiBrowserRenderHandlerImpl, KiBrowserDisplayHandlerImpl, KiBrowserRenderProcessHandler,
 };
 use super::tab::CefTab;
 use super::{CefCommand, CEF_MESSAGE_LOOP_DELAY_MS, DEFAULT_FRAME_RATE};
@@ -40,14 +41,25 @@ pub(crate) fn run_cef_message_loop(
     is_running: Arc<AtomicBool>,
     browser_id_counter: Arc<AtomicI32>,
     cef_initialized: Arc<AtomicBool>,
-    mut command_rx: mpsc::Receiver<CefCommand>,
+    mut command_rx: mpsc::UnboundedReceiver<CefCommand>,
 ) -> Result<()> {
-    // Configure CEF settings
-    let mut settings = Settings::default();
-    settings.windowless_rendering_enabled = 1;
-    settings.no_sandbox = 1;
-    settings.multi_threaded_message_loop = 0;
-    settings.external_message_pump = 1;
+    // Find CEF directory (build output or ./cef/)
+    let cef_dir = super::engine::CefBrowserEngine::find_cef_dir_static();
+    info!("CEF directory: {:?}", cef_dir);
+
+    // Configure CEF settings - use run_message_loop() style (not external pump)
+    let mut settings = Settings {
+        windowless_rendering_enabled: 1,
+        no_sandbox: 1,
+        multi_threaded_message_loop: 0,
+        external_message_pump: 1, // We pump CEF via do_message_loop_work()
+        ..Default::default()
+    };
+
+    // Set unique cache path to avoid singleton conflicts
+    let cache_dir = format!("/tmp/ki-browser-cef-{}", std::process::id());
+    settings.root_cache_path = CefString::from(cache_dir.as_str());
+    settings.cache_path = CefString::from(cache_dir.as_str());
 
     if config.headless {
         settings.windowless_rendering_enabled = 1;
@@ -58,17 +70,35 @@ pub(crate) fn run_cef_message_loop(
         settings.user_agent = CefString::from(user_agent.as_str());
     }
 
+    // Enable CDP remote debugging if configured (used by Playwright/DevTools)
+    if let Some(port) = config.cdp_port {
+        if port > 0 {
+            settings.remote_debugging_port = port as i32;
+            info!("CDP remote debugging enabled on port {}", port);
+        }
+    }
+
     // Set log level
     settings.log_severity = LogSeverity::WARNING;
 
-    // Create app with v144 API
-    let app_impl = KiBrowserApp {
-        stealth_config: stealth_config.clone(),
-    };
-    let mut app = App::new(app_impl);
+    // CRITICAL: Initialize CEF API version BEFORE anything else
+    // Without this, CEF v144 rejects all handler structs with "invalid version -1"
+    let _ = cef::api_hash(sys::CEF_API_VERSION_LAST, 0);
 
-    // Create main args
+    // Call execute_process for subprocess support (returns -1 for browser process)
     let args = MainArgs::default();
+    let ret = cef::execute_process(Some(&args), None, std::ptr::null_mut());
+    if ret >= 0 {
+        // This is a subprocess, exit with the return code
+        std::process::exit(ret);
+    }
+    // ret == -1 means we are the browser process, continue
+
+    // Create render process handler for MessageRouter context hooks
+    let rph = KiBrowserRenderProcessHandler::new();
+
+    // Create app with v144 API (wrap_app! macro generates ::new())
+    let mut app = KiBrowserApp::new(stealth_config.clone(), rph);
 
     // Initialize CEF using v144 API
     let result = cef::initialize(
@@ -88,164 +118,216 @@ pub(crate) fn run_cef_message_loop(
     is_running.store(true, Ordering::SeqCst);
 
     // Message loop
-    loop {
+    'main_loop: loop {
         // Process CEF work
         cef::do_message_loop_work();
 
-        // Process commands with timeout
-        match command_rx.try_recv() {
-            Ok(command) => {
-                match command {
-                    CefCommand::CreateBrowser {
-                        url,
-                        tab_id,
-                        response,
-                    } => {
-                        let result = create_browser_internal(
-                            &url,
+        // Drain ALL pending commands (not just one per iteration)
+        loop {
+            match command_rx.try_recv() {
+                Ok(command) => {
+                    match command {
+                        CefCommand::CreateBrowser {
+                            url,
                             tab_id,
-                            &config,
-                            stealth_config.clone(),
-                            tabs.clone(),
-                            browser_id_counter.clone(),
-                        );
-                        let _ = response.send(result);
-                    }
-                    CefCommand::CloseBrowser { tab_id, response } => {
-                        let result = close_browser_internal(tab_id, tabs.clone());
-                        let _ = response.send(result);
-                    }
-                    CefCommand::Navigate {
-                        tab_id,
-                        url,
-                        response,
-                    } => {
-                        let result =
-                            super::navigation::navigate_internal(tab_id, &url, tabs.clone());
-                        let _ = response.send(result);
-                    }
-                    CefCommand::ExecuteJs {
-                        tab_id,
-                        script,
-                        response,
-                    } => {
-                        let result = super::navigation::execute_js_internal(
+                            response,
+                        } => {
+                            let result = create_browser_internal(
+                                &url,
+                                tab_id,
+                                &config,
+                                stealth_config.clone(),
+                                tabs.clone(),
+                                browser_id_counter.clone(),
+                            );
+                            let _ = response.send(result);
+                        }
+                        CefCommand::CloseBrowser { tab_id, response } => {
+                            let result = close_browser_internal(tab_id, tabs.clone());
+                            let _ = response.send(result);
+                        }
+                        CefCommand::Navigate {
                             tab_id,
-                            &script,
-                            tabs.clone(),
-                        );
-                        let _ = response.send(result);
-                    }
-                    CefCommand::Screenshot {
-                        tab_id,
-                        options,
-                        response,
-                    } => {
-                        let result = super::navigation::screenshot_internal(
+                            url,
+                            response,
+                        } => {
+                            let result =
+                                super::navigation::navigate_internal(tab_id, &url, tabs.clone());
+                            let _ = response.send(result);
+                        }
+                        CefCommand::ExecuteJs {
                             tab_id,
-                            &options,
-                            tabs.clone(),
-                        );
-                        let _ = response.send(result);
-                    }
-                    CefCommand::MouseMove {
-                        tab_id,
-                        x,
-                        y,
-                        response,
-                    } => {
-                        let result =
-                            super::input::mouse_move_internal(tab_id, x, y, tabs.clone());
-                        let _ = response.send(result);
-                    }
-                    CefCommand::MouseClick {
-                        tab_id,
-                        x,
-                        y,
-                        button,
-                        click_count,
-                        response,
-                    } => {
-                        let result = super::input::mouse_click_internal(
+                            script,
+                            response,
+                        } => {
+                            let result = super::navigation::execute_js_internal(
+                                tab_id,
+                                &script,
+                                tabs.clone(),
+                            );
+                            let _ = response.send(result);
+                        }
+                        CefCommand::ExecuteJsWithResult {
+                            tab_id,
+                            script,
+                            response,
+                        } => {
+                            let result = super::navigation::execute_js_with_result_internal(tab_id, &script, tabs.clone());
+                            let _ = response.send(result);
+                        }
+                        CefCommand::Screenshot {
+                            tab_id,
+                            options,
+                            response,
+                        } => {
+                            let result = super::navigation::screenshot_internal(
+                                tab_id,
+                                &options,
+                                tabs.clone(),
+                            );
+                            let _ = response.send(result);
+                        }
+                        CefCommand::MouseMove {
+                            tab_id,
+                            x,
+                            y,
+                            response,
+                        } => {
+                            let result =
+                                super::input::mouse_move_internal(tab_id, x, y, tabs.clone());
+                            let _ = response.send(result);
+                        }
+                        CefCommand::MouseClick {
                             tab_id,
                             x,
                             y,
                             button,
                             click_count,
-                            tabs.clone(),
-                        );
-                        let _ = response.send(result);
-                    }
-                    CefCommand::MouseWheel {
-                        tab_id,
-                        x,
-                        y,
-                        delta_x,
-                        delta_y,
-                        response,
-                    } => {
-                        let result = super::input::mouse_wheel_internal(
+                            response,
+                        } => {
+                            let result = super::input::mouse_click_internal(
+                                tab_id,
+                                x,
+                                y,
+                                button,
+                                click_count,
+                                tabs.clone(),
+                            );
+                            let _ = response.send(result);
+                        }
+                        CefCommand::MouseWheel {
                             tab_id,
                             x,
                             y,
                             delta_x,
                             delta_y,
-                            tabs.clone(),
-                        );
-                        let _ = response.send(result);
-                    }
-                    CefCommand::KeyEvent {
-                        tab_id,
-                        event_type,
-                        modifiers,
-                        windows_key_code,
-                        character,
-                        response,
-                    } => {
-                        let result = super::input::key_event_internal(
+                            response,
+                        } => {
+                            let result = super::input::mouse_wheel_internal(
+                                tab_id,
+                                x,
+                                y,
+                                delta_x,
+                                delta_y,
+                                tabs.clone(),
+                            );
+                            let _ = response.send(result);
+                        }
+                        CefCommand::KeyEvent {
                             tab_id,
                             event_type,
                             modifiers,
                             windows_key_code,
                             character,
-                            tabs.clone(),
-                        );
-                        let _ = response.send(result);
-                    }
-                    CefCommand::TypeText {
-                        tab_id,
-                        text,
-                        response,
-                    } => {
-                        let result =
-                            super::input::type_text_internal(tab_id, &text, tabs.clone());
-                        let _ = response.send(result);
-                    }
-                    CefCommand::Shutdown { response } => {
-                        info!("Processing shutdown command");
-
-                        // Close all browsers
-                        let tab_ids: Vec<Uuid> = {
-                            let tabs_guard = tabs.read();
-                            tabs_guard.keys().cloned().collect()
-                        };
-
-                        for tab_id in tab_ids {
-                            let _ = close_browser_internal(tab_id, tabs.clone());
+                            response,
+                        } => {
+                            let result = super::input::key_event_internal(
+                                tab_id,
+                                event_type,
+                                modifiers,
+                                windows_key_code,
+                                character,
+                                tabs.clone(),
+                            );
+                            let _ = response.send(result);
                         }
+                        CefCommand::TypeText {
+                            tab_id,
+                            text,
+                            response,
+                        } => {
+                            let result =
+                                super::input::type_text_internal(tab_id, &text, tabs.clone());
+                            let _ = response.send(result);
+                        }
+                        CefCommand::Drag {
+                            tab_id,
+                            from_x,
+                            from_y,
+                            to_x,
+                            to_y,
+                            steps,
+                            duration_ms,
+                            response,
+                        } => {
+                            let result = super::input::drag_internal(tab_id, from_x, from_y, to_x, to_y, steps, duration_ms, tabs.clone());
+                            let _ = response.send(result);
+                        }
+                        CefCommand::GoBack { tab_id, response } => {
+                            let result = super::navigation::go_back_internal(tab_id, tabs.clone());
+                            let _ = response.send(result);
+                        }
+                        CefCommand::GoForward { tab_id, response } => {
+                            let result = super::navigation::go_forward_internal(tab_id, tabs.clone());
+                            let _ = response.send(result);
+                        }
+                        CefCommand::ResizeViewport {
+                            tab_id,
+                            width,
+                            height,
+                            response,
+                        } => {
+                            let result = super::navigation::resize_viewport_internal(tab_id, width, height, tabs.clone());
+                            let _ = response.send(result);
+                        }
+                        CefCommand::Shutdown { response } => {
+                            info!("Processing shutdown command");
 
-                        is_running.store(false, Ordering::SeqCst);
-                        let _ = response.send(Ok(()));
-                        break;
+                            // Close all browsers
+                            let tab_ids: Vec<Uuid> = {
+                                let tabs_guard = tabs.read();
+                                tabs_guard.keys().cloned().collect()
+                            };
+
+                            for tab_id in &tab_ids {
+                                let _ = close_browser_internal(*tab_id, tabs.clone());
+                            }
+
+                            // Pump the CEF message loop so on_before_close callbacks
+                            // can fire and CEF can clean up its internal browser_info_map.
+                            // Without this, cef::shutdown() panics with "missing browser info map".
+                            if !tab_ids.is_empty() {
+                                info!("Pumping CEF message loop for browser cleanup ({} browsers)", tab_ids.len());
+                                for _ in 0..50 {
+                                    cef::do_message_loop_work();
+                                    std::thread::sleep(std::time::Duration::from_millis(10));
+                                }
+                            }
+
+                            is_running.store(false, Ordering::SeqCst);
+                            let _ = response.send(Ok(()));
+                            break 'main_loop;
+                        }
                     }
                 }
-            }
-            Err(mpsc::error::TryRecvError::Empty) => {
-                // No command, continue message loop
-            }
-            Err(mpsc::error::TryRecvError::Disconnected) => {
-                warn!("Command channel disconnected");
-                break;
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    // All commands drained, back to CEF work
+                    break;
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    warn!("Command channel disconnected");
+                    break 'main_loop;
+                }
             }
         }
 
@@ -273,64 +355,70 @@ fn create_browser_internal(
     tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
     browser_id_counter: Arc<AtomicI32>,
 ) -> Result<()> {
-    let viewport_size = config.window_size;
+    let viewport_dims = config.window_size;
+    let viewport_size = Arc::new(RwLock::new(viewport_dims));
 
     // Create frame buffer for OSR
     let frame_buffer = Arc::new(RwLock::new(Vec::with_capacity(
-        (viewport_size.0 * viewport_size.1 * 4) as usize,
+        (viewport_dims.0 * viewport_dims.1 * 4) as usize,
     )));
     let frame_size = Arc::new(RwLock::new((0u32, 0u32)));
     let browser_created = Arc::new(AtomicBool::new(false));
 
-    // Create render handler using v144 API
-    let render_handler_impl = KiBrowserRenderHandlerImpl {
+    // Create render handler using v144 wrap_render_handler! macro
+    let render_handler = KiBrowserRenderHandlerImpl::new(
         tab_id,
-        frame_buffer: frame_buffer.clone(),
-        frame_size: frame_size.clone(),
-        viewport_size,
-    };
-    let render_handler = RenderHandler::new(render_handler_impl);
+        frame_buffer.clone(),
+        frame_size.clone(),
+        viewport_size.clone(),
+    );
 
-    // Create life span handler
-    let life_span_handler_impl = KiBrowserLifeSpanHandlerImpl {
+    // Create life span handler with popup_tx for popup interception
+    let life_span_handler = KiBrowserLifeSpanHandlerImpl::new(
         tab_id,
-        tabs: tabs.clone(),
-        browser_created: browser_created.clone(),
-    };
-    let life_span_handler = LifeSpanHandler::new(life_span_handler_impl);
+        tabs.clone(),
+        browser_created.clone(),
+        None, // popup_tx set later if needed
+    );
 
     // Create load handler
-    let load_handler_impl = KiBrowserLoadHandlerImpl {
+    let load_handler = KiBrowserLoadHandlerImpl::new(
         tab_id,
-        tabs: tabs.clone(),
-        stealth_config: stealth_config.clone(),
-    };
-    let load_handler = LoadHandler::new(load_handler_impl);
+        tabs.clone(),
+        stealth_config.clone(),
+    );
+
+    // Create display handler (captures console.log for JS result communication)
+    let display_handler = KiBrowserDisplayHandlerImpl::new(tab_id, tabs.clone());
 
     // Create client using v144 API
-    let client_impl = KiBrowserClient {
+    let mut client = KiBrowserClient::new(
         tab_id,
-        tabs: tabs.clone(),
-        stealth_config: stealth_config.clone(),
+        tabs.clone(),
+        stealth_config.clone(),
         render_handler,
         life_span_handler,
         load_handler,
-    };
-    let mut client = Client::new(client_impl);
+        display_handler,
+    );
 
     // Browser settings
-    let mut browser_settings = BrowserSettings::default();
-    browser_settings.windowless_frame_rate = DEFAULT_FRAME_RATE;
+    let browser_settings = BrowserSettings {
+        windowless_frame_rate: DEFAULT_FRAME_RATE,
+        ..Default::default()
+    };
 
     // Window info for OSR (off-screen rendering)
-    let mut window_info = WindowInfo::default();
-    window_info.bounds = Rect {
-        x: 0,
-        y: 0,
-        width: viewport_size.0 as i32,
-        height: viewport_size.1 as i32,
+    let window_info = WindowInfo {
+        bounds: Rect {
+            x: 0,
+            y: 0,
+            width: viewport_dims.0 as i32,
+            height: viewport_dims.1 as i32,
+        },
+        windowless_rendering_enabled: 1,
+        ..Default::default()
     };
-    window_info.windowless_rendering_enabled = 1;
 
     // Create browser using v144 API
     let url_string = CefString::from(url);
@@ -348,7 +436,7 @@ fn create_browser_internal(
     }
 
     // Store tab BEFORE browser creation (browser will be set in on_after_created)
-    let cef_tab = CefTab::new(tab_id, url.to_string(), frame_buffer, frame_size);
+    let cef_tab = CefTab::new(tab_id, url.to_string(), frame_buffer, frame_size, viewport_size);
     tabs.write().insert(tab_id, cef_tab);
 
     // Wait for browser to be created (callback will be triggered)

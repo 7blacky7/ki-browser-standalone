@@ -16,33 +16,22 @@ use super::CefCommand;
 pub struct CefBrowserEventSender {
     /// Tab ID this sender is associated with.
     tab_id: Uuid,
-    /// Command sender for the CEF message loop.
-    command_tx: mpsc::Sender<CefCommand>,
-    /// Runtime handle for blocking send operations.
-    runtime: tokio::runtime::Handle,
+    /// Command sender for the CEF message loop (unbounded = never drops).
+    command_tx: mpsc::UnboundedSender<CefCommand>,
 }
 
 impl CefBrowserEventSender {
     /// Creates a new event sender for a specific tab.
-    pub fn new(
-        tab_id: Uuid,
-        command_tx: mpsc::Sender<CefCommand>,
-        runtime: tokio::runtime::Handle,
-    ) -> Self {
+    pub(crate) fn new(tab_id: Uuid, command_tx: mpsc::UnboundedSender<CefCommand>) -> Self {
         Self {
             tab_id,
             command_tx,
-            runtime,
         }
     }
 }
 
 impl crate::browser::cef_input::CefEventSender for CefBrowserEventSender {
-    fn send_mouse_move_event(
-        &self,
-        event: &crate::browser::cef_input::CefMouseEvent,
-        _mouse_leave: bool,
-    ) {
+    fn send_mouse_move_event(&self, event: &crate::browser::cef_input::CefMouseEvent, _mouse_leave: bool) {
         let (tx, _rx) = oneshot::channel();
         let cmd = CefCommand::MouseMove {
             tab_id: self.tab_id,
@@ -51,7 +40,7 @@ impl crate::browser::cef_input::CefEventSender for CefBrowserEventSender {
             response: tx,
         };
         // Fire and forget - we don't wait for response on move events
-        let _ = self.runtime.block_on(self.command_tx.send(cmd));
+        let _ = self.command_tx.send(cmd);
     }
 
     fn send_mouse_click_event(
@@ -72,15 +61,10 @@ impl crate::browser::cef_input::CefEventSender for CefBrowserEventSender {
             click_count: encoded_count,
             response: tx,
         };
-        let _ = self.runtime.block_on(self.command_tx.send(cmd));
+        let _ = self.command_tx.send(cmd);
     }
 
-    fn send_mouse_wheel_event(
-        &self,
-        event: &crate::browser::cef_input::CefMouseEvent,
-        delta_x: i32,
-        delta_y: i32,
-    ) {
+    fn send_mouse_wheel_event(&self, event: &crate::browser::cef_input::CefMouseEvent, delta_x: i32, delta_y: i32) {
         let (tx, _rx) = oneshot::channel();
         let cmd = CefCommand::MouseWheel {
             tab_id: self.tab_id,
@@ -90,7 +74,7 @@ impl crate::browser::cef_input::CefEventSender for CefBrowserEventSender {
             delta_y,
             response: tx,
         };
-        let _ = self.runtime.block_on(self.command_tx.send(cmd));
+        let _ = self.command_tx.send(cmd);
     }
 
     fn send_key_event(&self, event: &crate::browser::cef_input::CefKeyEvent) {
@@ -103,6 +87,6 @@ impl crate::browser::cef_input::CefEventSender for CefBrowserEventSender {
             character: event.character,
             response: tx,
         };
-        let _ = self.runtime.block_on(self.command_tx.send(cmd));
+        let _ = self.command_tx.send(cmd);
     }
 }
