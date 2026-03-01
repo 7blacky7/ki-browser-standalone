@@ -399,7 +399,9 @@ impl KiBrowserApp {
                 DevToolsAction::RunVisionTactic { tactic, .. } => {
                     if let Some(tab) = self.tabs.get(self.active_tab) {
                         let tab_id = tab.id;
-                        let port = self.api_port;
+                        let frame_buffer = tab.frame_buffer.clone();
+                        let frame_size = tab.frame_size.clone();
+                        let engine = self.engine.clone();
                         let is_image = self.devtools_shared.state.current_tactic_is_image();
 
                         if is_image {
@@ -409,7 +411,9 @@ impl KiBrowserApp {
                             }
                             let tactic = tactic.to_string();
                             std::thread::spawn(move || {
-                                let result = fetch_vision_image(&tactic, tab_id, port);
+                                let result = run_vision_image_direct(
+                                    &tactic, tab_id, &frame_buffer, &frame_size, &engine,
+                                );
                                 match result {
                                     Ok(bytes) => {
                                         if let Ok(mut s) = handle.lock() {
@@ -430,7 +434,9 @@ impl KiBrowserApp {
                             }
                             let tactic = tactic.to_string();
                             std::thread::spawn(move || {
-                                let result = fetch_vision_text(&tactic, tab_id, port);
+                                let result = run_vision_text_direct(
+                                    &tactic, tab_id, &engine,
+                                );
                                 match result {
                                     Ok(text) => {
                                         if let Ok(mut s) = handle.lock() {
@@ -449,57 +455,49 @@ impl KiBrowserApp {
                 }
                 DevToolsAction::RunOcr { engines, .. } => {
                     if let Some(tab) = self.tabs.get(self.active_tab) {
-                        let tab_id = tab.id;
-                        let port = self.api_port;
+                        let frame_buffer = tab.frame_buffer.clone();
+                        let frame_size = tab.frame_size.clone();
                         let ocr_results = self.devtools_shared.state.ocr_results.clone();
+                        let ocr_image = self.devtools_shared.state.ocr_image.clone();
 
-                        // Clear old results
+                        // Clear old results and reset annotated image state.
                         if let Ok(mut r) = ocr_results.lock() {
                             r.clear();
                         }
+                        if let Ok(mut img) = ocr_image.lock() {
+                            *img = devtools::ImageState::Loading;
+                        }
 
-                        // Screenshot holen und OCR parallel ausfuehren
+                        // Capture frame buffer and run OCR engines in background thread.
                         std::thread::spawn(move || {
-                            // Screenshot ueber API holen
-                            let rt = tokio::runtime::Builder::new_current_thread()
-                                .enable_all()
-                                .build();
-                            let screenshot_result = rt.as_ref().ok().and_then(|rt| {
-                                rt.block_on(async {
-                                    let client = reqwest::Client::new();
-                                    let url = format!(
-                                        "http://127.0.0.1:{}/screenshots?tab_id={}&format=png",
-                                        port, tab_id
-                                    );
-                                    let resp = client.get(&url).send().await.ok()?;
-                                    let text = resp.text().await.ok()?;
-                                    let val: serde_json::Value = serde_json::from_str(&text).ok()?;
-                                    let b64 = val.pointer("/data/data")
-                                        .or_else(|| val.pointer("/data/image"))
-                                        .and_then(|v| v.as_str())?;
-                                    use base64::Engine;
-                                    base64::engine::general_purpose::STANDARD.decode(b64).ok()
-                                })
-                            });
-
-                            let png_data = match screenshot_result {
-                                Some(data) => data,
-                                None => {
+                            // Read frame buffer directly — no API round-trip needed.
+                            let png_data = match frame_buffer_to_png(&frame_buffer, &frame_size) {
+                                Ok(data) => data,
+                                Err(e) => {
                                     if let Ok(mut r) = ocr_results.lock() {
                                         r.push(devtools::OcrDisplayResult {
                                             engine: "system".to_string(),
                                             full_text: String::new(),
                                             result_count: 0,
                                             duration_ms: 0,
-                                            error: Some("Screenshot konnte nicht geladen werden".to_string()),
+                                            error: Some(format!("Frame-Buffer Fehler: {}", e)),
+                                            regions: vec![],
                                         });
+                                    }
+                                    if let Ok(mut img) = ocr_image.lock() {
+                                        *img = devtools::ImageState::Error(
+                                            format!("Frame-Buffer Fehler: {}", e)
+                                        );
                                     }
                                     return;
                                 }
                             };
 
-                            // OCR Engines ausfuehren
+                            // Run all selected OCR engines and collect display results.
                             let all_engines = crate::ocr::all_engines();
+                            // Collect all recognised regions from all engines for the annotated image.
+                            let mut all_regions: Vec<devtools::OcrDisplayRegion> = Vec::new();
+
                             for ocr_engine in all_engines {
                                 if !engines.contains(&ocr_engine.name().to_string()) {
                                     continue;
@@ -512,6 +510,7 @@ impl KiBrowserApp {
                                             result_count: 0,
                                             duration_ms: 0,
                                             error: Some("Engine nicht verfuegbar".to_string()),
+                                            regions: vec![],
                                         });
                                     }
                                     continue;
@@ -519,13 +518,29 @@ impl KiBrowserApp {
 
                                 match ocr_engine.recognize(&png_data, None) {
                                     Ok(response) => {
+                                        // Map OCR result regions to display regions,
+                                        // preserving bounding box coordinates for overlay rendering.
+                                        let regions: Vec<devtools::OcrDisplayRegion> = response
+                                            .results
+                                            .iter()
+                                            .map(|region| devtools::OcrDisplayRegion {
+                                                text: region.text.clone(),
+                                                confidence: region.confidence,
+                                                x: region.x,
+                                                y: region.y,
+                                                w: region.w,
+                                                h: region.h,
+                                            })
+                                            .collect();
+                                        all_regions.extend(regions.iter().cloned());
                                         if let Ok(mut r) = ocr_results.lock() {
                                             r.push(devtools::OcrDisplayResult {
                                                 engine: response.engine,
                                                 full_text: response.full_text,
-                                                result_count: response.results.len(),
+                                                result_count: regions.len(),
                                                 duration_ms: response.duration_ms,
                                                 error: None,
+                                                regions,
                                             });
                                         }
                                     }
@@ -537,8 +552,26 @@ impl KiBrowserApp {
                                                 result_count: 0,
                                                 duration_ms: 0,
                                                 error: Some(err),
+                                                regions: vec![],
                                             });
                                         }
+                                    }
+                                }
+                            }
+
+                            // Draw red bounding boxes on the screenshot for all detected regions.
+                            // Each detected region is outlined with a red rectangle.
+                            match draw_ocr_bounding_boxes(&png_data, &all_regions) {
+                                Ok(annotated_png) => {
+                                    if let Ok(mut img) = ocr_image.lock() {
+                                        *img = devtools::ImageState::Loaded(annotated_png);
+                                    }
+                                }
+                                Err(e) => {
+                                    if let Ok(mut img) = ocr_image.lock() {
+                                        *img = devtools::ImageState::Error(
+                                            format!("Bounding-Box Fehler: {}", e)
+                                        );
                                     }
                                 }
                             }
@@ -1034,115 +1067,406 @@ fn fire_and_forget_js(engine: &Arc<CefBrowserEngine>, tab_id: Uuid, script: &str
     });
 }
 
-// --- Vision tactic REST API helpers (called from background threads) ---
+// --- Vision tactic direct engine helpers (called from background threads) ---
 
-/// Fetches a vision tactic result as text/JSON from our own REST API.
-fn fetch_vision_text(tactic: &str, tab_id: Uuid, port: u16) -> Result<String, String> {
-    let url = match tactic {
-        "labels" => format!(
-            "http://127.0.0.1:{}/vision/labels?tab_id={}", port, tab_id
-        ),
-        "dom_snapshot" => format!(
-            "http://127.0.0.1:{}/dom/snapshot?tab_id={}", port, tab_id
-        ),
-        "structured_data" => format!(
-            "http://127.0.0.1:{}/dom/extract-structured-data", port
-        ),
-        "content_extract" => format!(
-            "http://127.0.0.1:{}/dom/extract-content", port
-        ),
-        "structure_analysis" => format!(
-            "http://127.0.0.1:{}/dom/analyze-structure", port
-        ),
-        "forms" => format!(
-            "http://127.0.0.1:{}/dom/forms", port
-        ),
-        other => return Err(format!("Unbekannte Taktik: {}", other)),
-    };
+/// Executes JavaScript via the CEF engine from a background thread.
+///
+/// Sends a `CefCommand::ExecuteJsWithResult` to the CEF command thread and
+/// blocks the calling thread until the result arrives. The CEF command thread
+/// pumps `do_message_loop_work()` internally while waiting for the JS
+/// console.log result via the KI_RESULT protocol, so no deadlock occurs.
+///
+/// Must only be called from a non-tokio background thread (e.g. `std::thread::spawn`).
+/// Creates a minimal single-threaded tokio runtime without IO/timer drivers since
+/// the oneshot channel polling does not require those subsystems.
+fn execute_js_blocking(
+    engine: &Arc<CefBrowserEngine>,
+    tab_id: Uuid,
+    script: &str,
+) -> Result<String, String> {
+    tracing::debug!("execute_js_blocking: starting JS execution for tab {}", tab_id);
 
+    // Build a minimal current-thread runtime with timer support for the
+    // caller-side timeout. IO driver is omitted to avoid epoll conflicts
+    // with the global tokio runtime that owns the main IO driver.
     let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
+        .enable_time()
         .build()
-        .map_err(|e| format!("Runtime-Fehler: {}", e))?;
+        .map_err(|e| format!("Tokio runtime error: {}", e))?;
 
-    rt.block_on(async {
-        let client = reqwest::Client::new();
-        let resp = match tactic {
-            "labels" | "dom_snapshot" => {
-                client.get(&url).send().await
-            }
-            _ => {
-                client.post(&url)
-                    .json(&serde_json::json!({"tab_id": tab_id.to_string()}))
-                    .send().await
-            }
-        };
-        match resp {
-            Ok(r) => {
-                let text = r.text().await.map_err(|e| format!("Response-Fehler: {}", e))?;
-                match serde_json::from_str::<serde_json::Value>(&text) {
-                    Ok(val) => serde_json::to_string_pretty(&val)
-                        .map_err(|e| format!("JSON-Fehler: {}", e)),
-                    Err(_) => Ok(text),
-                }
-            }
-            Err(e) => Err(format!("API-Fehler: {}", e)),
+    let result = rt.block_on(async {
+        // Caller-side timeout: 15 seconds (CEF internal timeout is 10s, this
+        // catches cases where the CEF command thread itself is stuck).
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            engine.execute_js_with_result(tab_id, script),
+        )
+        .await
+        {
+            Ok(Ok(Some(result))) => Ok(result),
+            Ok(Ok(None)) => Err("JavaScript returned no result".to_string()),
+            Ok(Err(e)) => Err(format!("JS execution failed: {}", e)),
+            Err(_) => Err("JS execution timed out after 15s".to_string()),
         }
-    })
+    });
+
+    match &result {
+        Ok(s) => tracing::debug!("execute_js_blocking: JS returned {} bytes", s.len()),
+        Err(e) => tracing::warn!("execute_js_blocking: {}", e),
+    }
+
+    result
 }
 
-/// Fetches an annotated screenshot image from our REST API.
-fn fetch_vision_image(tactic: &str, tab_id: Uuid, port: u16) -> Result<Vec<u8>, String> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| format!("Runtime-Fehler: {}", e))?;
+/// Captures DOM snapshot via JavaScript and returns the parsed snapshot.
+///
+/// Builds the snapshot extraction script, executes it via `execute_js_blocking`,
+/// and parses the JSON result into a `DomSnapshot`. Used by vision tactics to
+/// obtain element bounding boxes for screenshot annotation.
+fn capture_dom_snapshot(
+    engine: &Arc<CefBrowserEngine>,
+    tab_id: Uuid,
+) -> Result<crate::browser::dom_snapshot::DomSnapshot, String> {
+    tracing::debug!("capture_dom_snapshot: starting for tab {}", tab_id);
 
-    rt.block_on(async {
-        let client = reqwest::Client::new();
-        let resp = match tactic {
-            "annotated" => {
-                let url = format!(
-                    "http://127.0.0.1:{}/vision/annotated?tab_id={}&format=png",
-                    port, tab_id
-                );
-                client.get(&url).send().await
+    let config = crate::browser::dom_snapshot::SnapshotConfig {
+        max_nodes: 5000,
+        include_text: true,
+    };
+    let script = crate::browser::dom_snapshot::build_snapshot_script(&config);
+    let json_str = execute_js_blocking(engine, tab_id, &script)?;
+    let snapshot = crate::browser::dom_snapshot::parse_snapshot_json(&json_str)
+        .map_err(|e| format!("DOM snapshot parsing failed: {}", e))?;
+
+    tracing::debug!("capture_dom_snapshot: {} nodes found", snapshot.nodes.len());
+    Ok(snapshot)
+}
+
+/// Runs a vision image tactic (annotated/dom_annotate) directly using the
+/// CEF engine frame buffer and JavaScript execution. No REST API needed.
+fn run_vision_image_direct(
+    tactic: &str,
+    tab_id: Uuid,
+    frame_buffer: &Arc<RwLock<Vec<u8>>>,
+    frame_size: &Arc<RwLock<(u32, u32)>>,
+    engine: &Arc<CefBrowserEngine>,
+) -> Result<Vec<u8>, String> {
+    tracing::debug!("run_vision_image_direct: tactic={}, tab={}", tactic, tab_id);
+
+    // 1. Get screenshot from frame buffer
+    let png_data = frame_buffer_to_png(frame_buffer, frame_size)?;
+    tracing::debug!("run_vision_image_direct: PNG {} bytes", png_data.len());
+
+    // 2. Get DOM snapshot via JavaScript
+    let snapshot = capture_dom_snapshot(engine, tab_id)?;
+    tracing::debug!("run_vision_image_direct: snapshot {} nodes", snapshot.nodes.len());
+
+    // 3. Generate labels and annotate
+    match tactic {
+        "annotated" => {
+            let labels = crate::browser::vision::generate_labels(&snapshot);
+            tracing::debug!("run_vision_image_direct: {} labels generated", labels.len());
+            if labels.is_empty() {
+                return Err("No interactive elements found on page".to_string());
             }
-            "dom_annotate" => {
-                let url = format!("http://127.0.0.1:{}/dom/annotate", port);
-                client.post(&url)
-                    .json(&serde_json::json!({
-                        "tab_id": tab_id.to_string(),
-                        "types": ["links", "buttons", "inputs", "images"]
-                    }))
-                    .send().await
-            }
-            other => return Err(format!("Unbekannte Bild-Taktik: {}", other)),
-        };
-
-        match resp {
-            Ok(r) => {
-                let text = r.text().await.map_err(|e| format!("Response-Fehler: {}", e))?;
-                let val: serde_json::Value = serde_json::from_str(&text)
-                    .map_err(|e| format!("JSON-Fehler: {}", e))?;
-
-                let b64 = val.pointer("/data/image")
-                    .or_else(|| val.pointer("/data/data"))
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        let err = val.pointer("/error")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("Kein Bild in der Antwort");
-                        format!("API: {}", err)
-                    })?;
-
-                use base64::Engine;
-                base64::engine::general_purpose::STANDARD.decode(b64)
-                    .map_err(|e| format!("Base64-Fehler: {}", e))
-            }
-            Err(e) => Err(format!("API-Fehler: {}", e)),
+            crate::browser::vision::annotate_screenshot_with_labels(
+                &png_data,
+                &labels,
+                crate::browser::screenshot::ScreenshotFormat::Png,
+            )
+            .map_err(|e| format!("Annotation failed: {}", e))
         }
-    })
+        "dom_annotate" => {
+            // DOM Annotate: annotate all visible elements, not just interactive
+            let labels: Vec<crate::browser::vision::VisionLabel> = snapshot
+                .nodes
+                .iter()
+                .filter(|n| n.is_visible && n.bbox.is_visible())
+                .enumerate()
+                .map(|(idx, node)| crate::browser::vision::VisionLabel {
+                    id: (idx + 1) as u32,
+                    bbox: node.bbox,
+                    role: node.role.clone().unwrap_or_else(|| node.tag.clone()),
+                    name: node
+                        .text
+                        .as_ref()
+                        .map(|t| t.chars().take(80).collect())
+                        .unwrap_or_default(),
+                    text_hint: node.text.clone(),
+                    selector_hint: node
+                        .attributes
+                        .get("id")
+                        .map(|id| format!("#{}", id))
+                        .unwrap_or_else(|| node.tag.clone()),
+                })
+                .collect();
+            tracing::debug!("run_vision_image_direct: {} labels generated", labels.len());
+            if labels.is_empty() {
+                return Err("No visible elements found on page".to_string());
+            }
+            crate::browser::vision::annotate_screenshot_with_labels(
+                &png_data,
+                &labels,
+                crate::browser::screenshot::ScreenshotFormat::Png,
+            )
+            .map_err(|e| format!("DOM annotation failed: {}", e))
+        }
+        other => Err(format!("Unknown image tactic: {}", other))
+    }
+}
+
+/// Runs a vision text tactic (labels/dom_snapshot/etc.) directly using
+/// the CEF engine JavaScript execution. No REST API needed.
+fn run_vision_text_direct(
+    tactic: &str,
+    tab_id: Uuid,
+    engine: &Arc<CefBrowserEngine>,
+) -> Result<String, String> {
+    tracing::debug!("run_vision_text_direct: tactic={}, tab={}", tactic, tab_id);
+    let result = run_vision_text_direct_inner(tactic, tab_id, engine);
+    if let Err(ref e) = result {
+        tracing::warn!("run_vision_text_direct: {}", e);
+    }
+    result
+}
+
+fn run_vision_text_direct_inner(
+    tactic: &str,
+    tab_id: Uuid,
+    engine: &Arc<CefBrowserEngine>,
+) -> Result<String, String> {
+    match tactic {
+        "labels" => {
+            let snapshot = capture_dom_snapshot(engine, tab_id)?;
+            let labels = crate::browser::vision::generate_labels(&snapshot);
+            let response = serde_json::json!({
+                "count": labels.len(),
+                "labels": labels,
+            });
+            serde_json::to_string_pretty(&response)
+                .map_err(|e| format!("JSON serialization failed: {}", e))
+        }
+        "dom_snapshot" => {
+            let snapshot = capture_dom_snapshot(engine, tab_id)?;
+            serde_json::to_string_pretty(&snapshot)
+                .map_err(|e| format!("JSON serialization failed: {}", e))
+        }
+        "structured_data" => {
+            let script = r#"(function() {
+                var result = { jsonLd: [], openGraph: {}, meta: {}, microdata: [] };
+                document.querySelectorAll('script[type="application/ld+json"]').forEach(function(s) {
+                    try { result.jsonLd.push(JSON.parse(s.textContent)); } catch(e) {}
+                });
+                document.querySelectorAll('meta[property^="og:"]').forEach(function(m) {
+                    result.openGraph[m.getAttribute('property')] = m.getAttribute('content');
+                });
+                document.querySelectorAll('meta[name]').forEach(function(m) {
+                    result.meta[m.getAttribute('name')] = m.getAttribute('content');
+                });
+                return JSON.stringify(result);
+            })()"#;
+            let json_str = execute_js_blocking(engine, tab_id, script)?;
+            // Pretty-print the JSON
+            match serde_json::from_str::<serde_json::Value>(&json_str) {
+                Ok(val) => serde_json::to_string_pretty(&val)
+                    .map_err(|e| format!("JSON error: {}", e)),
+                Err(_) => Ok(json_str),
+            }
+        }
+        "content_extract" => {
+            let script = r#"(function() {
+                var article = document.querySelector('article') || document.querySelector('main') || document.body;
+                var clone = article.cloneNode(true);
+                clone.querySelectorAll('script,style,nav,footer,header,aside,.ad,.ads,.advertisement').forEach(function(el) { el.remove(); });
+                var text = clone.innerText || clone.textContent || '';
+                return JSON.stringify({
+                    title: document.title,
+                    url: window.location.href,
+                    content: text.trim().substring(0, 50000),
+                    length: text.trim().length
+                });
+            })()"#;
+            let json_str = execute_js_blocking(engine, tab_id, script)?;
+            match serde_json::from_str::<serde_json::Value>(&json_str) {
+                Ok(val) => serde_json::to_string_pretty(&val)
+                    .map_err(|e| format!("JSON error: {}", e)),
+                Err(_) => Ok(json_str),
+            }
+        }
+        "structure_analysis" => {
+            let script = r#"(function() {
+                var headings = [];
+                document.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach(function(h) {
+                    headings.push({ level: parseInt(h.tagName[1]), text: h.textContent.trim().substring(0, 200) });
+                });
+                var links = document.querySelectorAll('a[href]').length;
+                var images = document.querySelectorAll('img').length;
+                var forms = document.querySelectorAll('form').length;
+                var buttons = document.querySelectorAll('button,input[type="submit"],input[type="button"]').length;
+                var inputs = document.querySelectorAll('input,textarea,select').length;
+                var sections = [];
+                document.querySelectorAll('section,article,nav,aside,main,header,footer').forEach(function(s) {
+                    sections.push({ tag: s.tagName.toLowerCase(), id: s.id || null, className: s.className || null });
+                });
+                return JSON.stringify({
+                    title: document.title,
+                    url: window.location.href,
+                    headings: headings,
+                    counts: { links: links, images: images, forms: forms, buttons: buttons, inputs: inputs },
+                    sections: sections,
+                    pageType: document.querySelector('article') ? 'article' : (forms > 0 ? 'form' : 'general')
+                });
+            })()"#;
+            let json_str = execute_js_blocking(engine, tab_id, script)?;
+            match serde_json::from_str::<serde_json::Value>(&json_str) {
+                Ok(val) => serde_json::to_string_pretty(&val)
+                    .map_err(|e| format!("JSON error: {}", e)),
+                Err(_) => Ok(json_str),
+            }
+        }
+        "forms" => {
+            let script = r#"(function() {
+                var forms = [];
+                document.querySelectorAll('form').forEach(function(f, fi) {
+                    var fields = [];
+                    f.querySelectorAll('input,textarea,select,button').forEach(function(el) {
+                        fields.push({
+                            tag: el.tagName.toLowerCase(),
+                            type: el.type || null,
+                            name: el.name || null,
+                            id: el.id || null,
+                            placeholder: el.placeholder || null,
+                            required: el.required || false,
+                            value: el.type === 'password' ? '***' : (el.value || '').substring(0, 100)
+                        });
+                    });
+                    forms.push({
+                        index: fi,
+                        action: f.action || null,
+                        method: (f.method || 'GET').toUpperCase(),
+                        id: f.id || null,
+                        name: f.name || null,
+                        fields: fields
+                    });
+                });
+                return JSON.stringify({ count: forms.length, forms: forms });
+            })()"#;
+            let json_str = execute_js_blocking(engine, tab_id, script)?;
+            match serde_json::from_str::<serde_json::Value>(&json_str) {
+                Ok(val) => serde_json::to_string_pretty(&val)
+                    .map_err(|e| format!("JSON error: {}", e)),
+                Err(_) => Ok(json_str),
+            }
+        }
+        other => Err(format!("Unknown text tactic: {}", other)),
+    }
+}
+
+/// Converts a CEF BGRA frame buffer to PNG bytes.
+///
+/// Uses `chunks_exact(4)` for efficient BGRA→RGBA channel swapping, matching
+/// the conversion approach in cef_render.rs. Releases the frame buffer lock
+/// before PNG encoding to minimise lock contention with the render thread.
+///
+/// Used by OCR and Vision to get screenshots without going through the REST API.
+fn frame_buffer_to_png(
+    frame_buffer: &Arc<RwLock<Vec<u8>>>,
+    frame_size: &Arc<RwLock<(u32, u32)>>,
+) -> Result<Vec<u8>, String> {
+    use image::{ImageBuffer, ImageOutputFormat, Rgba};
+
+    let fb = frame_buffer.read();
+    let (w, h) = *frame_size.read();
+
+    tracing::debug!("frame_buffer_to_png: converting {}x{} frame", w, h);
+
+    if fb.is_empty() || w == 0 || h == 0 {
+        return Err("No frame buffer available (page not loaded yet?)".to_string());
+    }
+
+    let expected_len = (w as usize) * (h as usize) * 4;
+    if fb.len() < expected_len {
+        return Err(format!(
+            "Frame buffer too small: {} bytes for {}x{} (expected {})",
+            fb.len(),
+            w,
+            h,
+            expected_len
+        ));
+    }
+
+    // Efficient BGRA → RGBA conversion using chunks_exact (avoids per-pixel indexing overhead).
+    // CEF delivers frames in BGRA order: [B=0, G=1, R=2, A=3].
+    // PNG expects RGBA order, so we swap B↔R channels.
+    let mut rgba = Vec::with_capacity(expected_len);
+    for chunk in fb[..expected_len].chunks_exact(4) {
+        rgba.push(chunk[2]); // R ← BGRA[2]
+        rgba.push(chunk[1]); // G ← BGRA[1]
+        rgba.push(chunk[0]); // B ← BGRA[0]
+        rgba.push(chunk[3]); // A ← BGRA[3]
+    }
+    drop(fb); // Release frame buffer lock early before PNG encoding
+
+    let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_raw(w, h, rgba)
+        .ok_or_else(|| "ImageBuffer::from_raw failed".to_string())?;
+
+    let mut output = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut output), ImageOutputFormat::Png)
+        .map_err(|e| format!("PNG encoding failed: {}", e))?;
+
+    tracing::debug!("frame_buffer_to_png: PNG {} bytes", output.len());
+    Ok(output)
+}
+
+/// Draws red bounding boxes with 1-based region indices onto a PNG screenshot.
+///
+/// Decodes the source PNG, draws a 2-pixel red rectangle around each OCR region,
+/// re-encodes to PNG and returns the annotated bytes. Used to produce the
+/// `ocr_image` shown in DevTools above the per-region table.
+fn draw_ocr_bounding_boxes(
+    png_data: &[u8],
+    regions: &[devtools::OcrDisplayRegion],
+) -> Result<Vec<u8>, String> {
+    use image::{ImageOutputFormat, Rgba};
+
+    let mut img = image::load_from_memory(png_data)
+        .map_err(|e| format!("PNG decode failed: {}", e))?
+        .to_rgba8();
+
+    let red = Rgba([220u8, 50u8, 50u8, 255u8]);
+
+    for region in regions {
+        let x0 = region.x.max(0.0) as u32;
+        let y0 = region.y.max(0.0) as u32;
+        let x1 = (region.x + region.w).max(0.0) as u32;
+        let y1 = (region.y + region.h).max(0.0) as u32;
+        let img_w = img.width();
+        let img_h = img.height();
+
+        // Draw the four sides of the bounding box rectangle (2 px thick).
+        for thickness in 0u32..2 {
+            let top = y0.saturating_add(thickness).min(img_h.saturating_sub(1));
+            let bottom = y1.saturating_add(thickness).min(img_h.saturating_sub(1));
+            let left = x0.saturating_add(thickness).min(img_w.saturating_sub(1));
+            let right = x1.saturating_add(thickness).min(img_w.saturating_sub(1));
+
+            // Top and bottom horizontal lines
+            for x in left..=right.min(img_w.saturating_sub(1)) {
+                img.put_pixel(x, top, red);
+                img.put_pixel(x, bottom, red);
+            }
+            // Left and right vertical lines
+            for y in top..=bottom.min(img_h.saturating_sub(1)) {
+                img.put_pixel(left, y, red);
+                img.put_pixel(right, y, red);
+            }
+        }
+    }
+
+    let mut output = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut output), ImageOutputFormat::Png)
+        .map_err(|e| format!("PNG encode failed: {}", e))?;
+    Ok(output)
 }
 
 /// Starts the GUI browser. MUST be called from the main thread (X11/Wayland requirement).

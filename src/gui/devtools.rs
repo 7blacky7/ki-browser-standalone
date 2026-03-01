@@ -158,6 +158,17 @@ impl Default for OcrConfig {
     }
 }
 
+/// A single OCR text region with bounding box for overlay rendering.
+#[derive(Clone)]
+pub struct OcrDisplayRegion {
+    pub text: String,
+    pub confidence: f32,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
 /// A single OCR engine result for display in DevTools.
 #[derive(Clone)]
 pub struct OcrDisplayResult {
@@ -166,6 +177,8 @@ pub struct OcrDisplayResult {
     pub result_count: usize,
     pub duration_ms: u64,
     pub error: Option<String>,
+    /// Per-region bounding boxes for overlay rendering.
+    pub regions: Vec<OcrDisplayRegion>,
 }
 
 /// Action requested by the DevTools window, queued for the main app to handle.
@@ -217,6 +230,10 @@ pub struct DevToolsState {
     pub ocr_config: Arc<Mutex<OcrConfig>>,
     /// OCR results per engine (loaded asynchronously).
     pub ocr_results: Arc<Mutex<Vec<OcrDisplayResult>>>,
+    /// OCR annotated screenshot with bounding boxes drawn on it.
+    pub ocr_image: SharedImage,
+    /// Cached egui texture handle for the OCR annotated screenshot.
+    pub ocr_texture: Arc<Mutex<Option<egui::TextureHandle>>>,
 }
 
 impl Default for DevToolsState {
@@ -232,6 +249,8 @@ impl Default for DevToolsState {
             actions: Arc::new(Mutex::new(Vec::new())),
             ocr_config: Arc::new(Mutex::new(OcrConfig::default())),
             ocr_results: Arc::new(Mutex::new(Vec::new())),
+            ocr_image: Arc::new(Mutex::new(ImageState::Empty)),
+            ocr_texture: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -363,6 +382,8 @@ pub fn render_standalone(ctx: &egui::Context, shared: &DevToolsShared) {
     let vision_texture = shared.state.vision_texture.clone();
     let ocr_config = shared.state.ocr_config.clone();
     let ocr_results = shared.state.ocr_results.clone();
+    let ocr_image = shared.state.ocr_image.clone();
+    let ocr_texture = shared.state.ocr_texture.clone();
 
     // Dark theme for the standalone window
     ctx.set_visuals(egui::Visuals::dark());
@@ -406,6 +427,7 @@ pub fn render_standalone(ctx: &egui::Context, shared: &DevToolsShared) {
                 if let Some(action) = render_ki_vision(
                     ui, ctx, &mut vision_tactic, &vision_text, &vision_image,
                     &vision_texture, &page_info, &actions, &ocr_config, &ocr_results,
+                    &ocr_image, &ocr_texture,
                 ) {
                     if let Ok(mut a) = actions.lock() {
                         a.push(action);
@@ -561,6 +583,8 @@ fn render_ki_vision(
     shared_actions: &Arc<Mutex<Vec<DevToolsAction>>>,
     shared_ocr_config: &Arc<Mutex<OcrConfig>>,
     shared_ocr_results: &Arc<Mutex<Vec<OcrDisplayResult>>>,
+    ocr_image: &SharedImage,
+    ocr_texture: &Arc<Mutex<Option<egui::TextureHandle>>>,
 ) -> Option<DevToolsAction> {
     let mut action = None;
 
@@ -682,9 +706,9 @@ fn render_ki_vision(
 
     // Result display
     if is_ocr_tactic {
-        render_ocr_section(ui, shared_actions, shared_ocr_config, shared_ocr_results, page_info);
+        render_ocr_section(ui, ctx, shared_actions, shared_ocr_config, shared_ocr_results, page_info, ocr_image, ocr_texture);
     } else if is_image_tactic {
-        render_vision_image(ui, ctx, vision_image, vision_texture);
+        render_vision_image(ui, ctx, vision_image, vision_texture, "vision_annotated");
     } else {
         render_vision_text(ui, vision_text);
     }
@@ -692,31 +716,34 @@ fn render_ki_vision(
     action
 }
 
-/// Renders the OCR section with engine checkboxes, run button, and results.
+/// Renders the OCR section with engine checkboxes, run button, annotated image, and per-region results.
 fn render_ocr_section(
     ui: &mut egui::Ui,
+    ctx: &egui::Context,
     actions: &Arc<Mutex<Vec<DevToolsAction>>>,
     ocr_config: &Arc<Mutex<OcrConfig>>,
     ocr_results: &Arc<Mutex<Vec<OcrDisplayResult>>>,
     _page_info: &PageInfo,
+    ocr_image: &SharedImage,
+    ocr_texture: &Arc<Mutex<Option<egui::TextureHandle>>>,
 ) {
     ui.label(RichText::new("OCR Engines").color(Color32::WHITE).strong());
     ui.add_space(4.0);
 
     // Engine checkboxes
-    let mut config = ocr_config.lock().unwrap().clone();
+    let mut config = ocr_config.lock().ok().map(|c| c.clone()).unwrap_or_default();
     ui.horizontal(|ui| {
         ui.checkbox(&mut config.tesseract, RichText::new("Tesseract").color(Color32::from_rgb(100, 200, 255)));
         ui.checkbox(&mut config.paddleocr, RichText::new("PaddleOCR").color(Color32::from_rgb(100, 255, 100)));
         ui.checkbox(&mut config.surya, RichText::new("Surya").color(Color32::from_rgb(255, 200, 100)));
     });
-    *ocr_config.lock().unwrap() = config.clone();
+    if let Ok(mut c) = ocr_config.lock() { *c = config.clone(); }
 
     ui.add_space(4.0);
 
     // Run OCR button
     let any_engine = config.tesseract || config.paddleocr || config.surya;
-    let results = ocr_results.lock().unwrap().clone();
+    let results = ocr_results.lock().ok().map(|r| r.clone()).unwrap_or_default();
 
     if ui.add_enabled(any_engine, egui::Button::new(
         RichText::new("OCR starten").color(if any_engine { Color32::WHITE } else { Color32::GRAY })
@@ -740,6 +767,9 @@ fn render_ocr_section(
             .color(Color32::from_rgb(100, 100, 115)).italics());
     } else {
         ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            // Render OCR annotated screenshot (bounding boxes drawn on PNG) if available.
+            render_vision_image(ui, ctx, ocr_image, ocr_texture, "ocr_annotated");
+
             for result in &results {
                 ui.group(|ui| {
                     ui.horizontal(|ui| {
@@ -759,6 +789,70 @@ fn render_ocr_section(
                                 .desired_rows(4)
                                 .font(egui::TextStyle::Monospace),
                         );
+
+                        // Show per-region bounding boxes in a table below the full text.
+                        if !result.regions.is_empty() {
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new(format!("{} Regionen:", result.regions.len()))
+                                    .color(Color32::from_rgb(200, 200, 220))
+                                    .size(11.0),
+                            );
+                            egui::Grid::new(format!("ocr_regions_{}", result.engine))
+                                .striped(true)
+                                .min_col_width(40.0)
+                                .show(ui, |ui| {
+                                    // Header row
+                                    ui.label(RichText::new("#").color(Color32::GRAY).size(10.0));
+                                    ui.label(RichText::new("Text").color(Color32::GRAY).size(10.0));
+                                    ui.label(RichText::new("Conf").color(Color32::GRAY).size(10.0));
+                                    ui.label(RichText::new("Position").color(Color32::GRAY).size(10.0));
+                                    ui.end_row();
+
+                                    for (i, region) in result.regions.iter().enumerate() {
+                                        ui.label(
+                                            RichText::new(format!("{}", i + 1))
+                                                .color(Color32::from_rgb(255, 180, 100))
+                                                .size(11.0),
+                                        );
+                                        // Truncate long text to keep table readable (Unicode-safe).
+                                        let text_preview = if region.text.chars().count() > 40 {
+                                            let truncated: String = region.text.chars().take(40).collect();
+                                            format!("{}...", truncated)
+                                        } else {
+                                            region.text.clone()
+                                        };
+                                        ui.label(
+                                            RichText::new(text_preview)
+                                                .color(Color32::WHITE)
+                                                .size(11.0),
+                                        );
+                                        // Color-code confidence: green > 80 %, yellow > 50 %, red otherwise.
+                                        let conf_color = if region.confidence > 0.8 {
+                                            Color32::from_rgb(100, 255, 100)
+                                        } else if region.confidence > 0.5 {
+                                            Color32::YELLOW
+                                        } else {
+                                            Color32::RED
+                                        };
+                                        ui.label(
+                                            RichText::new(format!("{:.0}%", region.confidence * 100.0))
+                                                .color(conf_color)
+                                                .size(11.0),
+                                        );
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "{:.0},{:.0} {:.0}x{:.0}",
+                                                region.x, region.y, region.w, region.h
+                                            ))
+                                            .color(Color32::GRAY)
+                                            .size(10.0)
+                                            .monospace(),
+                                        );
+                                        ui.end_row();
+                                    }
+                                });
+                        }
                     }
                 });
                 ui.add_space(4.0);
@@ -773,6 +867,7 @@ fn render_vision_image(
     ctx: &egui::Context,
     image_state: &SharedImage,
     texture: &Arc<Mutex<Option<egui::TextureHandle>>>,
+    texture_key: &str,
 ) {
     let state = {
         let guard = image_state.lock().ok();
@@ -788,7 +883,7 @@ fn render_vision_image(
                         let pixels = rgba.into_raw();
                         let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
                         let tex = ctx.load_texture(
-                            "vision_annotated",
+                            texture_key,
                             color_image,
                             egui::TextureOptions::LINEAR,
                         );
