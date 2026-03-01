@@ -27,6 +27,12 @@ pub struct ViewportState {
     last_tab_id: Option<uuid::Uuid>,
 }
 
+impl Default for ViewportState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ViewportState {
     pub fn new() -> Self {
         Self {

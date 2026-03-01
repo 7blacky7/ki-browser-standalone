@@ -16,6 +16,34 @@ use super::types::{
     TextState, VisionTactic,
 };
 
+/// Parameters for `render_ki_vision`, bundled to stay below the 7-argument Clippy limit.
+///
+/// Groups all shared-state references required to render the KI-Vision section:
+/// vision image/text/texture for screenshot display, OCR config/results/image/texture
+/// for the OCR sub-section, and page info for the API port label.
+pub(super) struct KiVisionParams<'a> {
+    /// Currently selected vision tactic (mutated on user selection change).
+    pub tactic: &'a mut VisionTactic,
+    /// Shared text result state for non-image tactics (DOM snapshot, labels, etc.).
+    pub vision_text: &'a SharedText,
+    /// Shared image result state for annotated screenshot tactics.
+    pub vision_image: &'a SharedImage,
+    /// Cached egui texture handle for the vision annotated screenshot.
+    pub vision_texture: &'a Arc<Mutex<Option<egui::TextureHandle>>>,
+    /// Current page metadata (URL, title, API port) shown in the run button row.
+    pub page_info: &'a PageInfo,
+    /// Shared action queue — OCR and vision actions are pushed here.
+    pub shared_actions: &'a Arc<Mutex<Vec<DevToolsAction>>>,
+    /// OCR engine selection config (Tesseract, PaddleOCR, Surya toggles).
+    pub shared_ocr_config: &'a Arc<Mutex<OcrConfig>>,
+    /// OCR results from the last OCR run, displayed in the results table.
+    pub shared_ocr_results: &'a Arc<Mutex<Vec<OcrDisplayResult>>>,
+    /// Shared image state for the OCR-annotated screenshot.
+    pub ocr_image: &'a SharedImage,
+    /// Cached egui texture handle for the OCR-annotated screenshot.
+    pub ocr_texture: &'a Arc<Mutex<Option<egui::TextureHandle>>>,
+}
+
 /// Renders the KI-Vision section with tactic selector grid, run button, and results.
 ///
 /// Returns an optional `RunVisionTactic` action when the user clicks "Analyse starten".
@@ -23,17 +51,20 @@ use super::types::{
 pub(super) fn render_ki_vision(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
-    tactic: &mut VisionTactic,
-    vision_text: &SharedText,
-    vision_image: &SharedImage,
-    vision_texture: &Arc<Mutex<Option<egui::TextureHandle>>>,
-    page_info: &PageInfo,
-    shared_actions: &Arc<Mutex<Vec<DevToolsAction>>>,
-    shared_ocr_config: &Arc<Mutex<OcrConfig>>,
-    shared_ocr_results: &Arc<Mutex<Vec<OcrDisplayResult>>>,
-    ocr_image: &SharedImage,
-    ocr_texture: &Arc<Mutex<Option<egui::TextureHandle>>>,
+    params: &mut KiVisionParams<'_>,
 ) -> Option<DevToolsAction> {
+    let KiVisionParams {
+        tactic,
+        vision_text,
+        vision_image,
+        vision_texture,
+        page_info,
+        shared_actions,
+        shared_ocr_config,
+        shared_ocr_results,
+        ocr_image,
+        ocr_texture,
+    } = params;
     let mut action = None;
 
     // Header with description
@@ -56,7 +87,7 @@ pub(super) fn render_ki_vision(
         .spacing([6.0, 4.0])
         .show(ui, |ui| {
             for (i, t) in VisionTactic::all().iter().enumerate() {
-                let is_selected = *tactic == *t;
+                let is_selected = **tactic == *t;
                 let bg = if is_selected {
                     Color32::from_rgb(45, 55, 75)
                 } else {
@@ -74,7 +105,7 @@ pub(super) fn render_ki_vision(
                             RichText::new(t.label()).color(text_color).size(11.0),
                         );
                         if resp.clicked() {
-                            *tactic = *t;
+                            **tactic = *t;
                         }
                     });
 
@@ -103,7 +134,7 @@ pub(super) fn render_ki_vision(
 
     // Run button (not shown for Ocr — it has its own section via render_ocr_section)
     let is_image_tactic = matches!(*tactic, VisionTactic::Annotated | VisionTactic::DomAnnotate);
-    let is_ocr_tactic = *tactic == VisionTactic::Ocr;
+    let is_ocr_tactic = **tactic == VisionTactic::Ocr;
 
     if !is_ocr_tactic {
         let is_loading = if is_image_tactic {
@@ -155,8 +186,16 @@ pub(super) fn render_ki_vision(
     // Result display: OCR section, annotated image, or text/JSON
     if is_ocr_tactic {
         super::render_ocr::render_ocr_section(
-            ui, ctx, shared_actions, shared_ocr_config, shared_ocr_results,
-            page_info, ocr_image, ocr_texture,
+            ui,
+            ctx,
+            &super::render_ocr::OcrSectionParams {
+                actions: shared_actions,
+                ocr_config: shared_ocr_config,
+                ocr_results: shared_ocr_results,
+                _page_info: page_info,
+                ocr_image,
+                ocr_texture,
+            },
         );
     } else if is_image_tactic {
         render_vision_image(ui, ctx, vision_image, vision_texture, "vision_annotated");

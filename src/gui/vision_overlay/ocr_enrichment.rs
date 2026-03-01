@@ -12,6 +12,7 @@ use super::types::{OverlayState, SharedOverlay};
 ///
 /// Each rectangle is defined as (x, y, w, h) in webpage pixel coordinates.
 /// Returns 0.0 when the rectangles do not overlap.
+#[allow(clippy::too_many_arguments)]
 fn intersection_area(ax: f32, ay: f32, aw: f32, ah: f32, bx: f32, by: f32, bw: f32, bh: f32) -> f32 {
     let x_overlap = (ax + aw).min(bx + bw) - ax.max(bx);
     let y_overlap = (ay + ah).min(by + bh) - ay.max(by);

@@ -677,7 +677,6 @@ impl eframe::App for KiBrowserApp {
                     }
                     TitleBarAction::Close => {
                         self.initiate_shutdown(ctx);
-                        return;
                     }
                 }
             }

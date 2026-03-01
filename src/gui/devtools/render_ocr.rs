@@ -12,21 +12,43 @@ use uuid::Uuid;
 use super::render_vision::render_vision_image;
 use super::types::{DevToolsAction, OcrConfig, OcrDisplayResult, PageInfo, SharedImage};
 
+/// Parameters for `render_ocr_section`, bundled to stay below the 7-argument Clippy limit.
+///
+/// Groups the shared-state references needed to render OCR engine checkboxes,
+/// the run button, the annotated screenshot, and the per-region results table.
+pub(super) struct OcrSectionParams<'a> {
+    /// Shared action queue — RunOcr actions are pushed here on button click.
+    pub actions: &'a Arc<Mutex<Vec<DevToolsAction>>>,
+    /// OCR engine selection config (Tesseract, PaddleOCR, Surya toggles).
+    pub ocr_config: &'a Arc<Mutex<OcrConfig>>,
+    /// OCR results from the last run, displayed as a per-region confidence table.
+    pub ocr_results: &'a Arc<Mutex<Vec<OcrDisplayResult>>>,
+    /// Current page metadata — used for context but currently unused in rendering.
+    pub _page_info: &'a PageInfo,
+    /// Shared image state for the OCR-annotated screenshot (bounding boxes drawn on PNG).
+    pub ocr_image: &'a SharedImage,
+    /// Cached egui texture handle for the OCR-annotated screenshot.
+    pub ocr_texture: &'a Arc<Mutex<Option<egui::TextureHandle>>>,
+}
+
 /// Renders the OCR section: engine checkboxes, run button, annotated image, and results table.
 ///
-/// Actions (RunOcr) are pushed directly into `actions` rather than returned,
+/// Actions (RunOcr) are pushed directly into `params.actions` rather than returned,
 /// because this function is called from within `render_ki_vision` which already
 /// has its own optional return action.
 pub(super) fn render_ocr_section(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
-    actions: &Arc<Mutex<Vec<DevToolsAction>>>,
-    ocr_config: &Arc<Mutex<OcrConfig>>,
-    ocr_results: &Arc<Mutex<Vec<OcrDisplayResult>>>,
-    _page_info: &PageInfo,
-    ocr_image: &SharedImage,
-    ocr_texture: &Arc<Mutex<Option<egui::TextureHandle>>>,
+    params: &OcrSectionParams<'_>,
 ) {
+    let OcrSectionParams {
+        actions,
+        ocr_config,
+        ocr_results,
+        ocr_image,
+        ocr_texture,
+        ..
+    } = params;
     ui.label(RichText::new("OCR Engines").color(Color32::WHITE).strong());
     ui.add_space(4.0);
 

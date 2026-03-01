@@ -11,7 +11,7 @@ use egui::{Color32, RichText};
 use super::render_page_info::render_page_info;
 use super::render_source::render_source_view;
 use super::render_tabs::render_tabs;
-use super::render_vision::render_ki_vision;
+use super::render_vision::{render_ki_vision, KiVisionParams};
 use super::state::DevToolsShared;
 use super::types::{Section, VisionTactic};
 
@@ -93,9 +93,20 @@ pub fn render_standalone(ctx: &egui::Context, shared: &DevToolsShared) {
             }
             Section::KiVision => {
                 if let Some(action) = render_ki_vision(
-                    ui, ctx, &mut vision_tactic, &vision_text, &vision_image,
-                    &vision_texture, &page_info, &actions, &ocr_config, &ocr_results,
-                    &ocr_image, &ocr_texture,
+                    ui,
+                    ctx,
+                    &mut KiVisionParams {
+                        tactic: &mut vision_tactic,
+                        vision_text: &vision_text,
+                        vision_image: &vision_image,
+                        vision_texture: &vision_texture,
+                        page_info: &page_info,
+                        shared_actions: &actions,
+                        shared_ocr_config: &ocr_config,
+                        shared_ocr_results: &ocr_results,
+                        ocr_image: &ocr_image,
+                        ocr_texture: &ocr_texture,
+                    },
                 ) {
                     if let Ok(mut a) = actions.lock() {
                         a.push(action);

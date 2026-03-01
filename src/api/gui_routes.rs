@@ -13,6 +13,8 @@ use axum::{
     Json, Router,
 };
 use serde::Serialize;
+#[cfg(feature = "gui")]
+use tracing::info;
 
 use crate::api::routes::ApiResponse;
 use crate::api::server::AppState;

@@ -54,10 +54,8 @@ pub(super) fn render_tabs(ui: &mut egui::Ui, tabs: &[DevToolsTabInfo]) -> Vec<De
                                 if ui.small_button("X").clicked() {
                                     actions.push(DevToolsAction::CloseTab(i));
                                 }
-                                if !tab.is_active {
-                                    if ui.small_button("Wechseln").clicked() {
-                                        actions.push(DevToolsAction::SwitchToTab(i));
-                                    }
+                                if !tab.is_active && ui.small_button("Wechseln").clicked() {
+                                    actions.push(DevToolsAction::SwitchToTab(i));
                                 }
                                 if tab.is_loading {
                                     ui.label(RichText::new("Laden...").color(Color32::YELLOW).size(11.0));

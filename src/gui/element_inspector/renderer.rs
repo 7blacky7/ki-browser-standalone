@@ -214,7 +214,6 @@ fn render_element_properties(
                     *c = config.clone();
                 }
                 // Already saved by reset_to_default
-                return;
             }
         });
 
