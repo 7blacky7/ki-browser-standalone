@@ -457,6 +457,7 @@ async fn main() -> Result<()> {
         use std::sync::Arc;
         use ki_browser_standalone::browser::BrowserConfig;
         use ki_browser_standalone::api::{ApiServer, IpcChannel};
+        use ki_browser_standalone::gui::GuiHandle;
 
         info!("Starting GUI browser mode...");
 
@@ -475,14 +476,17 @@ async fn main() -> Result<()> {
 
         let api_port = settings.api_port;
 
-        // Create CEF engine FIRST — needed by both API handler and GUI.
+        // Create the shared GUI handle BEFORE engine and server so both
+        // can hold a reference for visibility control and shutdown signaling.
+        let gui_handle = GuiHandle::new();
+
+        // Create CEF engine FIRST -- needed by both API handler and GUI.
         use ki_browser_standalone::browser::BrowserEngine;
         let engine = ki_browser_standalone::browser::cef_engine::CefBrowserEngine::new(browser_config).await?;
         let engine = Arc::new(engine);
 
         // Start API server in background if enabled.
-        // _api_server lives until run_gui() returns, keeping the server alive.
-        let _api_server = if settings.api_enabled {
+        let mut api_server = if settings.api_enabled {
             let ipc_channel = IpcChannel::new();
             let handler = ki_browser_standalone::api::BrowserCommandHandler::with_cef_shared(engine.clone());
 
@@ -494,6 +498,9 @@ async fn main() -> Result<()> {
             });
 
             let mut server = ApiServer::new(api_port, ipc_channel);
+            // Store GuiHandle in AppState so GUI toggle endpoints can use it.
+            server.state().set_gui_handle(gui_handle.clone());
+
             server
                 .start()
                 .await
@@ -505,10 +512,29 @@ async fn main() -> Result<()> {
             None
         };
 
+        // Spawn a background task that forwards SIGINT/SIGTERM to the GUI handle
+        // so the event loop exits gracefully instead of being killed mid-frame.
+        let shutdown_handle = gui_handle.clone();
+        tokio::spawn(async move {
+            if signal::ctrl_c().await.is_ok() {
+                info!("Received shutdown signal, requesting GUI shutdown...");
+                shutdown_handle.request_shutdown();
+            }
+        });
+
         // IMPORTANT: run_gui() MUST be called from the main thread (X11/Wayland).
         // The tokio runtime worker threads keep the API server running in the
         // background while the GUI event loop blocks the main thread.
-        return ki_browser_standalone::gui::browser_app::run_gui(engine, api_port);
+        let gui_result = ki_browser_standalone::gui::run_gui(engine, api_port, gui_handle);
+
+        // GUI has exited -- stop the API server gracefully.
+        if let Some(ref mut server) = api_server {
+            info!("GUI closed, stopping API server...");
+            server.stop().await;
+        }
+
+        info!("KI-Browser stopped successfully.");
+        return gui_result;
     }
 
     // Initialize browser engine

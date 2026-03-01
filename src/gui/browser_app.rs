@@ -1,4 +1,8 @@
-//! Main GUI browser application with CEF rendering.
+//! Main GUI browser application with CEF rendering and graceful shutdown.
+//!
+//! Provides the central GUI application loop, single-instance enforcement via
+//! PID file, and the eframe integration. Uses `GuiHandle` from the `handle`
+//! module for cross-thread shutdown signaling and visibility control.
 
 use std::sync::Arc;
 use parking_lot::RwLock;
@@ -8,6 +12,7 @@ use tracing::{info, warn};
 use crate::browser::cef_engine::CefBrowserEngine;
 use crate::browser::tab::TabStatus;
 
+use super::handle::{GuiHandle, GuiVisibility};
 use super::tab_bar::{self, TabInfo};
 use super::toolbar::{self, NavAction};
 use super::viewport::{self, ViewportState, ViewportInput};
@@ -16,7 +21,7 @@ use super::status_bar;
 /// PID file path for single-instance enforcement.
 const PID_FILE: &str = "/tmp/ki-browser-gui.pid";
 
-/// Tab state for the GUI.
+/// Tab state mirrored from the CEF engine for the GUI render loop.
 struct GuiTab {
     id: Uuid,
     title: String,
@@ -24,11 +29,13 @@ struct GuiTab {
     is_loading: bool,
     frame_buffer: Arc<RwLock<Vec<u8>>>,
     frame_size: Arc<RwLock<(u32, u32)>>,
+    can_go_back: bool,
+    can_go_forward: bool,
 }
 
 /// The main browser application.
 pub struct KiBrowserApp {
-    /// CEF engine (shared via Arc — all methods are &self and use internal
+    /// CEF engine (shared via Arc -- all methods are &self and use internal
     /// channels, so no Mutex needed). The same Arc may be held by the API
     /// server so that both GUI and REST API can drive the browser.
     engine: Arc<CefBrowserEngine>,
@@ -40,12 +47,19 @@ pub struct KiBrowserApp {
     first_frame: bool,
     /// Guard: only request initial tab creation once (prevents flooding).
     initial_tab_requested: bool,
+    /// Shared handle for cross-thread GUI control and shutdown signaling.
+    gui_handle: Arc<GuiHandle>,
+    /// Prevents sending duplicate shutdown commands to CEF.
+    shutdown_initiated: bool,
+    /// Last known viewport pixel size so we only send ResizeViewport on change.
+    last_viewport_size: (u32, u32),
 }
 
 impl KiBrowserApp {
     fn new(
         engine: Arc<CefBrowserEngine>,
         api_port: u16,
+        gui_handle: Arc<GuiHandle>,
     ) -> Self {
         Self {
             engine,
@@ -56,6 +70,9 @@ impl KiBrowserApp {
             api_port,
             first_frame: true,
             initial_tab_requested: false,
+            gui_handle,
+            shutdown_initiated: false,
+            last_viewport_size: (0, 0),
         }
     }
 
@@ -90,6 +107,8 @@ impl KiBrowserApp {
                     is_loading: matches!(et.status, TabStatus::Loading),
                     frame_buffer,
                     frame_size,
+                    can_go_back: self.engine.can_go_back(et.id),
+                    can_go_forward: self.engine.can_go_forward(et.id),
                 });
             }
         }
@@ -100,6 +119,8 @@ impl KiBrowserApp {
                 gt.title = et.title.clone();
                 gt.url = et.url.clone();
                 gt.is_loading = matches!(et.status, TabStatus::Loading);
+                gt.can_go_back = self.engine.can_go_back(gt.id);
+                gt.can_go_forward = self.engine.can_go_forward(gt.id);
             }
         }
 
@@ -116,7 +137,7 @@ impl KiBrowserApp {
     /// Create a new tab (fire-and-forget, tab appears in next sync).
     fn create_tab(&mut self, url: &str) {
         let tab_id = self.engine.send_create_tab(url);
-        info!("GUI: Creating tab {} → {}", tab_id, url);
+        info!("GUI: Creating tab {} -> {}", tab_id, url);
     }
 
     /// Close a tab by index (fire-and-forget).
@@ -181,39 +202,74 @@ impl KiBrowserApp {
         }
     }
 
-    /// Shutdown engine and force exit (for close handler).
-    fn shutdown_and_exit(&mut self) {
-        info!("GUI: Shutting down CEF engine");
+    /// Initiate graceful shutdown: close all tabs, send CEF shutdown command,
+    /// and let the eframe event loop exit naturally (no process::exit!).
+    fn initiate_shutdown(&mut self, ctx: &egui::Context) {
+        if self.shutdown_initiated {
+            return;
+        }
+        self.shutdown_initiated = true;
+
+        info!("GUI: Initiating graceful shutdown");
+
+        // Close all browser tabs
         for tab in &self.tabs {
             self.engine.send_close_tab(tab.id);
         }
-        self.engine.send_shutdown();
         self.tabs.clear();
-        let _ = std::fs::remove_file(PID_FILE);
-        info!("GUI: Exiting process");
-        std::process::exit(0);
+
+        // Tell CEF message loop to exit
+        self.engine.send_shutdown();
+
+        // Tell eframe to close the viewport (exits the event loop)
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 }
 
 impl eframe::App for KiBrowserApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        // Safety net: if update() didn't catch the close, force exit here
-        info!("on_exit called - forcing shutdown");
-        self.engine.send_shutdown();
+        // Safety net: ensure CEF shutdown was sent even if update() missed it.
+        if !self.shutdown_initiated {
+            info!("on_exit: sending belated CEF shutdown");
+            self.engine.send_shutdown();
+        }
+        // Clean up PID file and signal completion to callers.
         let _ = std::fs::remove_file(PID_FILE);
-        std::process::exit(0);
+        self.gui_handle.mark_shutdown_complete();
+        info!("GUI: on_exit complete, event loop will return");
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // === Bug 2 Fix: Prevent maximize from creating new windows ===
+        // Store egui context in the shared handle so API threads can
+        // trigger repaints when they change visibility or request shutdown.
         if self.first_frame {
             self.first_frame = false;
             ctx.set_embed_viewports(true);
+            self.gui_handle.set_egui_ctx(ctx.clone());
         }
 
-        // === Bug 1 Fix: Handle close request explicitly ===
-        if ctx.input(|i| i.viewport().close_requested()) {
-            self.shutdown_and_exit();
+        // --- Shutdown: close button or external request (SIGTERM, API) ---
+        let close_requested = ctx.input(|i| i.viewport().close_requested());
+        let external_shutdown = self.gui_handle.is_shutdown_requested();
+
+        if close_requested || external_shutdown {
+            self.initiate_shutdown(ctx);
+            return;
+        }
+
+        // --- Visibility: hide/show the window via API toggle ---
+        let visibility = self.gui_handle.visibility();
+        match visibility {
+            GuiVisibility::Hidden => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            }
+            GuiVisibility::Visible => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+            GuiVisibility::Disabled => {
+                // Should not happen in a running GUI, but ignore gracefully
+            }
         }
 
         // Auto-create first tab on startup (only once!)
@@ -261,9 +317,9 @@ impl eframe::App for KiBrowserApp {
             }
         });
 
-        // Toolbar
-        let can_back = false;
-        let can_fwd = false;
+        // Toolbar -- read history navigation state from the active tab
+        let can_back = self.active_tab().map(|t| t.can_go_back).unwrap_or(false);
+        let can_fwd = self.active_tab().map(|t| t.can_go_forward).unwrap_or(false);
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             if let Some(action) = toolbar::render(ui, &mut self.url_input, can_back, can_fwd) {
@@ -278,8 +334,15 @@ impl eframe::App for KiBrowserApp {
                             self.navigate(&url);
                         }
                     }
-                    NavAction::Back | NavAction::Forward => {
-                        // TODO: history navigation
+                    NavAction::Back => {
+                        if let Some(tab) = self.tabs.get(self.active_tab) {
+                            self.engine.send_go_back(tab.id);
+                        }
+                    }
+                    NavAction::Forward => {
+                        if let Some(tab) = self.tabs.get(self.active_tab) {
+                            self.engine.send_go_forward(tab.id);
+                        }
                     }
                 }
             }
@@ -295,11 +358,26 @@ impl eframe::App for KiBrowserApp {
             status_bar::render(ui, &current_url, tab_count, api_port, is_loading);
         });
 
-        // Viewport (central panel)
+        // Viewport (central panel) -- also detect resize
+        let mut viewport_rect = egui::Rect::NOTHING;
         egui::CentralPanel::default().show(ctx, |ui| {
+            viewport_rect = ui.available_rect_before_wrap();
             let inputs = viewport::render(ui, &mut self.viewport);
             self.forward_input(&inputs);
         });
+
+        // Notify CEF when the viewport pixel size changes so it re-renders
+        // at the correct resolution (e.g. after the user resizes the window).
+        if viewport_rect.width() > 1.0 && viewport_rect.height() > 1.0 {
+            let new_w = viewport_rect.width() as u32;
+            let new_h = viewport_rect.height() as u32;
+            if (new_w, new_h) != self.last_viewport_size {
+                self.last_viewport_size = (new_w, new_h);
+                if let Some(tab) = self.tabs.get(self.active_tab) {
+                    self.engine.send_resize_viewport(tab.id, new_w, new_h);
+                }
+            }
+        }
 
         // Request repainting at ~60fps (not unlimited)
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
@@ -335,11 +413,16 @@ fn acquire_instance_lock() -> anyhow::Result<()> {
 }
 
 /// Starts the GUI browser. MUST be called from the main thread (X11/Wayland requirement).
-/// Blocks until the GUI window is closed.
+/// Blocks until the GUI window is closed or a shutdown is requested.
 ///
-/// The engine is passed as `Arc<CefBrowserEngine>` so it can be shared with the
-/// API server running on background tokio threads.
-pub fn run_gui(engine: Arc<CefBrowserEngine>, api_port: u16) -> anyhow::Result<()> {
+/// The `gui_handle` parameter is created by `GuiHandle::new()` and should be
+/// shared with the API server *before* calling this function so that REST
+/// endpoints can control visibility and request shutdown.
+pub fn run_gui(
+    engine: Arc<CefBrowserEngine>,
+    api_port: u16,
+    gui_handle: Arc<GuiHandle>,
+) -> anyhow::Result<()> {
     acquire_instance_lock()?;
 
     info!("Starting GUI browser window");
@@ -352,7 +435,7 @@ pub fn run_gui(engine: Arc<CefBrowserEngine>, api_port: u16) -> anyhow::Result<(
         ..Default::default()
     };
 
-    let app = KiBrowserApp::new(engine, api_port);
+    let app = KiBrowserApp::new(engine, api_port, gui_handle.clone());
 
     let result = eframe::run_native(
         "KI-Browser",
@@ -360,7 +443,9 @@ pub fn run_gui(engine: Arc<CefBrowserEngine>, api_port: u16) -> anyhow::Result<(
         Box::new(|_cc| Ok(Box::new(app))),
     ).map_err(|e| anyhow::anyhow!("GUI error: {}", e));
 
+    // Ensure cleanup even if on_exit was not called (e.g. panic)
     let _ = std::fs::remove_file(PID_FILE);
+    gui_handle.mark_shutdown_complete();
 
     result
 }

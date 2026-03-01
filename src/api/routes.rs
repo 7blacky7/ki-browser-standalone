@@ -3,19 +3,22 @@
 //! Defines all HTTP endpoints for browser control operations.
 
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use tracing::{error, info};
+use tracing::{error, info, warn};
+use uuid::Uuid;
 
+use crate::api::cdp_mapping::{CdpTargetInfo, CdpTargetLookupResponse, CdpTargetsResponse};
 use crate::api::server::{AppState, TabState};
 use crate::api::ipc::{IpcCommand, IpcMessage};
 use crate::api::websocket::{self, BrowserEvent};
 use crate::api::agent_routes::agent_routes;
+use crate::api::gui_routes::gui_routes;
 use crate::api::vision_routes::vision_routes;
 use crate::api::extraction_routes::extraction_routes;
 use crate::api::batch_routes::batch_session_routes;
@@ -1260,6 +1263,112 @@ pub async fn api_status(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 // ============================================================================
+// CDP Mapping Handlers
+// ============================================================================
+
+/// GET /cdp/targets - List all CDP targets with their mapped ki-browser tab UUIDs.
+///
+/// Returns remote debugging connection info and all known tab-to-target mappings,
+/// enabling external CDP clients to discover which WebSocket URL corresponds to
+/// which ki-browser tab.
+pub async fn cdp_targets(State(state): State<AppState>) -> impl IntoResponse {
+    if !state.is_enabled().await {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiResponse::<CdpTargetsResponse>::error("API is disabled")),
+        )
+            .into_response();
+    }
+
+    let mapping = &state.cdp_mapping;
+    let browser_state = state.browser_state.read().await;
+
+    let targets: Vec<CdpTargetInfo> = mapping
+        .all_mappings()
+        .into_iter()
+        .map(|(tab_uuid, target_id)| {
+            let tab_id_str = tab_uuid.to_string();
+            let (url, title) = browser_state
+                .tabs
+                .get(&tab_id_str)
+                .map(|t| (t.url.clone(), t.title.clone()))
+                .unwrap_or_else(|| ("unknown".to_string(), "Unknown".to_string()));
+
+            CdpTargetInfo {
+                tab_id: tab_id_str,
+                target_id: target_id.clone(),
+                target_type: "page".to_string(),
+                ws_url: mapping.target_ws_url(&target_id),
+                url,
+                title,
+            }
+        })
+        .collect();
+
+    Json(ApiResponse::success(CdpTargetsResponse {
+        remote_debugging_port: mapping.remote_debugging_port(),
+        browser_ws_url: mapping.browser_ws_url(),
+        targets,
+    }))
+    .into_response()
+}
+
+/// GET /cdp/target/:tab_id - Look up the CDP TargetId for a specific ki-browser tab UUID.
+///
+/// Returns the CDP target identifier and WebSocket URL for connecting to the
+/// specified tab via Chrome DevTools Protocol.
+pub async fn cdp_target_by_tab(
+    State(state): State<AppState>,
+    Path(tab_id): Path<String>,
+) -> impl IntoResponse {
+    if !state.is_enabled().await {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiResponse::<CdpTargetLookupResponse>::error("API is disabled")),
+        )
+            .into_response();
+    }
+
+    let uuid = match Uuid::parse_str(&tab_id) {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::<CdpTargetLookupResponse>::error(
+                    "Invalid tab UUID format",
+                )),
+            )
+                .into_response();
+        }
+    };
+
+    let mapping = &state.cdp_mapping;
+
+    match mapping.get_target_id(&uuid) {
+        Some(target_id) => {
+            let ws_url = mapping.target_ws_url(&target_id);
+            Json(ApiResponse::success(CdpTargetLookupResponse {
+                tab_id: tab_id.clone(),
+                target_id,
+                ws_url,
+            }))
+            .into_response()
+        }
+        None => {
+            warn!("CDP target lookup failed: no mapping for tab {}", tab_id);
+            (
+                StatusCode::NOT_FOUND,
+                Json(ApiResponse::<CdpTargetLookupResponse>::error(format!(
+                    "No CDP target mapping found for tab: {}",
+                    tab_id
+                ))),
+            )
+                .into_response()
+        }
+    }
+}
+
+// ============================================================================
 // Router Configuration
 // ============================================================================
 
@@ -1292,6 +1401,10 @@ pub fn create_router(state: AppState) -> Router {
         // CDP remote debugging info
         .route("/cdp", get(cdp_info))
 
+        // CDP tab mapping
+        .route("/cdp/targets", get(cdp_targets))
+        .route("/cdp/target/{tab_id}", get(cdp_target_by_tab))
+
         // API management
         .route("/api/toggle", post(toggle_api))
         .route("/api/status", get(api_status))
@@ -1307,6 +1420,9 @@ pub fn create_router(state: AppState) -> Router {
 
         // Vision overlay for KI agent annotated screenshots
         .merge(vision_routes())
+
+        // GUI window visibility control (toggle, show, hide, status)
+        .merge(gui_routes())
 
         // WebSocket endpoint
         .route("/ws", get(websocket::ws_handler))

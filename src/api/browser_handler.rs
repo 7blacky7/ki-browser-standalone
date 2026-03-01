@@ -188,7 +188,14 @@ impl BrowserCommandHandler {
             #[cfg(feature = "cef-browser")]
             Some(BrowserEngineWrapper::Cef(e)) => {
                 match e.create_tab(url).await {
-                    Ok(tab) => IpcResponse::success_with_tab(tab.id.to_string()),
+                    Ok(tab) => {
+                        let mut resp = IpcResponse::success_with_tab(tab.id.to_string());
+                        // Include CEF browser_id for CDP target mapping
+                        if let Some(bid) = e.get_browser_id(&tab.id) {
+                            resp.data = Some(serde_json::json!({ "browser_id": bid }));
+                        }
+                        resp
+                    }
                     Err(e) => IpcResponse::error(e.to_string()),
                 }
             }

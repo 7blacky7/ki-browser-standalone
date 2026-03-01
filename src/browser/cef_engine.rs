@@ -243,6 +243,8 @@ struct CefTab {
     id: Uuid,
     /// CEF browser instance (set asynchronously after on_after_created).
     browser: Option<Browser>,
+    /// CEF browser identifier used as CDP TargetId for remote debugging.
+    browser_id: Option<i32>,
     /// Current URL of the tab.
     url: String,
     /// Page title.
@@ -255,20 +257,30 @@ struct CefTab {
     frame_size: Arc<RwLock<(u32, u32)>>,
     /// Whether the tab is ready for interaction.
     is_ready: AtomicBool,
+    /// Whether the browser can navigate back in history.
+    can_go_back: AtomicBool,
+    /// Whether the browser can navigate forward in history.
+    can_go_forward: AtomicBool,
+    /// Shared viewport dimensions for the render handler (updated on resize).
+    viewport_size: Arc<RwLock<(u32, u32)>>,
 }
 
 #[cfg(feature = "cef-browser")]
 impl CefTab {
-    fn new(id: Uuid, url: String, frame_buffer: Arc<RwLock<Vec<u8>>>, frame_size: Arc<RwLock<(u32, u32)>>) -> Self {
+    fn new(id: Uuid, url: String, frame_buffer: Arc<RwLock<Vec<u8>>>, frame_size: Arc<RwLock<(u32, u32)>>, viewport_size: Arc<RwLock<(u32, u32)>>) -> Self {
         Self {
             id,
             browser: None,
+            browser_id: None,
             url,
             title: String::new(),
             status: TabStatus::Loading,
             frame_buffer,
             frame_size,
             is_ready: AtomicBool::new(false),
+            can_go_back: AtomicBool::new(false),
+            can_go_forward: AtomicBool::new(false),
+            viewport_size,
         }
     }
 
@@ -366,6 +378,23 @@ pub(crate) enum CefCommand {
         tab_id: Uuid,
         script: String,
         response: oneshot::Sender<Result<Option<String>>>,
+    },
+    /// Navigate the browser back in history.
+    GoBack {
+        tab_id: Uuid,
+        response: oneshot::Sender<Result<()>>,
+    },
+    /// Navigate the browser forward in history.
+    GoForward {
+        tab_id: Uuid,
+        response: oneshot::Sender<Result<()>>,
+    },
+    /// Resize the CEF viewport for a tab and notify the browser.
+    ResizeViewport {
+        tab_id: Uuid,
+        width: u32,
+        height: u32,
+        response: oneshot::Sender<Result<()>>,
     },
     Shutdown {
         response: oneshot::Sender<Result<()>>,
@@ -565,21 +594,23 @@ cef::wrap_render_handler! {
         tab_id: Uuid,
         frame_buffer: Arc<RwLock<Vec<u8>>>,
         frame_size: Arc<RwLock<(u32, u32)>>,
-        viewport_size: (u32, u32),
+        viewport_size: Arc<RwLock<(u32, u32)>>,
     }
 
     impl RenderHandler {
         fn view_rect(&self, _browser: Option<&mut Browser>, rect: Option<&mut Rect>) {
             if let Some(r) = rect {
+                let (w, h) = *self.viewport_size.read();
                 r.x = 0;
                 r.y = 0;
-                r.width = self.viewport_size.0 as i32;
-                r.height = self.viewport_size.1 as i32;
+                r.width = w as i32;
+                r.height = h as i32;
             }
         }
 
         fn screen_info(&self, _browser: Option<&mut Browser>, screen_info: Option<&mut ScreenInfo>) -> ::std::os::raw::c_int {
             if let Some(info) = screen_info {
+                let (w, h) = *self.viewport_size.read();
                 info.device_scale_factor = 1.0;
                 info.depth = 32;
                 info.depth_per_component = 8;
@@ -587,14 +618,14 @@ cef::wrap_render_handler! {
                 info.rect = Rect {
                     x: 0,
                     y: 0,
-                    width: self.viewport_size.0 as i32,
-                    height: self.viewport_size.1 as i32,
+                    width: w as i32,
+                    height: h as i32,
                 };
                 info.available_rect = Rect {
                     x: 0,
                     y: 0,
-                    width: self.viewport_size.0 as i32,
-                    height: self.viewport_size.1 as i32,
+                    width: w as i32,
+                    height: h as i32,
                 };
             }
             1 // Return true
@@ -692,12 +723,18 @@ cef::wrap_life_span_handler! {
         fn on_after_created(&self, browser: Option<&mut Browser>) {
             info!("Browser created for tab {}", self.tab_id);
 
-            // Store browser reference in tab
+            // Store browser reference and browser_id in tab
             if let Some(b) = browser {
+                let bid = b.identifier();
                 let mut tabs = self.tabs.write();
                 if let Some(tab) = tabs.get_mut(&self.tab_id) {
                     tab.set_browser(b.clone());
+                    tab.browser_id = Some(bid);
                 }
+                info!(
+                    "Tab {} mapped to CEF browser_id {} (CDP TargetId)",
+                    self.tab_id, bid
+                );
             }
 
             self.browser_created.store(true, Ordering::SeqCst);
@@ -751,6 +788,8 @@ cef::wrap_load_handler! {
                     tab.status = TabStatus::Ready;
                     tab.is_ready.store(true, Ordering::SeqCst);
                 }
+                tab.can_go_back.store(can_go_back_bool, Ordering::SeqCst);
+                tab.can_go_forward.store(can_go_forward_bool, Ordering::SeqCst);
             }
 
             debug!(
@@ -1087,6 +1126,27 @@ impl CefBrowserEngine {
         Self::find_cef_dir()
     }
 
+    /// Returns the CEF browser_id for a given tab UUID, used as CDP TargetId.
+    ///
+    /// This identifier corresponds to the CDP target that external debugging
+    /// tools (Puppeteer, Playwright, Chrome DevTools) use to connect to a
+    /// specific browser tab via the remote debugging protocol.
+    pub fn get_browser_id(&self, tab_id: &Uuid) -> Option<i32> {
+        let tabs = self.tabs.read();
+        tabs.get(tab_id).and_then(|t| t.browser_id)
+    }
+
+    /// Returns all tab UUID to browser_id mappings for CDP target discovery.
+    ///
+    /// Used by the CDP mapping service to synchronize mappings for all
+    /// currently open tabs.
+    pub fn get_all_browser_ids(&self) -> Vec<(Uuid, i32)> {
+        let tabs = self.tabs.read();
+        tabs.values()
+            .filter_map(|t| t.browser_id.map(|bid| (t.id, bid)))
+            .collect()
+    }
+
     /// Find the CEF directory containing libcef.so and resources.
     /// Checks: CEF_PATH env, cef-dll-sys build output, ./cef/
     fn find_cef_dir() -> Option<std::path::PathBuf> {
@@ -1345,6 +1405,23 @@ impl CefBrowserEngine {
                                 let result = Self::drag_internal(tab_id, from_x, from_y, to_x, to_y, steps, duration_ms, tabs.clone());
                                 let _ = response.send(result);
                             }
+                            CefCommand::GoBack { tab_id, response } => {
+                                let result = Self::go_back_internal(tab_id, tabs.clone());
+                                let _ = response.send(result);
+                            }
+                            CefCommand::GoForward { tab_id, response } => {
+                                let result = Self::go_forward_internal(tab_id, tabs.clone());
+                                let _ = response.send(result);
+                            }
+                            CefCommand::ResizeViewport {
+                                tab_id,
+                                width,
+                                height,
+                                response,
+                            } => {
+                                let result = Self::resize_viewport_internal(tab_id, width, height, tabs.clone());
+                                let _ = response.send(result);
+                            }
                             CefCommand::Shutdown { response } => {
                                 info!("Processing shutdown command");
 
@@ -1395,11 +1472,12 @@ impl CefBrowserEngine {
         tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
         browser_id_counter: Arc<AtomicI32>,
     ) -> Result<()> {
-        let viewport_size = config.window_size;
+        let viewport_dims = config.window_size;
+        let viewport_size = Arc::new(RwLock::new(viewport_dims));
 
         // Create frame buffer for OSR
         let frame_buffer = Arc::new(RwLock::new(Vec::with_capacity(
-            (viewport_size.0 * viewport_size.1 * 4) as usize,
+            (viewport_dims.0 * viewport_dims.1 * 4) as usize,
         )));
         let frame_size = Arc::new(RwLock::new((0u32, 0u32)));
         let browser_created = Arc::new(AtomicBool::new(false));
@@ -1409,7 +1487,7 @@ impl CefBrowserEngine {
             tab_id,
             frame_buffer.clone(),
             frame_size.clone(),
-            viewport_size,
+            viewport_size.clone(),
         );
 
         // Create life span handler with popup_tx for popup interception
@@ -1450,8 +1528,8 @@ impl CefBrowserEngine {
         window_info.bounds = Rect {
             x: 0,
             y: 0,
-            width: viewport_size.0 as i32,
-            height: viewport_size.1 as i32,
+            width: viewport_dims.0 as i32,
+            height: viewport_dims.1 as i32,
         };
         window_info.windowless_rendering_enabled = 1;
 
@@ -1471,7 +1549,7 @@ impl CefBrowserEngine {
         }
 
         // Store tab BEFORE browser creation (browser will be set in on_after_created)
-        let cef_tab = CefTab::new(tab_id, url.to_string(), frame_buffer, frame_size);
+        let cef_tab = CefTab::new(tab_id, url.to_string(), frame_buffer, frame_size, viewport_size);
         tabs.write().insert(tab_id, cef_tab);
 
         // Wait for browser to be created (callback will be triggered)
@@ -1542,6 +1620,81 @@ impl CefBrowserEngine {
             Ok(())
         } else {
             Err(anyhow!("No main frame for tab: {}", tab_id))
+        }
+    }
+
+    /// Navigates the browser back in history on the CEF thread.
+    fn go_back_internal(
+        tab_id: Uuid,
+        tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
+    ) -> Result<()> {
+        let browser = {
+            let tabs_guard = tabs.read();
+            let tab = tabs_guard
+                .get(&tab_id)
+                .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
+            tab.browser.clone()
+                .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?
+        };
+
+        browser.go_back();
+        info!("Go back on tab {}", tab_id);
+        Ok(())
+    }
+
+    /// Navigates the browser forward in history on the CEF thread.
+    fn go_forward_internal(
+        tab_id: Uuid,
+        tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
+    ) -> Result<()> {
+        let browser = {
+            let tabs_guard = tabs.read();
+            let tab = tabs_guard
+                .get(&tab_id)
+                .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
+            tab.browser.clone()
+                .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?
+        };
+
+        browser.go_forward();
+        info!("Go forward on tab {}", tab_id);
+        Ok(())
+    }
+
+    /// Resizes the CEF viewport for a tab and notifies the browser host.
+    ///
+    /// Updates the shared viewport dimensions (read by the render handler's
+    /// `view_rect()` and `screen_info()` callbacks) then calls `was_resized()`
+    /// on the browser host so CEF re-renders at the new size.
+    fn resize_viewport_internal(
+        tab_id: Uuid,
+        width: u32,
+        height: u32,
+        tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
+    ) -> Result<()> {
+        let (browser, viewport_size) = {
+            let tabs_guard = tabs.read();
+            let tab = tabs_guard
+                .get(&tab_id)
+                .ok_or_else(|| anyhow!("Tab not found: {}", tab_id))?;
+            let browser = tab.browser.clone()
+                .ok_or_else(|| anyhow!("Browser not initialized for tab: {}", tab_id))?;
+            (browser, tab.viewport_size.clone())
+        };
+
+        // Update the shared viewport dimensions before notifying CEF.
+        // The render handler reads these in view_rect() and screen_info().
+        {
+            let mut vp = viewport_size.write();
+            *vp = (width, height);
+        }
+
+        if let Some(host) = browser.host() {
+            host.was_resized();
+            info!("Viewport resized for tab {}: {}x{}", tab_id, width, height);
+            Ok(())
+        } else {
+            Err(anyhow!("No browser host for tab: {}", tab_id))
         }
     }
 
@@ -2355,6 +2508,54 @@ impl CefBrowserEngine {
         let _ = self.command_tx.send(CefCommand::Shutdown {
             response: response_tx,
         });
+    }
+
+    /// Navigates the active tab back in history without blocking (fire-and-forget).
+    pub fn send_go_back(&self, tab_id: Uuid) {
+        let (response_tx, _) = oneshot::channel();
+        let _ = self.command_tx.send(CefCommand::GoBack {
+            tab_id,
+            response: response_tx,
+        });
+    }
+
+    /// Navigates the active tab forward in history without blocking (fire-and-forget).
+    pub fn send_go_forward(&self, tab_id: Uuid) {
+        let (response_tx, _) = oneshot::channel();
+        let _ = self.command_tx.send(CefCommand::GoForward {
+            tab_id,
+            response: response_tx,
+        });
+    }
+
+    /// Resizes the CEF viewport without blocking (fire-and-forget).
+    ///
+    /// Notifies CEF that the viewport dimensions changed so it re-renders
+    /// at the new size on the next paint cycle.
+    pub fn send_resize_viewport(&self, tab_id: Uuid, width: u32, height: u32) {
+        let (response_tx, _) = oneshot::channel();
+        let _ = self.command_tx.send(CefCommand::ResizeViewport {
+            tab_id,
+            width,
+            height,
+            response: response_tx,
+        });
+    }
+
+    /// Returns whether the given tab can navigate back in history.
+    pub fn can_go_back(&self, tab_id: Uuid) -> bool {
+        let tabs = self.tabs.read();
+        tabs.get(&tab_id)
+            .map(|t| t.can_go_back.load(Ordering::SeqCst))
+            .unwrap_or(false)
+    }
+
+    /// Returns whether the given tab can navigate forward in history.
+    pub fn can_go_forward(&self, tab_id: Uuid) -> bool {
+        let tabs = self.tabs.read();
+        tabs.get(&tab_id)
+            .map(|t| t.can_go_forward.load(Ordering::SeqCst))
+            .unwrap_or(false)
     }
 
     // ========================================================================
