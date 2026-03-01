@@ -21,6 +21,10 @@ pub struct ViewportState {
     last_mouse_pos: Option<(i32, i32)>,
     /// Last frame version we uploaded as a texture.
     last_frame_version: u64,
+    /// ID of the tab whose frame buffer we last rendered. When the active tab
+    /// changes we must force a texture re-upload even if FRAME_VERSION hasn't
+    /// changed, because we're now pointing at a different buffer.
+    last_tab_id: Option<uuid::Uuid>,
 }
 
 impl ViewportState {
@@ -29,22 +33,29 @@ impl ViewportState {
             texture: None,
             last_mouse_pos: None,
             last_frame_version: 0,
+            last_tab_id: None,
         }
     }
 
     /// Update the texture from CEF's BGRA frame buffer.
-    /// Only re-converts if the frame buffer has actually changed (version check).
+    /// Only re-converts if the frame buffer has actually changed (version check)
+    /// or if the active tab has changed (different buffer entirely).
     /// Releases the read lock ASAP by cloning the buffer first.
     pub fn update_from_frame_buffer(
         &mut self,
         ctx: &egui::Context,
         frame_buffer: &Arc<RwLock<Vec<u8>>>,
         frame_size: &Arc<RwLock<(u32, u32)>>,
+        tab_id: uuid::Uuid,
     ) {
+        let tab_changed = self.last_tab_id != Some(tab_id);
         let current_version = FRAME_VERSION.load(Ordering::Acquire);
-        if current_version == self.last_frame_version && self.texture.is_some() {
-            // Frame buffer hasn't changed since last upload — skip.
+        if !tab_changed && current_version == self.last_frame_version && self.texture.is_some() {
+            // Same tab, same frame version — skip.
             return;
+        }
+        if tab_changed {
+            self.last_tab_id = Some(tab_id);
         }
 
         // Hold read locks only for the clone, then release immediately.
@@ -112,7 +123,12 @@ pub fn render(
             );
 
             // Request focus on any click so keyboard events are captured
-            if response.clicked() || response.secondary_clicked() || response.middle_clicked() {
+            let any_click = ui.input(|i| {
+                i.pointer.button_clicked(egui::PointerButton::Primary)
+                    || i.pointer.button_clicked(egui::PointerButton::Secondary)
+                    || i.pointer.button_clicked(egui::PointerButton::Middle)
+            });
+            if any_click && response.hovered() {
                 response.request_focus();
             }
 
@@ -128,7 +144,15 @@ pub fn render(
                     viewport.last_mouse_pos = Some((rel_x, rel_y));
                 }
 
-                if response.clicked() {
+                // Check button clicks via raw input (more reliable than response.clicked()
+                // which can miss secondary/middle clicks when Sense::click_and_drag is used)
+                let (left_click, right_click, middle_click) = ui.input(|i| (
+                    i.pointer.button_clicked(egui::PointerButton::Primary),
+                    i.pointer.button_clicked(egui::PointerButton::Secondary),
+                    i.pointer.button_clicked(egui::PointerButton::Middle),
+                ));
+
+                if left_click {
                     inputs.push(ViewportInput::MouseClick {
                         x: rel_x,
                         y: rel_y,
@@ -136,7 +160,7 @@ pub fn render(
                     });
                 }
 
-                if response.secondary_clicked() {
+                if right_click {
                     inputs.push(ViewportInput::MouseClick {
                         x: rel_x,
                         y: rel_y,
@@ -144,7 +168,7 @@ pub fn render(
                     });
                 }
 
-                if response.middle_clicked() {
+                if middle_click {
                     inputs.push(ViewportInput::MouseClick {
                         x: rel_x,
                         y: rel_y,
@@ -357,6 +381,7 @@ mod tests {
         let state = ViewportState::new();
         assert!(state.texture.is_none());
         assert_eq!(state.last_frame_version, 0);
+        assert!(state.last_tab_id.is_none());
     }
 
     #[test]

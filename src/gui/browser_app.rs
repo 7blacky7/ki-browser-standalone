@@ -3,19 +3,25 @@
 //! Provides the central GUI application loop, single-instance enforcement via
 //! PID file, and the eframe integration. Uses `GuiHandle` from the `handle`
 //! module for cross-thread shutdown signaling and visibility control.
+//! DevTools opens as a separate OS window via `show_viewport_deferred`.
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+
 use parking_lot::RwLock;
-use uuid::Uuid;
 use tracing::{info, warn};
+use uuid::Uuid;
 
 use crate::browser::cef_engine::CefBrowserEngine;
 use crate::browser::tab::TabStatus;
 
+use super::context_menu::{self, ContextMenuAction, ContextMenuState};
+use super::devtools::{self, DevToolsAction, DevToolsShared, DevToolsTabInfo, PageInfo};
 use super::handle::{GuiHandle, GuiVisibility};
 use super::tab_bar::{self, TabInfo};
+use super::title_bar::{self, TitleBarAction};
 use super::toolbar::{self, NavAction};
-use super::viewport::{self, ViewportState, ViewportInput};
+use super::viewport::{self, ViewportInput, ViewportState};
 use super::status_bar;
 
 /// PID file path for single-instance enforcement.
@@ -53,6 +59,12 @@ pub struct KiBrowserApp {
     shutdown_initiated: bool,
     /// Last known viewport pixel size so we only send ResizeViewport on change.
     last_viewport_size: (u32, u32),
+    /// Last visibility state to avoid spamming Wayland with repeated commands.
+    last_visibility: GuiVisibility,
+    /// State for the browser right-click context menu.
+    context_menu_state: ContextMenuState,
+    /// Shared state for the DevTools OS window (Arc-wrapped for deferred viewport).
+    devtools_shared: Arc<DevToolsShared>,
 }
 
 impl KiBrowserApp {
@@ -73,6 +85,9 @@ impl KiBrowserApp {
             gui_handle,
             shutdown_initiated: false,
             last_viewport_size: (0, 0),
+            last_visibility: GuiVisibility::Visible,
+            context_menu_state: ContextMenuState::default(),
+            devtools_shared: Arc::new(DevToolsShared::default()),
         }
     }
 
@@ -140,16 +155,50 @@ impl KiBrowserApp {
         info!("GUI: Creating tab {} -> {}", tab_id, url);
     }
 
-    /// Close a tab by index (fire-and-forget).
+    /// Close a tab by index (fire-and-forget). Adjusts active tab index so
+    /// the currently viewed tab stays selected after removal.
     fn close_tab(&mut self, index: usize) {
         if let Some(tab) = self.tabs.get(index) {
             let tab_id = tab.id;
             self.engine.send_close_tab(tab_id);
 
             self.tabs.remove(index);
-            if self.active_tab >= self.tabs.len() && !self.tabs.is_empty() {
-                self.active_tab = self.tabs.len() - 1;
+
+            if self.tabs.is_empty() {
+                self.active_tab = 0;
+            } else if index < self.active_tab {
+                // Closed tab was before the active one -- shift index left
+                self.active_tab -= 1;
+            } else if index == self.active_tab {
+                // Closed the active tab -- select the nearest remaining tab
+                if self.active_tab >= self.tabs.len() {
+                    self.active_tab = self.tabs.len() - 1;
+                }
             }
+            // If index > active_tab, no adjustment needed
+
+            // Update URL bar to reflect the new active tab
+            if let Some(tab) = self.tabs.get(self.active_tab) {
+                self.url_input = tab.url.clone();
+            }
+        }
+    }
+
+    /// Reorder a tab from one index to another (drag-and-drop).
+    fn reorder_tab(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.tabs.len() || to >= self.tabs.len() {
+            return;
+        }
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+
+        // Adjust active_tab to follow the moved tab or stay on the same tab
+        if self.active_tab == from {
+            self.active_tab = to;
+        } else if from < self.active_tab && to >= self.active_tab {
+            self.active_tab -= 1;
+        } else if from > self.active_tab && to <= self.active_tab {
+            self.active_tab += 1;
         }
     }
 
@@ -202,8 +251,10 @@ impl KiBrowserApp {
         }
     }
 
-    /// Initiate graceful shutdown: close all tabs, send CEF shutdown command,
-    /// and let the eframe event loop exit naturally (no process::exit!).
+    /// Initiate graceful shutdown: send CEF shutdown command (which closes all
+    /// browsers internally), then let the eframe event loop exit naturally.
+    /// Does NOT close tabs individually -- the shutdown handler does that and
+    /// pumps the CEF message loop so browsers can finish their close cycle.
     fn initiate_shutdown(&mut self, ctx: &egui::Context) {
         if self.shutdown_initiated {
             return;
@@ -212,17 +263,176 @@ impl KiBrowserApp {
 
         info!("GUI: Initiating graceful shutdown");
 
-        // Close all browser tabs
-        for tab in &self.tabs {
-            self.engine.send_close_tab(tab.id);
-        }
+        // Close DevTools window if open
+        self.devtools_shared.state.open.store(false, Ordering::Relaxed);
+
+        // Clear our GUI-side tab list (prevents further rendering/interaction)
         self.tabs.clear();
 
-        // Tell CEF message loop to exit
+        // Tell CEF to close all browsers and shut down (handled on the CEF thread)
         self.engine.send_shutdown();
 
         // Tell eframe to close the viewport (exits the event loop)
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    /// Update shared DevTools page info and tab list from current GUI state.
+    fn update_devtools_shared_state(&self) {
+        if let Ok(mut pi) = self.devtools_shared.page_info.lock() {
+            *pi = PageInfo {
+                title: self.active_tab().map(|t| t.title.clone()).unwrap_or_default(),
+                url: self.current_url().to_string(),
+                is_loading: self.is_loading(),
+                can_go_back: self.active_tab().map(|t| t.can_go_back).unwrap_or(false),
+                can_go_forward: self.active_tab().map(|t| t.can_go_forward).unwrap_or(false),
+                api_port: self.api_port,
+                tab_count: self.tabs.len(),
+            };
+        }
+        if let Ok(mut tabs) = self.devtools_shared.tabs.lock() {
+            *tabs = self.tabs.iter().enumerate().map(|(i, t)| {
+                DevToolsTabInfo {
+                    id: t.id,
+                    title: t.title.clone(),
+                    url: t.url.clone(),
+                    is_loading: t.is_loading,
+                    is_active: i == self.active_tab,
+                }
+            }).collect();
+        }
+    }
+
+    /// Drain queued DevTools actions and handle them in the main app context.
+    fn handle_devtools_actions(&mut self) {
+        let actions: Vec<DevToolsAction> = self.devtools_shared.state.actions
+            .lock()
+            .map(|mut a| a.drain(..).collect())
+            .unwrap_or_default();
+
+        for dt_action in actions {
+            match dt_action {
+                DevToolsAction::LoadSource(_) => {
+                    if let Some(tab) = self.tabs.get(self.active_tab) {
+                        let tab_id = tab.id;
+                        let engine = self.engine.clone();
+                        let source_handle = self.devtools_shared.state.source_handle();
+                        self.devtools_shared.state.set_source_loading();
+                        // Fetch source in background thread (non-blocking)
+                        std::thread::spawn(move || {
+                            let rt = tokio::runtime::Builder::new_current_thread()
+                                .enable_all()
+                                .build();
+                            match rt {
+                                Ok(rt) => {
+                                    let result = rt.block_on(async {
+                                        engine.execute_js_with_result(
+                                            tab_id,
+                                            "document.documentElement.outerHTML",
+                                        ).await
+                                    });
+                                    match result {
+                                        Ok(Some(html)) => {
+                                            // Result comes as JSON string, strip quotes
+                                            let clean = html
+                                                .trim_start_matches('"')
+                                                .trim_end_matches('"')
+                                                .replace("\\n", "\n")
+                                                .replace("\\t", "\t")
+                                                .replace("\\\"", "\"")
+                                                .replace("\\\\", "\\");
+                                            if let Ok(mut s) = source_handle.lock() {
+                                                *s = devtools::TextState::Loaded(clean);
+                                            }
+                                        }
+                                        Ok(None) => {
+                                            if let Ok(mut s) = source_handle.lock() {
+                                                *s = devtools::TextState::Error(
+                                                    "Kein Ergebnis".to_string(),
+                                                );
+                                            }
+                                        }
+                                        Err(e) => {
+                                            if let Ok(mut s) = source_handle.lock() {
+                                                *s = devtools::TextState::Error(e.to_string());
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    if let Ok(mut s) = source_handle.lock() {
+                                        *s = devtools::TextState::Error(e.to_string());
+                                    }
+                                }
+                            }
+                        });
+                    }
+                }
+                DevToolsAction::SwitchToTab(idx) => {
+                    self.active_tab = idx;
+                    if let Some(tab) = self.tabs.get(idx) {
+                        self.url_input = tab.url.clone();
+                        let (w, h) = self.last_viewport_size;
+                        if w > 0 && h > 0 {
+                            self.engine.send_resize_viewport(tab.id, w, h);
+                        }
+                    }
+                }
+                DevToolsAction::CloseTab(idx) => {
+                    self.close_tab(idx);
+                }
+                DevToolsAction::RunVisionTactic { tactic, .. } => {
+                    if let Some(tab) = self.tabs.get(self.active_tab) {
+                        let tab_id = tab.id;
+                        let port = self.api_port;
+                        let is_image = self.devtools_shared.state.current_tactic_is_image();
+
+                        if is_image {
+                            let handle = self.devtools_shared.state.vision_image_handle();
+                            if let Ok(mut s) = handle.lock() {
+                                *s = devtools::ImageState::Loading;
+                            }
+                            let tactic = tactic.to_string();
+                            std::thread::spawn(move || {
+                                let result = fetch_vision_image(&tactic, tab_id, port);
+                                match result {
+                                    Ok(bytes) => {
+                                        if let Ok(mut s) = handle.lock() {
+                                            *s = devtools::ImageState::Loaded(bytes);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        if let Ok(mut s) = handle.lock() {
+                                            *s = devtools::ImageState::Error(e);
+                                        }
+                                    }
+                                }
+                            });
+                        } else {
+                            let handle = self.devtools_shared.state.vision_text_handle();
+                            if let Ok(mut s) = handle.lock() {
+                                *s = devtools::TextState::Loading;
+                            }
+                            let tactic = tactic.to_string();
+                            std::thread::spawn(move || {
+                                let result = fetch_vision_text(&tactic, tab_id, port);
+                                match result {
+                                    Ok(text) => {
+                                        if let Ok(mut s) = handle.lock() {
+                                            *s = devtools::TextState::Loaded(text);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        if let Ok(mut s) = handle.lock() {
+                                            *s = devtools::TextState::Error(e);
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -242,9 +452,11 @@ impl eframe::App for KiBrowserApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Store egui context in the shared handle so API threads can
         // trigger repaints when they change visibility or request shutdown.
+        // CRITICAL: set_embed_viewports(false) so show_viewport_deferred
+        // creates real OS windows instead of embedded egui panels.
         if self.first_frame {
             self.first_frame = false;
-            ctx.set_embed_viewports(true);
+            ctx.set_embed_viewports(false);
             self.gui_handle.set_egui_ctx(ctx.clone());
         }
 
@@ -257,18 +469,19 @@ impl eframe::App for KiBrowserApp {
             return;
         }
 
-        // --- Visibility: hide/show the window via API toggle ---
+        // --- Visibility: hide/show the window via API toggle (only on change) ---
         let visibility = self.gui_handle.visibility();
-        match visibility {
-            GuiVisibility::Hidden => {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-            }
-            GuiVisibility::Visible => {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            }
-            GuiVisibility::Disabled => {
-                // Should not happen in a running GUI, but ignore gracefully
+        if visibility != self.last_visibility {
+            self.last_visibility = visibility;
+            match visibility {
+                GuiVisibility::Hidden => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                }
+                GuiVisibility::Visible => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+                GuiVisibility::Disabled => {}
             }
         }
 
@@ -283,13 +496,35 @@ impl eframe::App for KiBrowserApp {
 
         // Update viewport texture from active tab's frame buffer
         if let Some(tab) = self.tabs.get(self.active_tab) {
+            let tab_id = tab.id;
             let fb = tab.frame_buffer.clone();
             let fs = tab.frame_size.clone();
-            self.viewport.update_from_frame_buffer(ctx, &fb, &fs);
+            self.viewport.update_from_frame_buffer(ctx, &fb, &fs, tab_id);
         }
 
         // Dark theme
         ctx.set_visuals(egui::Visuals::dark());
+
+        // Custom title bar (replaces OS window decorations)
+        egui::TopBottomPanel::top("title_bar").show(ctx, |ui| {
+            if let Some(action) = title_bar::render(ui, "KI-Browser") {
+                match action {
+                    TitleBarAction::Minimize => {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                    }
+                    TitleBarAction::Maximize => {
+                        let is_maximized = ctx.input(|i| {
+                            i.viewport().maximized.unwrap_or(false)
+                        });
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
+                    }
+                    TitleBarAction::Close => {
+                        self.initiate_shutdown(ctx);
+                        return;
+                    }
+                }
+            }
+        });
 
         // Tab bar
         let tab_infos: Vec<TabInfo> = self.tabs.iter().map(|t| TabInfo {
@@ -299,21 +534,31 @@ impl eframe::App for KiBrowserApp {
         }).collect();
 
         egui::TopBottomPanel::top("tab_bar").show(ctx, |ui| {
-            let (selected, close, new_tab) = tab_bar::render(ui, &tab_infos, self.active_tab);
+            let tab_action = tab_bar::render(ui, &tab_infos, self.active_tab);
 
-            if let Some(idx) = selected {
+            if let Some(idx) = tab_action.selected {
                 self.active_tab = idx;
                 if let Some(tab) = self.tabs.get(idx) {
                     self.url_input = tab.url.clone();
+                    // Sync viewport size to the newly active tab so it renders
+                    // at the current window dimensions (not whatever size it had before).
+                    let (w, h) = self.last_viewport_size;
+                    if w > 0 && h > 0 {
+                        self.engine.send_resize_viewport(tab.id, w, h);
+                    }
                 }
             }
 
-            if let Some(idx) = close {
+            if let Some(idx) = tab_action.close {
                 self.close_tab(idx);
             }
 
-            if new_tab {
+            if tab_action.new_tab {
                 self.create_tab("about:blank");
+            }
+
+            if let Some((from, to)) = tab_action.reorder {
+                self.reorder_tab(from, to);
             }
         });
 
@@ -358,13 +603,100 @@ impl eframe::App for KiBrowserApp {
             status_bar::render(ui, &current_url, tab_count, api_port, is_loading);
         });
 
-        // Viewport (central panel) -- also detect resize
+        // Viewport (central panel) -- also detect resize and right-click
         let mut viewport_rect = egui::Rect::NOTHING;
         egui::CentralPanel::default().show(ctx, |ui| {
             viewport_rect = ui.available_rect_before_wrap();
             let inputs = viewport::render(ui, &mut self.viewport);
             self.forward_input(&inputs);
+
+            // Detect right-click in viewport to open context menu
+            let right_clicked = ui.input(|i| {
+                i.pointer.button_clicked(egui::PointerButton::Secondary)
+            });
+            if right_clicked {
+                if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
+                    if viewport_rect.contains(pos) {
+                        self.context_menu_state.position = Some(pos);
+                        self.context_menu_state.open = true;
+                    }
+                }
+            }
         });
+
+        // Context menu overlay (rendered on top of everything)
+        let can_back = self.active_tab().map(|t| t.can_go_back).unwrap_or(false);
+        let can_fwd = self.active_tab().map(|t| t.can_go_forward).unwrap_or(false);
+        if let Some(action) = context_menu::render(
+            ctx, &mut self.context_menu_state, can_back, can_fwd,
+        ) {
+            match action {
+                ContextMenuAction::Back => {
+                    if let Some(tab) = self.tabs.get(self.active_tab) {
+                        self.engine.send_go_back(tab.id);
+                    }
+                }
+                ContextMenuAction::Forward => {
+                    if let Some(tab) = self.tabs.get(self.active_tab) {
+                        self.engine.send_go_forward(tab.id);
+                    }
+                }
+                ContextMenuAction::Reload => {
+                    let url = self.current_url().to_string();
+                    if !url.is_empty() {
+                        self.navigate(&url);
+                    }
+                }
+                ContextMenuAction::Copy => {
+                    if let Some(tab) = self.tabs.get(self.active_tab) {
+                        fire_and_forget_js(&self.engine, tab.id, "document.execCommand('copy')");
+                    }
+                }
+                ContextMenuAction::Cut => {
+                    if let Some(tab) = self.tabs.get(self.active_tab) {
+                        fire_and_forget_js(&self.engine, tab.id, "document.execCommand('cut')");
+                    }
+                }
+                ContextMenuAction::Paste => {
+                    if let Some(tab) = self.tabs.get(self.active_tab) {
+                        fire_and_forget_js(&self.engine, tab.id, "document.execCommand('paste')");
+                    }
+                }
+                ContextMenuAction::SelectAll => {
+                    if let Some(tab) = self.tabs.get(self.active_tab) {
+                        fire_and_forget_js(
+                            &self.engine, tab.id, "document.execCommand('selectAll')",
+                        );
+                    }
+                }
+                ContextMenuAction::ViewSource => {
+                    self.devtools_shared.state.open.store(true, Ordering::Relaxed);
+                }
+            }
+        }
+
+        // --- DevTools as separate OS window via show_viewport_deferred ---
+        // Update shared page info + tabs each frame so the DevTools window
+        // always has current data.
+        self.update_devtools_shared_state();
+
+        // Show deferred viewport if DevTools is open
+        if self.devtools_shared.state.open.load(Ordering::Relaxed) {
+            let shared = Arc::clone(&self.devtools_shared);
+            ctx.show_viewport_deferred(
+                egui::ViewportId::from_hash_of("devtools_window"),
+                egui::ViewportBuilder::default()
+                    .with_title("KI-Browser DevTools")
+                    .with_inner_size([700.0, 550.0])
+                    .with_min_inner_size([450.0, 350.0]),
+                move |ctx, _class| {
+                    devtools::render_standalone(ctx, &shared);
+                },
+            );
+        }
+
+        // Drain queued DevTools actions and handle them
+        self.handle_devtools_actions();
 
         // Notify CEF when the viewport pixel size changes so it re-renders
         // at the correct resolution (e.g. after the user resizes the window).
@@ -412,6 +744,134 @@ fn acquire_instance_lock() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Execute a JavaScript snippet on a tab without waiting for the result.
+///
+/// Spawns a background thread with a short-lived tokio runtime because the
+/// engine's `execute_js` method is async but the GUI render loop is sync.
+fn fire_and_forget_js(engine: &Arc<CefBrowserEngine>, tab_id: Uuid, script: &str) {
+    let engine = engine.clone();
+    let script = script.to_string();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build();
+        if let Ok(rt) = rt {
+            let _ = rt.block_on(async { engine.execute_js(tab_id, &script).await });
+        }
+    });
+}
+
+// --- Vision tactic REST API helpers (called from background threads) ---
+
+/// Fetches a vision tactic result as text/JSON from our own REST API.
+fn fetch_vision_text(tactic: &str, tab_id: Uuid, port: u16) -> Result<String, String> {
+    let url = match tactic {
+        "labels" => format!(
+            "http://127.0.0.1:{}/vision/labels?tab_id={}", port, tab_id
+        ),
+        "dom_snapshot" => format!(
+            "http://127.0.0.1:{}/dom/snapshot?tab_id={}", port, tab_id
+        ),
+        "structured_data" => format!(
+            "http://127.0.0.1:{}/dom/extract-structured-data", port
+        ),
+        "content_extract" => format!(
+            "http://127.0.0.1:{}/dom/extract-content", port
+        ),
+        "structure_analysis" => format!(
+            "http://127.0.0.1:{}/dom/analyze-structure", port
+        ),
+        "forms" => format!(
+            "http://127.0.0.1:{}/dom/forms", port
+        ),
+        other => return Err(format!("Unbekannte Taktik: {}", other)),
+    };
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("Runtime-Fehler: {}", e))?;
+
+    rt.block_on(async {
+        let client = reqwest::Client::new();
+        let resp = match tactic {
+            "labels" | "dom_snapshot" => {
+                client.get(&url).send().await
+            }
+            _ => {
+                client.post(&url)
+                    .json(&serde_json::json!({"tab_id": tab_id.to_string()}))
+                    .send().await
+            }
+        };
+        match resp {
+            Ok(r) => {
+                let text = r.text().await.map_err(|e| format!("Response-Fehler: {}", e))?;
+                match serde_json::from_str::<serde_json::Value>(&text) {
+                    Ok(val) => serde_json::to_string_pretty(&val)
+                        .map_err(|e| format!("JSON-Fehler: {}", e)),
+                    Err(_) => Ok(text),
+                }
+            }
+            Err(e) => Err(format!("API-Fehler: {}", e)),
+        }
+    })
+}
+
+/// Fetches an annotated screenshot image from our REST API.
+fn fetch_vision_image(tactic: &str, tab_id: Uuid, port: u16) -> Result<Vec<u8>, String> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("Runtime-Fehler: {}", e))?;
+
+    rt.block_on(async {
+        let client = reqwest::Client::new();
+        let resp = match tactic {
+            "annotated" => {
+                let url = format!(
+                    "http://127.0.0.1:{}/vision/annotated?tab_id={}&format=png",
+                    port, tab_id
+                );
+                client.get(&url).send().await
+            }
+            "dom_annotate" => {
+                let url = format!("http://127.0.0.1:{}/dom/annotate", port);
+                client.post(&url)
+                    .json(&serde_json::json!({
+                        "tab_id": tab_id.to_string(),
+                        "types": ["links", "buttons", "inputs", "images"]
+                    }))
+                    .send().await
+            }
+            other => return Err(format!("Unbekannte Bild-Taktik: {}", other)),
+        };
+
+        match resp {
+            Ok(r) => {
+                let text = r.text().await.map_err(|e| format!("Response-Fehler: {}", e))?;
+                let val: serde_json::Value = serde_json::from_str(&text)
+                    .map_err(|e| format!("JSON-Fehler: {}", e))?;
+
+                let b64 = val.pointer("/data/image")
+                    .or_else(|| val.pointer("/data/data"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        let err = val.pointer("/error")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Kein Bild in der Antwort");
+                        format!("API: {}", err)
+                    })?;
+
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD.decode(b64)
+                    .map_err(|e| format!("Base64-Fehler: {}", e))
+            }
+            Err(e) => Err(format!("API-Fehler: {}", e)),
+        }
+    })
+}
+
 /// Starts the GUI browser. MUST be called from the main thread (X11/Wayland requirement).
 /// Blocks until the GUI window is closed or a shutdown is requested.
 ///
@@ -431,7 +891,8 @@ pub fn run_gui(
         viewport: egui::ViewportBuilder::default()
             .with_title("KI-Browser")
             .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([800.0, 600.0]),
+            .with_min_inner_size([800.0, 600.0])
+            .with_decorations(false),
         ..Default::default()
     };
 
