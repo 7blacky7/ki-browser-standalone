@@ -58,8 +58,12 @@ impl ViewportState {
             self.last_tab_id = Some(tab_id);
         }
 
-        // Hold read locks only for the clone, then release immediately.
-        let (data, w, h) = {
+        // Convert BGRA → RGBA directly while holding the read lock, avoiding
+        // a full fb.clone() (~8 MB at 1920x1080). Pure byte-shuffling is O(n)
+        // and faster than clone + separate convert because it is a single pass.
+        // The CEF on_paint callback only writes when it holds the write lock,
+        // so holding the read lock here does not block painting for long.
+        let (rgba, w, h) = {
             let fb = frame_buffer.read();
             let (w, h) = *frame_size.read();
 
@@ -67,16 +71,18 @@ impl ViewportState {
                 return;
             }
 
-            // Clone the raw bytes so we can drop the lock before converting.
-            (fb.clone(), w, h)
+            let expected = (w as usize) * (h as usize) * 4;
+            let len = fb.len().min(expected);
+            let mut rgba = Vec::with_capacity(len);
+            for chunk in fb[..len].chunks_exact(4) {
+                rgba.push(chunk[2]); // R from BGRA[2]
+                rgba.push(chunk[1]); // G from BGRA[1]
+                rgba.push(chunk[0]); // B from BGRA[0]
+                rgba.push(chunk[3]); // A from BGRA[3]
+            }
+            (rgba, w, h)
         };
-        // Read locks released here.
-
-        // BGRA → RGBA conversion (no lock held, safe for CEF to paint concurrently).
-        let rgba: Vec<u8> = data
-            .chunks_exact(4)
-            .flat_map(|c| [c[2], c[1], c[0], c[3]])
-            .collect();
+        // Read lock released here — single allocation, no intermediate clone.
 
         let image = ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
         self.texture = Some(ctx.load_texture("cef_page", image, TextureOptions::LINEAR));
