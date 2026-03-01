@@ -116,6 +116,9 @@ pub mod config;
 #[cfg(feature = "gui")]
 pub mod gui;
 
+/// OCR engine abstraction with Tesseract, PaddleOCR, and Surya backends.
+pub mod ocr;
+
 // ============================================================================
 // Re-exports for Convenience
 // ============================================================================
