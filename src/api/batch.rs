@@ -468,6 +468,7 @@ impl BatchRequest {
                             selector: selector.clone(),
                             button: "left".to_string(),
                             modifiers: None,
+                            frame_id: None,
                         }
                     }
                     BatchCommand::Type { selector, text, tab_id, clear_first } => {
@@ -476,6 +477,7 @@ impl BatchRequest {
                             text: text.clone(),
                             selector: Some(selector.clone()),
                             clear_first: clear_first.unwrap_or(false),
+                            frame_id: None,
                         }
                     }
                     BatchCommand::Screenshot { tab_id, format, full_page } => {
@@ -485,6 +487,11 @@ impl BatchRequest {
                             quality: None,
                             full_page: full_page.unwrap_or(false),
                             selector: None,
+                            clip_x: None,
+                            clip_y: None,
+                            clip_width: None,
+                            clip_height: None,
+                            clip_scale: None,
                         }
                     }
                     BatchCommand::Evaluate { script, tab_id } => {
@@ -492,6 +499,7 @@ impl BatchRequest {
                             tab_id: tab(tab_id),
                             script: script.clone(),
                             await_promise: true,
+                            frame_id: None,
                         }
                     }
                     BatchCommand::Scroll { delta_x, delta_y, tab_id } => {
@@ -514,6 +522,7 @@ impl BatchRequest {
                             tab_id: tab(tab_id),
                             script: extract_structured_data_script().to_string(),
                             await_promise: true,
+                            frame_id: None,
                         }
                     }
                     BatchCommand::ExtractContent { tab_id } => {
@@ -521,6 +530,7 @@ impl BatchRequest {
                             tab_id: tab(tab_id),
                             script: extract_content_script().to_string(),
                             await_promise: true,
+                            frame_id: None,
                         }
                     }
                     BatchCommand::DetectForms { tab_id } => {
@@ -528,6 +538,7 @@ impl BatchRequest {
                             tab_id: tab(tab_id),
                             script: detect_forms_script().to_string(),
                             await_promise: true,
+                            frame_id: None,
                         }
                     }
                     BatchCommand::NewTab { url } => {

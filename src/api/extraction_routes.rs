@@ -142,6 +142,7 @@ async fn evaluate_script_in_tab(
         tab_id,
         script,
         await_promise: true,
+        frame_id: None,
     };
 
     match state

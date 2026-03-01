@@ -231,6 +231,7 @@ async fn execute_batch(
                             tab_id,
                             script,
                             await_promise: true,
+                            frame_id: None,
                         };
                         match ipc.send_command(IpcMessage::Command(cmd)).await {
                             Ok(resp) if resp.success => {
@@ -314,6 +315,7 @@ async fn execute_batch(
                     tab_id,
                     script,
                     await_promise: true,
+                    frame_id: None,
                 };
                 let wait_start = Instant::now();
                 match state.ipc_channel.send_command(IpcMessage::Command(cmd)).await {
@@ -352,6 +354,7 @@ async fn execute_batch(
                         tab_id,
                         script,
                         await_promise: true,
+                        frame_id: None,
                     };
                     match state.ipc_channel.send_command(IpcMessage::Command(cmd)).await {
                         Ok(resp) if resp.success => {
@@ -534,6 +537,7 @@ async fn batch_navigate_extract(
                     tab_id: tab_id.clone(),
                     script: "document.title".to_string(),
                     await_promise: false,
+                    frame_id: None,
                 };
                 if let Ok(resp) = ipc.send_command(IpcMessage::Command(title_cmd)).await {
                     if resp.success {
@@ -551,6 +555,11 @@ async fn batch_navigate_extract(
                         quality: None,
                         full_page: false,
                         selector: None,
+                        clip_x: None,
+                        clip_y: None,
+                        clip_width: None,
+                        clip_height: None,
+                        clip_scale: None,
                     };
                     if let Ok(resp) = ipc.send_command(IpcMessage::Command(cmd)).await {
                         if resp.success {
@@ -567,6 +576,7 @@ async fn batch_navigate_extract(
                         tab_id: tab_id.clone(),
                         script: "document.documentElement.outerHTML".to_string(),
                         await_promise: false,
+                        frame_id: None,
                     };
                     if let Ok(resp) = ipc.send_command(IpcMessage::Command(cmd)).await {
                         if resp.success {
@@ -586,6 +596,7 @@ async fn batch_navigate_extract(
                         tab_id: tab_id.clone(),
                         script: extract_content_script().to_string(),
                         await_promise: true,
+                        frame_id: None,
                     };
                     if let Ok(resp) = ipc.send_command(IpcMessage::Command(cmd)).await {
                         if resp.success {
@@ -607,6 +618,7 @@ async fn batch_navigate_extract(
                         tab_id: tab_id.clone(),
                         script: extract_structured_data_script().to_string(),
                         await_promise: true,
+                        frame_id: None,
                     };
                     if let Ok(resp) = ipc.send_command(IpcMessage::Command(cmd)).await {
                         if resp.success {
@@ -623,6 +635,7 @@ async fn batch_navigate_extract(
                         tab_id: tab_id.clone(),
                         script: extract_structured_data_script().to_string(),
                         await_promise: true,
+                        frame_id: None,
                     };
                     if let Ok(resp) = ipc.send_command(IpcMessage::Command(cmd)).await {
                         if resp.success {
@@ -639,6 +652,7 @@ async fn batch_navigate_extract(
                         tab_id: tab_id.clone(),
                         script: detect_forms_script().to_string(),
                         await_promise: true,
+                        frame_id: None,
                     };
                     if let Ok(resp) = ipc.send_command(IpcMessage::Command(cmd)).await {
                         if resp.success {
@@ -655,6 +669,7 @@ async fn batch_navigate_extract(
                         tab_id: tab_id.clone(),
                         script: extract_links_script().to_string(),
                         await_promise: true,
+                        frame_id: None,
                     };
                     if let Ok(resp) = ipc.send_command(IpcMessage::Command(cmd)).await {
                         if resp.success {
@@ -851,6 +866,7 @@ async fn get_cookies(
         tab_id: tab_id.clone(),
         script: SessionManager::get_cookies_script().to_string(),
         await_promise: false,
+        frame_id: None,
     };
 
     match state.ipc_channel.send_command(IpcMessage::Command(cmd)).await {
@@ -909,6 +925,7 @@ async fn set_cookies(
         tab_id: tab_id.clone(),
         script,
         await_promise: false,
+        frame_id: None,
     };
 
     match state.ipc_channel.send_command(IpcMessage::Command(cmd)).await {
@@ -950,6 +967,7 @@ async fn get_local_storage(
         tab_id: tab_id.clone(),
         script: SessionManager::get_local_storage_script().to_string(),
         await_promise: false,
+        frame_id: None,
     };
 
     match state.ipc_channel.send_command(IpcMessage::Command(cmd)).await {
@@ -1023,6 +1041,7 @@ async fn create_snapshot(
             tab_id: tab_id.clone(),
             script: SessionManager::capture_tab_state_script().to_string(),
             await_promise: false,
+            frame_id: None,
         };
 
         match state.ipc_channel.send_command(IpcMessage::Command(cmd)).await {

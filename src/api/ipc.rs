@@ -64,12 +64,25 @@ pub enum IpcCommand {
         modifiers: Option<Vec<String>>,
     },
 
+    /// Drag from one position to another
+    Drag {
+        tab_id: String,
+        from_x: i32,
+        from_y: i32,
+        to_x: i32,
+        to_y: i32,
+        steps: Option<u32>,
+        duration_ms: Option<u64>,
+    },
+
     /// Click on element by selector
     ClickElement {
         tab_id: String,
         selector: String,
         button: String,
         modifiers: Option<Vec<String>>,
+        #[serde(default)]
+        frame_id: Option<String>,
     },
 
     /// Type text
@@ -78,6 +91,8 @@ pub enum IpcCommand {
         text: String,
         selector: Option<String>,
         clear_first: bool,
+        #[serde(default)]
+        frame_id: Option<String>,
     },
 
     /// Press key
@@ -92,6 +107,8 @@ pub enum IpcCommand {
         tab_id: String,
         script: String,
         await_promise: bool,
+        #[serde(default)]
+        frame_id: Option<String>,
     },
 
     /// Capture screenshot
@@ -101,6 +118,11 @@ pub enum IpcCommand {
         quality: Option<u8>,
         full_page: bool,
         selector: Option<String>,
+        clip_x: Option<f64>,
+        clip_y: Option<f64>,
+        clip_width: Option<f64>,
+        clip_height: Option<f64>,
+        clip_scale: Option<f64>,
     },
 
     /// Scroll page
@@ -293,6 +315,19 @@ pub enum IpcCommand {
     SetJavaScriptEnabled {
         tab_id: String,
         enabled: bool,
+    },
+
+    /// Get frame tree for a tab
+    GetFrameTree {
+        tab_id: String,
+    },
+
+    /// Evaluate JavaScript in a specific frame
+    EvaluateInFrame {
+        tab_id: String,
+        frame_id: String,
+        script: String,
+        await_promise: bool,
     },
 
     /// Annotate screenshot with element overlays and optional OCR

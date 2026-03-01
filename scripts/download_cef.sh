@@ -17,7 +17,7 @@
 set -euo pipefail
 
 # Configuration
-CEF_VERSION="131.3.5+g97e26f6+chromium-131.0.6778.205"
+CEF_VERSION="144.0.13+g9f739aa+chromium-144.0.7559.133"
 CEF_DOWNLOAD_BASE="https://cef-builds.spotifycdn.com"
 
 # Colors for output
