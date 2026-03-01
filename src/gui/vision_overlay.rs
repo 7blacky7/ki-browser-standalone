@@ -467,7 +467,9 @@ pub fn parse_vision_labels(json: &str) -> Result<Vec<OverlayElement>, String> {
         id: u32,
         bbox: Bbox,
         role: String,
-        name: String,
+        // `name` field is present in the JSON response but not used after
+        // deserialization; serde ignores unknown fields automatically, so
+        // omitting it here eliminates the dead_code warning.
     }
     #[derive(Deserialize)]
     struct Bbox { x: f64, y: f64, width: f64, height: f64 }
