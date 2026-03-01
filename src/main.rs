@@ -292,17 +292,18 @@ fn build_cli() -> Command {
 
 /// Parse CLI arguments into CliArgs struct
 fn parse_cli_args(matches: &clap::ArgMatches) -> CliArgs {
-    let mut args = CliArgs::default();
-
-    args.config_file = matches.get_one::<PathBuf>("config").cloned();
-    args.api_port = matches.get_one::<u16>("port").copied();
-    args.width = matches.get_one::<u32>("width").copied();
-    args.height = matches.get_one::<u32>("height").copied();
-    args.user_agent = matches.get_one::<String>("user-agent").cloned();
-    args.profile_path = matches.get_one::<PathBuf>("profile").cloned();
-    args.max_tabs = matches.get_one::<usize>("max-tabs").copied();
-    args.timeout_ms = matches.get_one::<u64>("timeout").copied();
-    args.cdp_port = matches.get_one::<u16>("cdp-port").copied();
+    let mut args = CliArgs {
+        config_file: matches.get_one::<PathBuf>("config").cloned(),
+        api_port: matches.get_one::<u16>("port").copied(),
+        width: matches.get_one::<u32>("width").copied(),
+        height: matches.get_one::<u32>("height").copied(),
+        user_agent: matches.get_one::<String>("user-agent").cloned(),
+        profile_path: matches.get_one::<PathBuf>("profile").cloned(),
+        max_tabs: matches.get_one::<usize>("max-tabs").copied(),
+        timeout_ms: matches.get_one::<u64>("timeout").copied(),
+        cdp_port: matches.get_one::<u16>("cdp-port").copied(),
+        ..Default::default()
+    };
 
     // Handle headless flag
     if matches.get_flag("headless") {

@@ -1066,10 +1066,8 @@ impl<S: CefEventSender> CefInputHandler<S> {
             if let Some(modifier) = self.parse_modifier(key) {
                 self.active_modifiers.insert(modifier);
             }
-        } else {
-            if let Some(modifier) = self.parse_modifier(key) {
-                self.active_modifiers.remove(&modifier);
-            }
+        } else if let Some(modifier) = self.parse_modifier(key) {
+            self.active_modifiers.remove(&modifier);
         }
 
         // Small delay for realism

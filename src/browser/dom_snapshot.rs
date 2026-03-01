@@ -353,7 +353,7 @@ impl DomSnapshot {
         self.nodes
             .iter()
             .filter(|n| n.is_visible && n.bbox.contains_point(x, y))
-            .last()
+            .next_back()
     }
 
     /// Finds a node by its snapshot-local ID.

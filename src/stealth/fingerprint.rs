@@ -563,7 +563,7 @@ impl FingerprintGenerator {
             timezone,
             plugins: self.get_plugins(&profile),
             fonts: self.get_fonts(&profile),
-            do_not_track: if seed % 3 == 0 {
+            do_not_track: if seed.is_multiple_of(3) {
                 Some("1".to_string())
             } else {
                 None
@@ -691,14 +691,12 @@ impl FingerprintGenerator {
             | FingerprintProfile::WindowsFirefox
             | FingerprintProfile::WindowsEdge => {
                 fonts.extend(
-                    vec![
-                        "Calibri",
+                    ["Calibri",
                         "Cambria",
                         "Consolas",
                         "Segoe UI",
                         "Tahoma",
-                        "Microsoft Sans Serif",
-                    ]
+                        "Microsoft Sans Serif"]
                     .iter()
                     .map(|name| FontEntry {
                         name: name.to_string(),
@@ -709,14 +707,12 @@ impl FingerprintGenerator {
             | FingerprintProfile::MacSafari
             | FingerprintProfile::MacFirefox => {
                 fonts.extend(
-                    vec![
-                        "Helvetica",
+                    ["Helvetica",
                         "Helvetica Neue",
                         "Lucida Grande",
                         "Monaco",
                         "Menlo",
-                        "SF Pro",
-                    ]
+                        "SF Pro"]
                     .iter()
                     .map(|name| FontEntry {
                         name: name.to_string(),
@@ -725,14 +721,12 @@ impl FingerprintGenerator {
             }
             FingerprintProfile::LinuxChrome | FingerprintProfile::LinuxFirefox => {
                 fonts.extend(
-                    vec![
-                        "DejaVu Sans",
+                    ["DejaVu Sans",
                         "DejaVu Serif",
                         "Liberation Sans",
                         "Liberation Serif",
                         "Ubuntu",
-                        "Noto Sans",
-                    ]
+                        "Noto Sans"]
                     .iter()
                     .map(|name| FontEntry {
                         name: name.to_string(),

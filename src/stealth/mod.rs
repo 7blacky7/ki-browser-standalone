@@ -132,12 +132,10 @@ impl StealthConfig {
             .unwrap_or_default()
             .as_nanos() as u64;
 
-        let chrome_profiles = vec![
-            FingerprintProfile::WindowsChrome,
+        let chrome_profiles = [FingerprintProfile::WindowsChrome,
             FingerprintProfile::MacChrome,
             FingerprintProfile::LinuxChrome,
-            FingerprintProfile::WindowsEdge,
-        ];
+            FingerprintProfile::WindowsEdge];
         let profile = chrome_profiles[seed as usize % chrome_profiles.len()].clone();
 
         Self::from_profile(profile)

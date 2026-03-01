@@ -60,7 +60,7 @@ impl KiBrowserApp {
                     self.close_tab(idx);
                 }
                 DevToolsAction::RunVisionTactic { tactic, .. } => {
-                    self.handle_run_vision_tactic(&tactic);
+                    self.handle_run_vision_tactic(tactic);
                 }
                 DevToolsAction::RunOcr { engines, .. } => {
                     self.handle_run_ocr(&engines);

@@ -42,8 +42,10 @@ pub enum ConfigError {
 /// Defines the type of proxy connection to use.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum ProxyType {
     /// HTTP proxy.
+    #[default]
     Http,
     /// HTTPS proxy.
     Https,
@@ -51,11 +53,6 @@ pub enum ProxyType {
     Socks5,
 }
 
-impl Default for ProxyType {
-    fn default() -> Self {
-        Self::Http
-    }
-}
 
 impl std::fmt::Display for ProxyType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

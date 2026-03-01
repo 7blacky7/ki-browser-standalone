@@ -22,8 +22,10 @@ use crate::stealth::StealthConfig;
 
 /// Represents the current status of a browser tab.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default)]
 pub enum TabStatus {
     /// Tab is currently loading content.
+    #[default]
     Loading,
     /// Tab has finished loading and is ready for interaction.
     Ready,
@@ -33,11 +35,6 @@ pub enum TabStatus {
     Closed,
 }
 
-impl Default for TabStatus {
-    fn default() -> Self {
-        Self::Loading
-    }
-}
 
 impl std::fmt::Display for TabStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
