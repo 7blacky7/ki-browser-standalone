@@ -106,8 +106,9 @@ impl OcrEngine for PaddleOcrEngine {
         std::fs::write(tmp.path(), &data)
             .map_err(|e| format!("Tempfile write failed: {}", e))?;
 
+        let path_str = tmp.path().to_string_lossy().into_owned();
         let output = Command::new("python3")
-            .args(["-c", PADDLE_SCRIPT, &tmp.path().to_string_lossy()])
+            .args(["-c", PADDLE_SCRIPT, &path_str])
             .output()
             .map_err(|e| format!("PaddleOCR subprocess failed: {}", e))?;
 

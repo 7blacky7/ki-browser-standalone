@@ -39,14 +39,29 @@ fn check_surya_available() -> (bool, Option<String>) {
 }
 
 /// Python script that runs Surya OCR on a given image file and outputs JSON.
+/// Wraps all imports in a try/except so version mismatches produce a structured
+/// error JSON rather than an unhandled traceback.
 const SURYA_SCRIPT: &str = r#"
 import sys, json
 from PIL import Image
-from surya.recognition import run_recognition
-from surya.detection import run_detection
-from surya.model.detection.model import load_model as load_det_model, load_processor as load_det_processor
-from surya.model.recognition.model import load_model as load_rec_model
-from surya.model.recognition.processor import load_processor as load_rec_processor
+
+try:
+    from surya.ocr import run_ocr
+    from surya.model.detection.model import load_model as load_det_model, load_processor as load_det_processor
+    from surya.model.recognition.model import load_model as load_rec_model
+    from surya.model.recognition.processor import load_processor as load_rec_processor
+    _USE_OCR_API = True
+except ImportError:
+    try:
+        from surya.recognition import run_recognition
+        from surya.detection import run_detection
+        from surya.model.detection.model import load_model as load_det_model, load_processor as load_det_processor
+        from surya.model.recognition.model import load_model as load_rec_model
+        from surya.model.recognition.processor import load_processor as load_rec_processor
+        _USE_OCR_API = False
+    except ImportError as e:
+        print(json.dumps({"error": f"Surya import failed: {e}. Install a compatible version."}))
+        sys.exit(0)
 
 image = Image.open(sys.argv[1])
 det_model = load_det_model()
@@ -54,8 +69,11 @@ det_processor = load_det_processor()
 rec_model = load_rec_model()
 rec_processor = load_rec_processor()
 
-det_result = run_detection([image], det_model, det_processor)
-rec_result = run_recognition([image], rec_model, rec_processor, det_result)
+if _USE_OCR_API:
+    rec_result = run_ocr([image], [["en"]], det_model, det_processor, rec_model, rec_processor)
+else:
+    det_result = run_detection([image], det_model, det_processor)
+    rec_result = run_recognition([image], rec_model, rec_processor, det_result)
 
 items = []
 full_parts = []
@@ -112,8 +130,9 @@ impl OcrEngine for SuryaEngine {
         std::fs::write(tmp.path(), &data)
             .map_err(|e| format!("Tempfile write failed: {}", e))?;
 
+        let path_str = tmp.path().to_string_lossy().into_owned();
         let output = Command::new("python3")
-            .args(["-c", SURYA_SCRIPT, &tmp.path().to_string_lossy()])
+            .args(["-c", SURYA_SCRIPT, &path_str])
             .output()
             .map_err(|e| format!("Surya subprocess failed: {}", e))?;
 
@@ -125,6 +144,11 @@ impl OcrEngine for SuryaEngine {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let parsed: serde_json::Value =
             serde_json::from_str(&stdout).map_err(|e| format!("Surya JSON parse: {}", e))?;
+
+        // Script emits {"error": "..."} when Surya imports fail at runtime.
+        if let Some(err_msg) = parsed["error"].as_str() {
+            return Err(format!("Surya script error: {}", err_msg));
+        }
 
         let results = parsed["results"]
             .as_array()
