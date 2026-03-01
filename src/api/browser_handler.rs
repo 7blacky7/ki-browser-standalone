@@ -15,6 +15,24 @@ use crate::browser::CefBrowserEngine;
 
 use crate::browser::{BrowserEngine, MockBrowserEngine, ScreenshotFormat, ScreenshotOptions};
 
+/// Parameters for drag operations between two screen coordinates
+struct DragParams {
+    from_x: i32,
+    from_y: i32,
+    to_x: i32,
+    to_y: i32,
+    steps: u32,
+    duration_ms: u64,
+}
+
+/// Parameters for screenshot capture configuration
+struct ScreenshotParams<'a> {
+    format: &'a str,
+    quality: Option<u8>,
+    full_page: bool,
+    selector: Option<&'a str>,
+    clip: Option<(f64, f64, f64, f64, f64)>,
+}
 
 /// Browser engine wrapper that abstracts over different implementations
 pub enum BrowserEngineWrapper {
@@ -120,7 +138,11 @@ impl BrowserCommandHandler {
                 self.handle_click(&engine_guard, &tab_id, x, y, &button).await
             }
             IpcCommand::Drag { tab_id, from_x, from_y, to_x, to_y, steps, duration_ms } => {
-                self.handle_drag(&engine_guard, &tab_id, from_x, from_y, to_x, to_y, steps.unwrap_or(20), duration_ms.unwrap_or(300)).await
+                self.handle_drag(&engine_guard, &tab_id, DragParams {
+                    from_x, from_y, to_x, to_y,
+                    steps: steps.unwrap_or(20),
+                    duration_ms: duration_ms.unwrap_or(300),
+                }).await
             }
             IpcCommand::ClickElement { tab_id, selector, button: _, modifiers: _, frame_id } => {
                 self.handle_click_element(&engine_guard, &tab_id, &selector, frame_id.as_deref()).await
@@ -137,7 +159,10 @@ impl BrowserCommandHandler {
                 } else {
                     None
                 };
-                self.handle_screenshot(&engine_guard, &tab_id, &format, quality, full_page, selector.as_deref(), clip).await
+                self.handle_screenshot(&engine_guard, &tab_id, ScreenshotParams {
+                    format: &format, quality, full_page,
+                    selector: selector.as_deref(), clip,
+                }).await
             }
             IpcCommand::EvaluateScript { tab_id, script, await_promise: _, frame_id } => {
                 self.handle_evaluate(&engine_guard, &tab_id, &script, frame_id.as_deref()).await
@@ -295,13 +320,9 @@ impl BrowserCommandHandler {
         &self,
         engine: &Option<BrowserEngineWrapper>,
         tab_id: &str,
-        from_x: i32,
-        from_y: i32,
-        to_x: i32,
-        to_y: i32,
-        steps: u32,
-        duration_ms: u64,
+        params: DragParams,
     ) -> IpcResponse {
+        let DragParams { from_x, from_y, to_x, to_y, steps, duration_ms } = params;
         let uuid = match Uuid::parse_str(tab_id) {
             Ok(u) => u,
             Err(_) => return IpcResponse::error("Invalid tab ID"),
@@ -433,12 +454,9 @@ impl BrowserCommandHandler {
         &self,
         engine: &Option<BrowserEngineWrapper>,
         tab_id: &str,
-        format: &str,
-        quality: Option<u8>,
-        full_page: bool,
-        _selector: Option<&str>,
-        _clip: Option<(f64, f64, f64, f64, f64)>,
+        params: ScreenshotParams<'_>,
     ) -> IpcResponse {
+        let ScreenshotParams { format, quality, full_page, selector: _selector, clip: _clip } = params;
         let uuid = match Uuid::parse_str(tab_id) {
             Ok(u) => u,
             Err(_) => return IpcResponse::error("Invalid tab ID"),
