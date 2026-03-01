@@ -540,7 +540,7 @@ impl KeyboardSimulator {
         }
 
         // Check if it's a valid special key or modifier
-        if SpecialKey::from_str(key).is_some() || self.parse_modifier(key).is_some() {
+        if SpecialKey::parse_from_str(key).is_some() || self.parse_modifier(key).is_some() {
             return Ok(());
         }
 
@@ -632,11 +632,11 @@ mod tests {
 
     #[test]
     fn test_special_key_from_str() {
-        assert_eq!(SpecialKey::from_str("enter"), Some(SpecialKey::Enter));
-        assert_eq!(SpecialKey::from_str("ENTER"), Some(SpecialKey::Enter));
-        assert_eq!(SpecialKey::from_str("return"), Some(SpecialKey::Enter));
-        assert_eq!(SpecialKey::from_str("tab"), Some(SpecialKey::Tab));
-        assert_eq!(SpecialKey::from_str("invalid"), None);
+        assert_eq!(SpecialKey::parse_from_str("enter"), Some(SpecialKey::Enter));
+        assert_eq!(SpecialKey::parse_from_str("ENTER"), Some(SpecialKey::Enter));
+        assert_eq!(SpecialKey::parse_from_str("return"), Some(SpecialKey::Enter));
+        assert_eq!(SpecialKey::parse_from_str("tab"), Some(SpecialKey::Tab));
+        assert_eq!(SpecialKey::parse_from_str("invalid"), None);
     }
 
     #[test]

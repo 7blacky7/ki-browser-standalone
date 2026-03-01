@@ -695,7 +695,7 @@ mod tests {
 
         // Spawn a task to handle commands
         let handler = tokio::spawn(async move {
-            if let Some((id, cmd, tx)) = receiver.recv().await {
+            if let Some((_id, cmd, tx)) = receiver.recv().await {
                 match cmd {
                     IpcCommand::GetTabs => {
                         let _ = tx.send(IpcResponse::success_with_data(

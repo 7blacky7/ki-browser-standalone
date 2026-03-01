@@ -64,8 +64,6 @@ impl HeadlessRunner {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_headless_runner_initial_state() {
         // HeadlessRunner can be constructed (basic smoke test)
