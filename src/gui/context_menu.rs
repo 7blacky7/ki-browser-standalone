@@ -8,6 +8,7 @@ use egui::{Color32, Vec2, Rect, Pos2, CornerRadius, Stroke, Id, Order, LayerId};
 /// Action the user selected from the context menu.
 #[derive(Debug, Clone, Copy)]
 pub enum ContextMenuAction {
+    InspectElement,
     Back,
     Forward,
     Reload,
@@ -51,6 +52,7 @@ pub fn render(
     state: &mut ContextMenuState,
     can_go_back: bool,
     can_go_forward: bool,
+    vision_active: bool,
 ) -> Option<ContextMenuAction> {
     if !state.open {
         return None;
@@ -82,6 +84,13 @@ pub fn render(
     }
 
     let items = vec![
+        MenuItem::Action {
+            label: "Element-Details oeffnen",
+            shortcut: "",
+            action: ContextMenuAction::InspectElement,
+            enabled: vision_active,
+        },
+        MenuItem::Separator,
         MenuItem::Action {
             label: "Zurueck",
             shortcut: "Alt+Left",

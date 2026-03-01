@@ -113,6 +113,45 @@ impl VisionOverlayState {
     }
 }
 
+/// Finds the overlay element at the given screen position.
+/// Returns the smallest (most specific) element if multiple overlap.
+pub fn hit_test(
+    state: &VisionOverlayState,
+    screen_pos: egui::Pos2,
+    viewport_rect: Rect,
+    scale: f32,
+) -> Option<OverlayElement> {
+    if state.mode == VisionMode::Off {
+        return None;
+    }
+    let elements = {
+        let guard = state.overlay.lock().ok();
+        match guard.as_deref() {
+            Some(OverlayState::Loaded(elems)) => elems.clone(),
+            _ => return None,
+        }
+    };
+
+    let mut hits: Vec<&OverlayElement> = elements.iter().filter(|elem| {
+        let screen_rect = Rect::from_min_size(
+            Pos2::new(
+                viewport_rect.min.x + elem.x * scale,
+                viewport_rect.min.y + elem.y * scale,
+            ),
+            Vec2::new(elem.w * scale, elem.h * scale),
+        );
+        screen_rect.contains(screen_pos)
+    }).collect();
+
+    // Return the smallest (most specific) element
+    hits.sort_by(|a, b| {
+        let area_a = a.w * a.h;
+        let area_b = b.w * b.h;
+        area_a.partial_cmp(&area_b).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    hits.first().map(|e| (*e).clone())
+}
+
 /// Draws the vision overlay on top of the viewport.
 ///
 /// `viewport_rect` is the egui screen rect where the webpage texture is drawn.

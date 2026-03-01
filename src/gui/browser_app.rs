@@ -22,7 +22,10 @@ use super::tab_bar::{self, TabInfo};
 use super::title_bar::{self, TitleBarAction};
 use super::toolbar::{self, NavAction};
 use super::viewport::{self, ViewportInput, ViewportState};
+use super::vision_overlay::{self, VisionOverlayState, VisionMode};
 use super::status_bar;
+
+use std::sync::Mutex;
 
 /// PID file path for single-instance enforcement.
 const PID_FILE: &str = "/tmp/ki-browser-gui.pid";
@@ -65,6 +68,10 @@ pub struct KiBrowserApp {
     context_menu_state: ContextMenuState,
     /// Shared state for the DevTools OS window (Arc-wrapped for deferred viewport).
     devtools_shared: Arc<DevToolsShared>,
+    /// Vision overlay state for Rechtsklick hit-test.
+    vision_overlay: VisionOverlayState,
+    /// Element, auf das der User rechtsklickte (fuer Element-Inspector).
+    inspected_element: Arc<Mutex<Option<vision_overlay::OverlayElement>>>,
 }
 
 impl KiBrowserApp {
@@ -88,6 +95,8 @@ impl KiBrowserApp {
             last_visibility: GuiVisibility::Visible,
             context_menu_state: ContextMenuState::default(),
             devtools_shared: Arc::new(DevToolsShared::default()),
+            vision_overlay: VisionOverlayState::default(),
+            inspected_element: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -715,6 +724,15 @@ impl eframe::App for KiBrowserApp {
             if right_clicked {
                 if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
                     if viewport_rect.contains(pos) {
+                        // Vision Hit-Test — prüfe ob ein Overlay-Element getroffen wurde
+                        let hit = vision_overlay::hit_test(
+                            &self.vision_overlay, pos, viewport_rect, 1.0,
+                        );
+                        if let Some(elem) = &hit {
+                            if let Ok(mut ie) = self.inspected_element.lock() {
+                                *ie = Some(elem.clone());
+                            }
+                        }
                         self.context_menu_state.position = Some(pos);
                         self.context_menu_state.open = true;
                     }
@@ -725,10 +743,20 @@ impl eframe::App for KiBrowserApp {
         // Context menu overlay (rendered on top of everything)
         let can_back = self.active_tab().map(|t| t.can_go_back).unwrap_or(false);
         let can_fwd = self.active_tab().map(|t| t.can_go_forward).unwrap_or(false);
+        let vision_active = self.vision_overlay.mode != VisionMode::Off;
         if let Some(action) = context_menu::render(
-            ctx, &mut self.context_menu_state, can_back, can_fwd,
+            ctx, &mut self.context_menu_state, can_back, can_fwd, vision_active,
         ) {
             match action {
+                ContextMenuAction::InspectElement => {
+                    // TODO: Wird in Task 3 (Element-Inspector OS-Fenster) vollständig implementiert.
+                    // Aktuell loggen wir nur das getroffene Element.
+                    if let Ok(ie) = self.inspected_element.lock() {
+                        if let Some(ref elem) = *ie {
+                            tracing::info!("Inspect element: {:?}", elem.label);
+                        }
+                    }
+                }
                 ContextMenuAction::Back => {
                     if let Some(tab) = self.tabs.get(self.active_tab) {
                         self.engine.send_go_back(tab.id);
