@@ -756,11 +756,136 @@ impl eframe::App for KiBrowserApp {
         ) {
             match action {
                 ContextMenuAction::InspectElement => {
-                    // TODO: Wird in Task 3 (Element-Inspector OS-Fenster) vollständig implementiert.
-                    // Aktuell loggen wir nur das getroffene Element.
                     if let Ok(ie) = self.inspected_element.lock() {
                         if let Some(ref elem) = *ie {
-                            tracing::info!("Inspect element: {:?}", elem.label);
+                            // 1. Sofort Basisdaten aus dem Overlay-Element setzen
+                            let details = ElementDetails {
+                                tag: elem.label.clone(),
+                                element_type: elem.element_type.clone(),
+                                x: elem.x,
+                                y: elem.y,
+                                w: elem.w,
+                                h: elem.h,
+                                ocr_tesseract: elem.ocr_tesseract.clone().unwrap_or_default(),
+                                ocr_paddleocr: elem.ocr_paddleocr.clone().unwrap_or_default(),
+                                ocr_surya: elem.ocr_surya.clone().unwrap_or_default(),
+                                ..Default::default()
+                            };
+                            *self.inspector_state.element.lock().unwrap() = Some(details);
+                            self.inspector_state.open.store(true, Ordering::Relaxed);
+
+                            // 2. Im Hintergrund per JS detaillierte Infos abrufen
+                            let engine = self.engine.clone();
+                            let inspector = Arc::clone(&self.inspector_state);
+                            let tab_id = self.tabs.get(self.active_tab).map(|t| t.id);
+                            let elem_x = elem.x as f64;
+                            let elem_y = elem.y as f64;
+
+                            if let Some(tab_id) = tab_id {
+                                std::thread::spawn(move || {
+                                    let js = format!(r##"
+                                        (function() {{
+                                            var el = document.elementFromPoint({x}, {y});
+                                            if (!el) return JSON.stringify({{error: "no element"}});
+                                            function getXPath(el) {{
+                                                if (!el.parentNode) return "";
+                                                var siblings = el.parentNode.children;
+                                                var tag = el.tagName.toLowerCase();
+                                                var idx = Array.from(siblings).filter(function(s) {{ return s.tagName === el.tagName; }}).indexOf(el) + 1;
+                                                return getXPath(el.parentNode) + "/" + tag + (idx > 1 ? "[" + idx + "]" : "");
+                                            }}
+                                            function getFullXPath(el) {{
+                                                if (!el.parentNode) return "";
+                                                var siblings = el.parentNode.children;
+                                                var tag = el.tagName.toLowerCase();
+                                                var idx = Array.from(siblings).filter(function(s) {{ return s.tagName === el.tagName; }}).indexOf(el) + 1;
+                                                return getFullXPath(el.parentNode) + "/" + tag + "[" + idx + "]";
+                                            }}
+                                            function getCssSelector(el) {{
+                                                if (el.id) return "#" + el.id;
+                                                var path = [];
+                                                while (el && el.nodeType === 1) {{
+                                                    var sel = el.tagName.toLowerCase();
+                                                    if (el.id) {{ path.unshift("#" + el.id); break; }}
+                                                    var sib = el, nth = 1;
+                                                    while (sib = sib.previousElementSibling) {{ if (sib.tagName === el.tagName) nth++; }}
+                                                    if (nth > 1) sel += ":nth-of-type(" + nth + ")";
+                                                    path.unshift(sel);
+                                                    el = el.parentNode;
+                                                }}
+                                                return path.join(" > ");
+                                            }}
+                                            var rect = el.getBoundingClientRect();
+                                            return JSON.stringify({{
+                                                tag: el.tagName.toLowerCase(),
+                                                type: el.type || el.tagName.toLowerCase(),
+                                                title: el.title || "",
+                                                text: (el.innerText || el.value || "").substring(0, 200),
+                                                xpath: getXPath(el),
+                                                fullXpath: getFullXPath(el),
+                                                role: el.getAttribute("role") || "",
+                                                id: el.id || "",
+                                                classes: el.className || "",
+                                                href: el.href || "",
+                                                src: el.src || "",
+                                                placeholder: el.placeholder || "",
+                                                cssSelector: getCssSelector(el),
+                                                visible: rect.width > 0 && rect.height > 0,
+                                                interactive: el.matches("a,button,input,select,textarea,[tabindex],[onclick]"),
+                                                x: rect.x, y: rect.y, w: rect.width, h: rect.height
+                                            }});
+                                        }})()
+                                    "##, x = elem_x, y = elem_y);
+
+                                    // Run a small tokio runtime to call the async execute_js_with_result
+                                    let rt = tokio::runtime::Builder::new_current_thread()
+                                        .enable_all()
+                                        .build();
+                                    if let Ok(rt) = rt {
+                                        match rt.block_on(engine.execute_js_with_result(tab_id, &js)) {
+                                            Ok(Some(result)) => {
+                                                // The result might be JSON-escaped by CEF, try to parse it
+                                                let json_str = result.trim_matches('"');
+                                                let json_str = json_str.replace("\\\"", "\"");
+                                                let json_str = json_str.replace("\\\\", "\\");
+                                                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                                                    if val.get("error").is_none() {
+                                                        let details = ElementDetails {
+                                                            tag: val["tag"].as_str().unwrap_or("").to_string(),
+                                                            element_type: val["type"].as_str().unwrap_or("").to_string(),
+                                                            title: val["title"].as_str().unwrap_or("").to_string(),
+                                                            text_value: val["text"].as_str().unwrap_or("").to_string(),
+                                                            xpath: val["xpath"].as_str().unwrap_or("").to_string(),
+                                                            full_xpath: val["fullXpath"].as_str().unwrap_or("").to_string(),
+                                                            role: val["role"].as_str().unwrap_or("").to_string(),
+                                                            id: val["id"].as_str().unwrap_or("").to_string(),
+                                                            classes: val["classes"].as_str().unwrap_or("").to_string(),
+                                                            href: val["href"].as_str().unwrap_or("").to_string(),
+                                                            src: val["src"].as_str().unwrap_or("").to_string(),
+                                                            placeholder: val["placeholder"].as_str().unwrap_or("").to_string(),
+                                                            css_selector: val["cssSelector"].as_str().unwrap_or("").to_string(),
+                                                            is_visible: Some(val["visible"].as_bool().unwrap_or(true)),
+                                                            is_interactive: Some(val["interactive"].as_bool().unwrap_or(false)),
+                                                            x: val["x"].as_f64().unwrap_or(0.0) as f32,
+                                                            y: val["y"].as_f64().unwrap_or(0.0) as f32,
+                                                            w: val["w"].as_f64().unwrap_or(0.0) as f32,
+                                                            h: val["h"].as_f64().unwrap_or(0.0) as f32,
+                                                            ..Default::default()
+                                                        };
+                                                        *inspector.element.lock().unwrap() = Some(details);
+                                                    }
+                                                }
+                                            }
+                                            Ok(None) => {
+                                                tracing::warn!("JS returned no result for element inspection");
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!("JS execution failed for element inspection: {}", e);
+                                            }
+                                        }
+                                    }
+                                });
+                            }
                         }
                     }
                 }
