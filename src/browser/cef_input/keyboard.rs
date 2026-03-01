@@ -8,7 +8,7 @@
 //! - Windows: Windows virtual key codes (VK_* from winuser.h)
 //! - Linux: X11 XKB keysyms (XK_* from X11/keysymdef.h)
 
-use crate::input::{InputError, InputResult, Modifier};
+use crate::input::Modifier;
 
 use super::events::{
     EVENTFLAG_ALT_DOWN, EVENTFLAG_COMMAND_DOWN, EVENTFLAG_CONTROL_DOWN, EVENTFLAG_NONE,

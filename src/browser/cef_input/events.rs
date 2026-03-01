@@ -7,23 +7,34 @@
 
 // ============================================================================
 // CEF Event Flags (from cef_types.h)
+// Complete set for compatibility; not all flags are currently referenced.
 // ============================================================================
 
 pub(crate) const EVENTFLAG_NONE: u32 = 0;
+#[allow(dead_code)]
 pub(crate) const EVENTFLAG_CAPS_LOCK_ON: u32 = 1 << 0;
 pub(crate) const EVENTFLAG_SHIFT_DOWN: u32 = 1 << 1;
 pub(crate) const EVENTFLAG_CONTROL_DOWN: u32 = 1 << 2;
 pub(crate) const EVENTFLAG_ALT_DOWN: u32 = 1 << 3;
+#[allow(dead_code)]
 pub(crate) const EVENTFLAG_LEFT_MOUSE_BUTTON: u32 = 1 << 4;
+#[allow(dead_code)]
 pub(crate) const EVENTFLAG_MIDDLE_MOUSE_BUTTON: u32 = 1 << 5;
+#[allow(dead_code)]
 pub(crate) const EVENTFLAG_RIGHT_MOUSE_BUTTON: u32 = 1 << 6;
 /// Command key on Mac, Windows key on Windows.
 pub(crate) const EVENTFLAG_COMMAND_DOWN: u32 = 1 << 7;
+#[allow(dead_code)]
 pub(crate) const EVENTFLAG_NUM_LOCK_ON: u32 = 1 << 8;
+#[allow(dead_code)]
 pub(crate) const EVENTFLAG_IS_KEY_PAD: u32 = 1 << 9;
+#[allow(dead_code)]
 pub(crate) const EVENTFLAG_IS_LEFT: u32 = 1 << 10;
+#[allow(dead_code)]
 pub(crate) const EVENTFLAG_IS_RIGHT: u32 = 1 << 11;
+#[allow(dead_code)]
 pub(crate) const EVENTFLAG_ALTGR_DOWN: u32 = 1 << 12;
+#[allow(dead_code)]
 pub(crate) const EVENTFLAG_IS_REPEAT: u32 = 1 << 13;
 
 // ============================================================================
