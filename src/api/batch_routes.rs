@@ -23,6 +23,9 @@ use crate::api::batch::{
     extract_structured_data_script, detect_forms_script,
 };
 use crate::api::ipc::{IpcCommand, IpcMessage};
+
+/// Result type for parallel batch operation futures: (success, data, error_message, duration_ms)
+type BatchFutureResult = (bool, Option<serde_json::Value>, Option<String>, u64);
 use crate::api::routes::ApiResponse;
 use crate::api::server::AppState;
 use crate::api::session::{CookieInfo, SessionManager, SessionSnapshot, TabSnapshot};
@@ -213,7 +216,7 @@ async fn execute_batch(
         let commands = request.to_ipc_commands(default_tab_id.as_deref());
 
         // Also handle Wait operations separately
-        let mut futures: Vec<(String, tokio::task::JoinHandle<(bool, Option<serde_json::Value>, Option<String>, u64)>)> = Vec::new();
+        let mut futures: Vec<(String, tokio::task::JoinHandle<BatchFutureResult>)> = Vec::new();
 
         for op in &request.operations {
             let op_id = op.id.clone();

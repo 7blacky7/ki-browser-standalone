@@ -13,6 +13,9 @@ use tracing::{debug, error, warn};
 /// Command ID counter for correlation
 static NEXT_COMMAND_ID: AtomicU64 = AtomicU64::new(1);
 
+/// IPC command message: (command_id, command, response_sender)
+type IpcCommandMessage = (u64, IpcCommand, oneshot::Sender<IpcResponse>);
+
 /// IPC commands for browser control
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -462,10 +465,10 @@ struct PendingCommand {
 /// IPC channel for bidirectional communication
 pub struct IpcChannel {
     /// Channel for sending commands
-    command_tx: mpsc::Sender<(u64, IpcCommand, oneshot::Sender<IpcResponse>)>,
+    command_tx: mpsc::Sender<IpcCommandMessage>,
 
     /// Channel for receiving commands (browser side)
-    command_rx: std::sync::Arc<RwLock<Option<mpsc::Receiver<(u64, IpcCommand, oneshot::Sender<IpcResponse>)>>>>,
+    command_rx: std::sync::Arc<RwLock<Option<mpsc::Receiver<IpcCommandMessage>>>>,
 
     /// Default timeout for commands
     default_timeout: Duration,
@@ -567,7 +570,7 @@ impl IpcChannel {
     }
 
     /// Take the command receiver (for the browser side)
-    pub async fn take_receiver(&self) -> Option<mpsc::Receiver<(u64, IpcCommand, oneshot::Sender<IpcResponse>)>> {
+    pub async fn take_receiver(&self) -> Option<mpsc::Receiver<IpcCommandMessage>> {
         self.command_rx.write().await.take()
     }
 
@@ -602,7 +605,7 @@ pub enum IpcError {
 /// Helper to process IPC commands on the browser side
 pub struct IpcProcessor {
     /// Receiver for commands
-    receiver: mpsc::Receiver<(u64, IpcCommand, oneshot::Sender<IpcResponse>)>,
+    receiver: mpsc::Receiver<IpcCommandMessage>,
 }
 
 impl IpcProcessor {
@@ -612,7 +615,7 @@ impl IpcProcessor {
     }
 
     /// Receive the next command
-    pub async fn recv(&mut self) -> Option<(u64, IpcCommand, oneshot::Sender<IpcResponse>)> {
+    pub async fn recv(&mut self) -> Option<IpcCommandMessage> {
         self.receiver.recv().await
     }
 

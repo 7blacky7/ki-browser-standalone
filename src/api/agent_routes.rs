@@ -287,7 +287,7 @@ pub fn agent_routes() -> Router<AppState> {
 pub fn parse_stealth_profile(profile: &str) -> Option<StealthConfig> {
     if profile == "random" {
         Some(StealthConfig::random())
-    } else { profile.strip_prefix("consistent:").map(|seed| StealthConfig::consistent(seed)) }
+    } else { profile.strip_prefix("consistent:").map(StealthConfig::consistent) }
 }
 
 #[cfg(test)]
