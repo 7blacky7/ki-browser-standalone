@@ -18,6 +18,7 @@ use tracing::{error, info, warn};
 
 use crate::api::agent_registry::AgentRegistry;
 use crate::api::cdp_mapping::CdpTabMapping;
+use crate::api::openapi::ApiDoc;
 use crate::api::routes::create_router;
 use crate::api::websocket::WebSocketHandler;
 use crate::api::ipc::IpcChannel;
@@ -229,9 +230,16 @@ impl ApiServer {
             .max_age(Duration::from_secs(3600))
     }
 
-    /// Build the router with all middleware
+    /// Build the router with all middleware, Swagger UI, and OpenAPI JSON endpoint
     fn build_router(&self) -> Router {
+        use utoipa::OpenApi;
+        use utoipa_swagger_ui::SwaggerUi;
+
         create_router(self.state.clone())
+            .merge(
+                SwaggerUi::new("/swagger-ui")
+                    .url("/api-doc/openapi.json", ApiDoc::openapi()),
+            )
             .layer(Self::configure_cors())
             .layer(TraceLayer::new_for_http())
     }

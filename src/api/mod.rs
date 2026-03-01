@@ -12,6 +12,7 @@ pub mod cdp_mapping;
 pub mod extraction_routes;
 pub mod gui_routes;
 pub mod ipc;
+pub mod openapi;
 pub mod routes;
 pub mod server;
 pub mod session;

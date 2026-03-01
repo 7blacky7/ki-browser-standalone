@@ -12,6 +12,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 use uuid::Uuid;
+use utoipa::{IntoParams, ToSchema};
 
 use crate::api::cdp_mapping::{CdpTargetInfo, CdpTargetLookupResponse, CdpTargetsResponse};
 use crate::api::server::{AppState, TabState};
@@ -56,7 +57,7 @@ impl<T: Serialize> ApiResponse<T> {
 }
 
 /// Health check response
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct HealthResponse {
     pub status: String,
     pub version: String,
@@ -64,7 +65,7 @@ pub struct HealthResponse {
 }
 
 /// Tab information response
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, ToSchema)]
 pub struct TabInfo {
     pub id: String,
     pub url: String,
@@ -90,14 +91,14 @@ impl From<&TabState> for TabInfo {
 }
 
 /// List tabs response
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct TabsResponse {
     pub tabs: Vec<TabInfo>,
     pub active_tab_id: Option<String>,
 }
 
 /// Create new tab request
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct NewTabRequest {
     #[serde(default)]
     pub url: Option<String>,
@@ -106,20 +107,20 @@ pub struct NewTabRequest {
 }
 
 /// Create new tab response
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct NewTabResponse {
     pub tab_id: String,
     pub url: String,
 }
 
 /// Close tab request
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CloseTabRequest {
     pub tab_id: String,
 }
 
 /// Navigate request
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct NavigateRequest {
     #[serde(default)]
     pub tab_id: Option<String>,
@@ -127,7 +128,7 @@ pub struct NavigateRequest {
 }
 
 /// Click request - supports both coordinates and selectors
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ClickRequest {
     #[serde(default)]
     pub tab_id: Option<String>,
@@ -165,7 +166,7 @@ pub struct DragRequest {
 }
 
 /// Type text request
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct TypeRequest {
     #[serde(default)]
     pub tab_id: Option<String>,
@@ -179,7 +180,7 @@ pub struct TypeRequest {
 }
 
 /// Evaluate JavaScript request
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct EvaluateRequest {
     #[serde(default)]
     pub tab_id: Option<String>,
@@ -191,8 +192,10 @@ pub struct EvaluateRequest {
 }
 
 /// Evaluate JavaScript response
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct EvaluateResponse {
+    /// The result of the JavaScript evaluation as arbitrary JSON
+    #[schema(value_type = Object)]
     pub result: serde_json::Value,
 }
 
@@ -203,7 +206,7 @@ pub struct FramesQuery {
 }
 
 /// Screenshot query parameters
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema, IntoParams)]
 pub struct ScreenshotQuery {
     #[serde(default)]
     pub tab_id: Option<String>,
@@ -237,7 +240,7 @@ fn default_screenshot_format() -> String {
 }
 
 /// Screenshot response
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ScreenshotResponse {
     pub data: String, // Base64 encoded image
     pub format: String,
@@ -246,7 +249,7 @@ pub struct ScreenshotResponse {
 }
 
 /// Scroll request
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ScrollRequest {
     #[serde(default)]
     pub tab_id: Option<String>,
@@ -265,7 +268,7 @@ pub struct ScrollRequest {
 }
 
 /// Find element query parameters
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema, IntoParams)]
 pub struct FindElementQuery {
     #[serde(default)]
     pub tab_id: Option<String>,
@@ -275,7 +278,7 @@ pub struct FindElementQuery {
 }
 
 /// Element information response
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ElementInfo {
     pub found: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -283,6 +286,7 @@ pub struct ElementInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
     pub attributes: Option<serde_json::Map<String, serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bounding_box: Option<BoundingBox>,
@@ -291,7 +295,7 @@ pub struct ElementInfo {
 }
 
 /// Element bounding box
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct BoundingBox {
     pub x: f64,
     pub y: f64,
@@ -347,13 +351,13 @@ fn default_include_text() -> bool {
 }
 
 /// API toggle request
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ApiToggleRequest {
     pub enabled: bool,
 }
 
 /// API status response
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ApiStatusResponse {
     pub enabled: bool,
     pub port: u16,
@@ -365,6 +369,14 @@ pub struct ApiStatusResponse {
 // ============================================================================
 
 /// GET /health - Health check endpoint
+#[utoipa::path(
+    get,
+    path = "/health",
+    tag = "health",
+    responses(
+        (status = 200, description = "Server is healthy", body = HealthResponse)
+    )
+)]
 pub async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
     let api_enabled = state.is_enabled().await;
 
@@ -376,6 +388,15 @@ pub async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 /// GET /tabs - List all tabs
+#[utoipa::path(
+    get,
+    path = "/tabs",
+    tag = "tabs",
+    responses(
+        (status = 200, description = "List of all open tabs", body = TabsResponse),
+        (status = 503, description = "API is disabled")
+    )
+)]
 pub async fn list_tabs(State(state): State<AppState>) -> impl IntoResponse {
     if !state.is_enabled().await {
         return (
@@ -404,6 +425,17 @@ pub async fn list_tabs(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 /// POST /tabs/new - Create a new tab
+#[utoipa::path(
+    post,
+    path = "/tabs/new",
+    tag = "tabs",
+    request_body = NewTabRequest,
+    responses(
+        (status = 200, description = "Tab created successfully", body = NewTabResponse),
+        (status = 500, description = "Failed to create tab"),
+        (status = 503, description = "API is disabled")
+    )
+)]
 pub async fn create_tab(
     State(state): State<AppState>,
     Json(request): Json<NewTabRequest>,
@@ -472,6 +504,17 @@ pub async fn create_tab(
 }
 
 /// POST /tabs/close - Close a tab
+#[utoipa::path(
+    post,
+    path = "/tabs/close",
+    tag = "tabs",
+    request_body = CloseTabRequest,
+    responses(
+        (status = 200, description = "Tab closed successfully"),
+        (status = 404, description = "Tab not found"),
+        (status = 503, description = "API is disabled")
+    )
+)]
 pub async fn close_tab(
     State(state): State<AppState>,
     Json(request): Json<CloseTabRequest>,
@@ -522,6 +565,17 @@ pub async fn close_tab(
 }
 
 /// POST /navigate - Navigate to URL
+#[utoipa::path(
+    post,
+    path = "/navigate",
+    tag = "navigation",
+    request_body = NavigateRequest,
+    responses(
+        (status = 200, description = "Navigation started"),
+        (status = 400, description = "No tab specified or navigation failed"),
+        (status = 503, description = "API is disabled")
+    )
+)]
 pub async fn navigate(
     State(state): State<AppState>,
     Json(request): Json<NavigateRequest>,
@@ -582,6 +636,17 @@ pub async fn navigate(
 }
 
 /// POST /click - Click at coordinates or on element
+#[utoipa::path(
+    post,
+    path = "/click",
+    tag = "navigation",
+    request_body = ClickRequest,
+    responses(
+        (status = 200, description = "Click performed"),
+        (status = 400, description = "Invalid click target or no active tab"),
+        (status = 503, description = "API is disabled")
+    )
+)]
 pub async fn click(
     State(state): State<AppState>,
     Json(request): Json<ClickRequest>,
@@ -706,7 +771,18 @@ pub async fn drag(
     }
 }
 
-/// POST /type - Type text
+/// POST /type - Type text into focused element or specified selector
+#[utoipa::path(
+    post,
+    path = "/type",
+    tag = "navigation",
+    request_body = TypeRequest,
+    responses(
+        (status = 200, description = "Text typed successfully"),
+        (status = 400, description = "No tab specified or type failed"),
+        (status = 503, description = "API is disabled")
+    )
+)]
 pub async fn type_text(
     State(state): State<AppState>,
     Json(request): Json<TypeRequest>,
@@ -760,7 +836,18 @@ pub async fn type_text(
     }
 }
 
-/// POST /evaluate - Execute JavaScript
+/// POST /evaluate - Execute JavaScript in the browser context
+#[utoipa::path(
+    post,
+    path = "/evaluate",
+    tag = "navigation",
+    request_body = EvaluateRequest,
+    responses(
+        (status = 200, description = "Script evaluated successfully", body = EvaluateResponse),
+        (status = 400, description = "No tab specified or evaluation failed"),
+        (status = 503, description = "API is disabled")
+    )
+)]
 pub async fn evaluate(
     State(state): State<AppState>,
     Json(request): Json<EvaluateRequest>,
@@ -865,7 +952,18 @@ pub async fn get_frames(
     }
 }
 
-/// GET /screenshot - Capture screenshot
+/// GET /screenshot - Capture a screenshot of the current page
+#[utoipa::path(
+    get,
+    path = "/screenshot",
+    tag = "navigation",
+    params(ScreenshotQuery),
+    responses(
+        (status = 200, description = "Screenshot captured", body = ScreenshotResponse),
+        (status = 400, description = "No tab specified or screenshot failed"),
+        (status = 503, description = "API is disabled")
+    )
+)]
 pub async fn screenshot(
     State(state): State<AppState>,
     Query(query): Query<ScreenshotQuery>,
@@ -941,7 +1039,18 @@ pub async fn screenshot(
     }
 }
 
-/// POST /scroll - Scroll page
+/// POST /scroll - Scroll the page by coordinates or to a selector
+#[utoipa::path(
+    post,
+    path = "/scroll",
+    tag = "navigation",
+    request_body = ScrollRequest,
+    responses(
+        (status = 200, description = "Scroll performed"),
+        (status = 400, description = "No tab specified or scroll failed"),
+        (status = 503, description = "API is disabled")
+    )
+)]
 pub async fn scroll(
     State(state): State<AppState>,
     Json(request): Json<ScrollRequest>,
@@ -997,7 +1106,18 @@ pub async fn scroll(
     }
 }
 
-/// GET /dom/element - Find element
+/// GET /dom/element - Find a DOM element by CSS selector
+#[utoipa::path(
+    get,
+    path = "/dom/element",
+    tag = "dom",
+    params(FindElementQuery),
+    responses(
+        (status = 200, description = "Element search result", body = ElementInfo),
+        (status = 400, description = "No tab specified"),
+        (status = 503, description = "API is disabled")
+    )
+)]
 pub async fn find_element(
     State(state): State<AppState>,
     Query(query): Query<FindElementQuery>,
@@ -1235,6 +1355,15 @@ async fn cdp_info(
 }
 
 /// POST /api/toggle - Toggle API enabled state
+#[utoipa::path(
+    post,
+    path = "/api/toggle",
+    tag = "api",
+    request_body = ApiToggleRequest,
+    responses(
+        (status = 200, description = "API state toggled", body = ApiStatusResponse)
+    )
+)]
 pub async fn toggle_api(
     State(state): State<AppState>,
     Json(request): Json<ApiToggleRequest>,
@@ -1250,7 +1379,15 @@ pub async fn toggle_api(
     }))
 }
 
-/// GET /api/status - Get API status
+/// GET /api/status - Get current API status
+#[utoipa::path(
+    get,
+    path = "/api/status",
+    tag = "api",
+    responses(
+        (status = 200, description = "Current API status", body = ApiStatusResponse)
+    )
+)]
 pub async fn api_status(State(state): State<AppState>) -> impl IntoResponse {
     let enabled = state.is_enabled().await;
     let connected_clients = state.ws_handler.client_count().await;
