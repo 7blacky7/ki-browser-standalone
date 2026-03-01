@@ -1,11 +1,11 @@
 //! Browser command handler for IPC processing
 //!
 //! This module provides a handler that processes IPC commands and forwards them
-//! to the appropriate browser engine (CEF or Mock).
+//! to the appropriate browser engine. Returns errors when no engine is available.
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::api::ipc::{IpcCommand, IpcProcessor, IpcResponse};
@@ -62,7 +62,7 @@ pub struct BrowserCommandHandler {
 }
 
 impl BrowserCommandHandler {
-    /// Create a new handler with no engine (will use mock responses)
+    /// Create a new handler with no engine (all commands will return errors)
     pub fn new() -> Self {
         Self {
             engine: Arc::new(RwLock::new(None)),
@@ -164,10 +164,9 @@ impl BrowserCommandHandler {
                 info!("Shutdown command received");
                 IpcResponse::success()
             }
-            // Handle other commands with mock responses for now
             _ => {
                 warn!("Unhandled IPC command: {:?}", command);
-                IpcResponse::success()
+                IpcResponse::error(format!("Not implemented: {:?}", command))
             }
         }
     }
@@ -200,8 +199,7 @@ impl BrowserCommandHandler {
                 }
             }
             None => {
-                let tab_id = format!("mock_tab_{}", Uuid::new_v4());
-                IpcResponse::success_with_tab(tab_id)
+                IpcResponse::error("No browser engine available for CreateTab")
             }
         }
     }
@@ -230,7 +228,7 @@ impl BrowserCommandHandler {
                     Err(e) => IpcResponse::error(e.to_string()),
                 }
             }
-            None => IpcResponse::success(),
+            None => IpcResponse::error("No browser engine available for CloseTab"),
         }
     }
 
@@ -254,8 +252,7 @@ impl BrowserCommandHandler {
                 }
             }
             _ => {
-                debug!("Navigate (mock): {} -> {}", tab_id, url);
-                IpcResponse::success()
+                IpcResponse::error("No browser engine available for Navigate")
             }
         }
     }
@@ -289,8 +286,7 @@ impl BrowserCommandHandler {
                 }
             }
             _ => {
-                debug!("Click (mock): {} at ({}, {})", tab_id, x, y);
-                IpcResponse::success()
+                IpcResponse::error("No browser engine available for Click")
             }
         }
     }
@@ -320,8 +316,7 @@ impl BrowserCommandHandler {
                 }
             }
             _ => {
-                debug!("Drag (mock): {} from ({},{}) to ({},{})", tab_id, from_x, from_y, to_x, to_y);
-                IpcResponse::success()
+                IpcResponse::error("No browser engine available for Drag")
             }
         }
     }
@@ -339,9 +334,34 @@ impl BrowserCommandHandler {
         };
 
         match engine {
+            #[cfg(feature = "cef-browser")]
+            Some(BrowserEngineWrapper::Cef(e)) => {
+                // ClickElement requires JS evaluation to find element center, then click
+                let escaped = selector.replace('\\', "\\\\").replace('\'', "\\'");
+                let js = format!(
+                    r#"(function(){{var el=document.querySelector('{}');if(!el)return null;var r=el.getBoundingClientRect();return {{x:r.x+r.width/2,y:r.y+r.height/2}}}})()"#,
+                    escaped
+                );
+                match e.execute_js_with_result(_uuid, &js).await {
+                    Ok(Some(json_str)) => {
+                        match serde_json::from_str::<serde_json::Value>(&json_str) {
+                            Ok(coords) if !coords.is_null() => {
+                                let cx = coords["x"].as_f64().unwrap_or(0.0) as i32;
+                                let cy = coords["y"].as_f64().unwrap_or(0.0) as i32;
+                                match e.click(_uuid, cx, cy, 0).await {
+                                    Ok(_) => IpcResponse::success(),
+                                    Err(e) => IpcResponse::error(e.to_string()),
+                                }
+                            }
+                            _ => IpcResponse::error(format!("Element not found: {}", selector)),
+                        }
+                    }
+                    Ok(None) => IpcResponse::error(format!("Element not found: {}", selector)),
+                    Err(e) => IpcResponse::error(e.to_string()),
+                }
+            }
             _ => {
-                debug!("ClickElement (mock): {} -> {} (frame: {:?})", tab_id, selector, frame_id);
-                IpcResponse::success()
+                IpcResponse::error("No browser engine available for ClickElement")
             }
         }
     }
@@ -371,8 +391,7 @@ impl BrowserCommandHandler {
                 }
             }
             _ => {
-                debug!("Type (mock): {} chars to {} (frame: {:?})", text.len(), tab_id, frame_id);
-                IpcResponse::success()
+                IpcResponse::error("No browser engine available for TypeText")
             }
         }
     }
@@ -405,8 +424,7 @@ impl BrowserCommandHandler {
                 }
             }
             _ => {
-                debug!("Scroll (mock): {} by ({}, {})", tab_id, dx, dy);
-                IpcResponse::success()
+                IpcResponse::error("No browser engine available for Scroll")
             }
         }
     }
@@ -455,13 +473,7 @@ impl BrowserCommandHandler {
                 }
             }
             _ => {
-                debug!("Screenshot (mock): {}", tab_id);
-                IpcResponse::success_with_data(serde_json::json!({
-                    "screenshot": "",
-                    "width": 1920,
-                    "height": 1080,
-                    "format": format
-                }))
+                IpcResponse::error("No browser engine available for Screenshot")
             }
         }
     }
@@ -503,10 +515,7 @@ impl BrowserCommandHandler {
                 }
             }
             _ => {
-                debug!("Evaluate (mock): {} chars to {} (frame: {:?})", script.len(), tab_id, frame_id);
-                IpcResponse::success_with_data(serde_json::json!({
-                    "result": null
-                }))
+                IpcResponse::error("No browser engine available for EvaluateScript")
             }
         }
     }
@@ -606,12 +615,7 @@ impl BrowserCommandHandler {
                 }))
             }
             _ => {
-                debug!("Annotate (mock): {}", tab_id);
-                IpcResponse::success_with_data(serde_json::json!({
-                    "screenshot": "",
-                    "elements": [],
-                    "ocr_text": null,
-                }))
+                IpcResponse::error("No browser engine available for AnnotateElements")
             }
         }
     }
@@ -691,14 +695,7 @@ impl BrowserCommandHandler {
                 }
             }
             _ => {
-                debug!("DomSnapshot (mock): {}", tab_id);
-                IpcResponse::success_with_data(serde_json::json!({
-                    "nodes": [],
-                    "viewport": { "width": 1920, "height": 1080, "scroll_x": 0.0, "scroll_y": 0.0 },
-                    "device_pixel_ratio": 1.0,
-                    "url": "about:blank",
-                    "timestamp": chrono::Utc::now().to_rfc3339()
-                }))
+                IpcResponse::error("No browser engine available for DomSnapshot")
             }
         }
     }
@@ -737,7 +734,7 @@ impl BrowserCommandHandler {
                 }
             }
             None => {
-                IpcResponse::success_with_data(serde_json::json!({ "tabs": [] }))
+                IpcResponse::error("No browser engine available for GetTabs")
             }
         }
     }
@@ -753,18 +750,28 @@ impl BrowserCommandHandler {
         };
 
         match engine {
+            #[cfg(feature = "cef-browser")]
+            Some(BrowserEngineWrapper::Cef(e)) => {
+                match e.get_frame_tree(_uuid).await {
+                    Ok(frames) => {
+                        let frames_data: Vec<_> = frames.iter().map(|f| {
+                            serde_json::json!({
+                                "frame_id": f.frame_id,
+                                "parent_frame_id": f.parent_frame_id,
+                                "url": f.url,
+                                "name": f.name,
+                                "security_origin": f.security_origin,
+                            })
+                        }).collect();
+                        IpcResponse::success_with_data(serde_json::json!({
+                            "frames": frames_data
+                        }))
+                    }
+                    Err(e) => IpcResponse::error(e.to_string()),
+                }
+            }
             _ => {
-                debug!("GetFrameTree (mock): {}", tab_id);
-                // Mock: return single main frame
-                IpcResponse::success_with_data(serde_json::json!({
-                    "frames": [{
-                        "frame_id": "main",
-                        "parent_frame_id": null,
-                        "url": "about:blank",
-                        "name": "",
-                        "security_origin": "null",
-                    }]
-                }))
+                IpcResponse::error("No browser engine available for GetFrameTree")
             }
         }
     }
@@ -782,11 +789,19 @@ impl BrowserCommandHandler {
         };
 
         match engine {
+            #[cfg(feature = "cef-browser")]
+            Some(BrowserEngineWrapper::Cef(e)) => {
+                match e.evaluate_in_frame(_uuid, frame_id, script).await {
+                    Ok(value) => {
+                        IpcResponse::success_with_data(serde_json::json!({
+                            "result": value
+                        }))
+                    }
+                    Err(e) => IpcResponse::error(e.to_string()),
+                }
+            }
             _ => {
-                debug!("EvaluateInFrame (mock): {} in frame {} ({} chars)", tab_id, frame_id, script.len());
-                IpcResponse::success_with_data(serde_json::json!({
-                    "result": null
-                }))
+                IpcResponse::error("No browser engine available for EvaluateInFrame")
             }
         }
     }

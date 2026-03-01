@@ -183,6 +183,21 @@ impl ApiServer {
         }
     }
 
+    /// Create a new API server with CDP remote debugging port forwarded to AppState.
+    ///
+    /// The `cdp_port` is the port CEF listens on for Chrome DevTools Protocol
+    /// connections (--remote-debugging-port). External tools like Playwright,
+    /// Puppeteer, or Chrome DevTools use this to connect.
+    pub fn new_with_cdp(port: u16, ipc_channel: IpcChannel, cdp_port: Option<u16>) -> Self {
+        Self {
+            port,
+            enabled: false,
+            state: AppState::new_with_cdp(ipc_channel, cdp_port),
+            shutdown_tx: None,
+            server_handle: None,
+        }
+    }
+
     /// Create a new API server with existing state
     pub fn with_state(port: u16, state: AppState) -> Self {
         Self {

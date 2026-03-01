@@ -497,7 +497,7 @@ async fn main() -> Result<()> {
                 }
             });
 
-            let mut server = ApiServer::new(api_port, ipc_channel);
+            let mut server = ApiServer::new_with_cdp(api_port, ipc_channel, settings.cdp_port);
             // Store GuiHandle in AppState so GUI toggle endpoints can use it.
             server.state().set_gui_handle(gui_handle.clone());
 
@@ -559,25 +559,18 @@ async fn main() -> Result<()> {
             browser_config = browser_config.proxy(proxy.to_url());
         }
 
-        match CefBrowserEngine::new(browser_config).await {
-            Ok(engine) => {
-                let engine = Arc::new(engine);
-                let runner = HeadlessRunner::new(engine.clone());
-                runner.start().await.map_err(|e| anyhow::anyhow!("Failed to start headless runner: {}", e))?;
-                info!("CEF headless mode active");
-                (Some(engine), Some(runner))
-            }
-            Err(e) => {
-                error!("Failed to initialize CEF browser engine: {}", e);
-                warn!("Falling back to mock mode");
-                (None, None)
-            }
-        }
+        let engine = CefBrowserEngine::new(browser_config).await
+            .context("Failed to initialize CEF browser engine")?;
+        let engine = Arc::new(engine);
+        let runner = HeadlessRunner::new(engine.clone());
+        runner.start().await.map_err(|e| anyhow::anyhow!("Failed to start headless runner: {}", e))?;
+        info!("CEF headless mode active");
+        (engine, runner)
     };
 
     #[cfg(not(feature = "cef-browser"))]
     {
-        info!("Browser engine initialized (mock mode - no browser feature enabled)");
+        warn!("No browser feature enabled — all browser commands will return errors");
     }
 
     // Start API server if enabled
@@ -588,12 +581,9 @@ async fn main() -> Result<()> {
 
         // Set up browser command handler with the actual browser engine
         #[cfg(feature = "cef-browser")]
-        let handler = if let Some(ref engine) = _cef_engine {
+        let handler = {
             info!("Browser handler configured with CEF engine");
-            ki_browser_standalone::api::BrowserCommandHandler::with_cef_shared(engine.clone())
-        } else {
-            warn!("No CEF engine available, using mock handler");
-            ki_browser_standalone::api::BrowserCommandHandler::new()
+            ki_browser_standalone::api::BrowserCommandHandler::with_cef_shared(_cef_engine.clone())
         };
 
         #[cfg(not(feature = "cef-browser"))]
@@ -607,7 +597,7 @@ async fn main() -> Result<()> {
             }
         });
 
-        let mut server = ApiServer::new(settings.api_port, ipc_channel);
+        let mut server = ApiServer::new_with_cdp(settings.api_port, ipc_channel, settings.cdp_port);
 
         server
             .start()
@@ -625,6 +615,15 @@ async fn main() -> Result<()> {
             println!(
                 "{green}{bold}Dashboard:{reset}    http://127.0.0.1:{}/ui",
                 settings.api_port,
+                green = colors::GREEN,
+                bold = colors::BOLD,
+                reset = colors::RESET
+            );
+        }
+        if let Some(cdp_port) = settings.cdp_port {
+            println!(
+                "{green}{bold}CDP Debugging:{reset}  http://127.0.0.1:{}/json/list",
+                cdp_port,
                 green = colors::GREEN,
                 bold = colors::BOLD,
                 reset = colors::RESET
@@ -662,8 +661,7 @@ async fn main() -> Result<()> {
         server.stop().await;
     }
 
-    // TODO: Cleanup browser engine
-    // browser.close().await?;
+    // Browser engine cleanup is handled by HeadlessRunner/CefBrowserEngine Drop impls
 
     println!(
         "{green}KI-Browser stopped successfully.{reset}",
