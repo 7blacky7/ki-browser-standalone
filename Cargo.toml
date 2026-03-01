@@ -88,17 +88,11 @@ windows = { version = "0.58", features = [
 cc = "1"
 
 [features]
-default = ["mock-browser"]
-chromium-browser = ["dep:chromiumoxide"]
+default = ["cef-browser"]
 cef-browser = ["dep:cef"]
+gui = ["cef-browser", "dep:eframe", "dep:egui"]
 ocr = ["dep:leptess"]
 mock-browser = []
-
-[dependencies.chromiumoxide]
-version = "0.7"
-optional = true
-default-features = false
-features = ["tokio-runtime"]
 
 [dependencies.cef]
 version = "144"
@@ -106,6 +100,14 @@ optional = true
 default-features = false
 # Enable sandbox and linux-x11 for full Linux support
 features = ["sandbox", "linux-x11"]
+
+[dependencies.eframe]
+version = "0.31"
+optional = true
+
+[dependencies.egui]
+version = "0.31"
+optional = true
 
 [dependencies.leptess]
 version = "0.14"

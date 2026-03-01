@@ -12,7 +12,6 @@
 //! - [`structured_data`] - Structured data extraction (JSON-LD, OpenGraph, microdata)
 //! - [`content_extractor`] - Intelligent content extraction and page structure analysis
 //! - [`forms`] - Form detection, analysis, and auto-fill
-//! - [`chromium_engine`] - Chromiumoxide browser engine (requires `chromium-browser` feature)
 //! - [`cef_input`] - CEF-specific native input simulation (requires `cef-browser` feature)
 //! - [`cef_render`] - CEF offscreen rendering (requires `cef-browser` feature)
 //! - [`cef_engine`] - CEF browser engine implementation (requires `cef-browser` feature)
@@ -26,9 +25,6 @@ pub mod screenshot;
 pub mod structured_data;
 pub mod tab;
 
-/// Chromiumoxide browser engine (requires `chromium-browser` feature).
-#[cfg(feature = "chromium-browser")]
-pub mod chromium_engine;
 
 #[cfg(feature = "cef-browser")]
 pub mod cef_input;
@@ -45,7 +41,7 @@ pub use content_extractor::{
     ContentExtractor, ExtractedContent, NavElement, PageSection, PageStructure, PageType,
     SectionRole,
 };
-pub use dom::{BoundingBox, DomAccessor, DomElement, MockDomAccessor};
+pub use dom::{BoundingBox, DomAccessor, DomElement, FrameInfo, MockDomAccessor};
 pub use forms::{
     FieldOption, FieldType, FormButton, FormField, FormFillError, FormFillRequest, FormFillResult,
     FormHandler, FormInfo, FormValidationResult, ValidationError,
@@ -58,8 +54,6 @@ pub use structured_data::{
 };
 pub use tab::{Tab, TabManager, TabStatus};
 
-#[cfg(feature = "chromium-browser")]
-pub use chromium_engine::ChromiumBrowserEngine;
 
 #[cfg(feature = "cef-browser")]
 pub use cef_render::{CefRenderHandler, DirtyRect, OffScreenRenderHandler, ScreenInfo};

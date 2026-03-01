@@ -271,6 +271,12 @@ fn build_cli() -> Command {
                 .action(ArgAction::SetTrue)
                 .conflicts_with("verbose"),
         )
+        .arg(
+            Arg::new("gui")
+                .long("gui")
+                .help("Start with custom GUI browser (CEF-based)")
+                .action(ArgAction::SetTrue),
+        )
 }
 
 /// Parse CLI arguments into CliArgs struct
@@ -379,6 +385,31 @@ fn init_stealth(settings: &BrowserSettings) -> Option<StealthConfig> {
 /// Main application entry point
 #[tokio::main]
 async fn main() -> Result<()> {
+    // CEF subprocess handling: CEF launches sub-processes (renderer, GPU, etc.)
+    // using the same executable with --type=xxx arguments. We must handle these
+    // BEFORE clap parsing, because clap doesn't know about CEF's arguments.
+    #[cfg(feature = "cef-browser")]
+    {
+        // Check if this is a CEF subprocess by looking for --type in raw args
+        let args: Vec<String> = std::env::args().collect();
+        let is_cef_subprocess = args.iter().any(|a| a.starts_with("--type=") || a == "--type");
+
+        if is_cef_subprocess {
+            use cef::{api_hash, execute_process, MainArgs, sys};
+            let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
+            let main_args = MainArgs::default();
+            let exit_code = execute_process(Some(&main_args), None, std::ptr::null_mut());
+            std::process::exit(exit_code);
+        }
+
+        // Set Chrome flags via environment for GPU disable (applies to all subprocesses)
+        // This ensures GPU subprocess doesn't get launched at all
+        let chrome_flags = std::env::var("CHROME_FLAGS").unwrap_or_default();
+        if !chrome_flags.contains("disable-gpu") {
+            std::env::set_var("CHROME_FLAGS", format!("{} --disable-gpu --disable-gpu-compositing --in-process-gpu", chrome_flags));
+        }
+    }
+
     // Parse CLI arguments
     let matches = build_cli().get_matches();
 
@@ -391,6 +422,8 @@ async fn main() -> Result<()> {
 
     // Convert matches to CliArgs
     let cli_args = parse_cli_args(&matches);
+    #[cfg_attr(not(feature = "gui"), allow(unused_variables))]
+    let use_gui = matches.get_flag("gui");
 
     // Load configuration with full precedence chain
     let settings = cli_args
@@ -406,13 +439,73 @@ async fn main() -> Result<()> {
     // Initialize stealth configuration if enabled
     let _stealth_config = init_stealth(&settings);
 
+    // GUI mode: start CEF-based GUI browser
+    #[cfg(feature = "gui")]
+    if use_gui {
+        use std::sync::Arc;
+        use ki_browser_standalone::browser::BrowserConfig;
+        use ki_browser_standalone::api::{ApiServer, IpcChannel};
+
+        info!("Starting GUI browser mode...");
+
+        let mut browser_config = BrowserConfig::new()
+            .headless(false)
+            .window_size(settings.window_width, settings.window_height);
+
+        if let Some(ref ua) = settings.user_agent {
+            browser_config = browser_config.user_agent(ua);
+        }
+
+        if let Some(ref proxy) = settings.proxy {
+            browser_config = browser_config.proxy(proxy.to_url());
+        }
+
+        let api_port = settings.api_port;
+
+        // Create CEF engine FIRST — needed by both API handler and GUI.
+        use ki_browser_standalone::browser::BrowserEngine;
+        let engine = ki_browser_standalone::browser::cef_engine::CefBrowserEngine::new(browser_config).await?;
+        let engine = Arc::new(engine);
+
+        // Start API server in background if enabled.
+        // _api_server lives until run_gui() returns, keeping the server alive.
+        let _api_server = if settings.api_enabled {
+            let ipc_channel = IpcChannel::new();
+            let handler = ki_browser_standalone::api::BrowserCommandHandler::with_cef_shared(engine.clone());
+
+            let ipc_channel_clone = ipc_channel.clone();
+            tokio::spawn(async move {
+                if let Some(mut processor) = ki_browser_standalone::api::IpcProcessor::new(&ipc_channel_clone).await {
+                    handler.run(&mut processor).await;
+                }
+            });
+
+            let mut server = ApiServer::new(api_port, ipc_channel);
+            server
+                .start()
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to start API server: {}", e))?;
+
+            info!("API server started on port {} (connected to CEF engine)", api_port);
+            Some(server)
+        } else {
+            None
+        };
+
+        // IMPORTANT: run_gui() MUST be called from the main thread (X11/Wayland).
+        // The tokio runtime worker threads keep the API server running in the
+        // background while the GUI event loop blocks the main thread.
+        return ki_browser_standalone::gui::browser_app::run_gui(engine, api_port);
+    }
+
     // Initialize browser engine
     info!("Initializing browser engine...");
 
-    // Chromiumoxide browser engine (CDP-based)
-    #[cfg(feature = "chromium-browser")]
-    let mut _browser_engine = {
-        use ki_browser_standalone::browser::{BrowserConfig, ChromiumBrowserEngine, BrowserEngine};
+    // CEF browser engine (headless, no GUI)
+    #[cfg(feature = "cef-browser")]
+    let _cef_engine = {
+        use std::sync::Arc;
+        use ki_browser_standalone::browser::{BrowserConfig, CefBrowserEngine, BrowserEngine};
 
         let mut browser_config = BrowserConfig::new()
             .headless(settings.headless)
@@ -426,49 +519,10 @@ async fn main() -> Result<()> {
             browser_config = browser_config.proxy(proxy.to_url());
         }
 
-        // Add stealth args
-        browser_config = browser_config
-            .add_arg("--disable-blink-features=AutomationControlled")
-            .add_arg("--disable-infobars");
-
-        match ChromiumBrowserEngine::new(browser_config).await {
-            Ok(engine) => {
-                info!("Chromiumoxide browser engine initialized successfully");
-                Some(engine)
-            }
-            Err(e) => {
-                error!("Failed to initialize Chromiumoxide browser engine: {}", e);
-                warn!("Falling back to mock mode");
-                None
-            }
-        }
-    };
-
-    // CEF browser engine (legacy)
-    #[cfg(feature = "cef-browser")]
-    let _browser_engine = {
-        use ki_browser_standalone::browser::{BrowserConfig, CefBrowserEngine, BrowserEngine};
-
-        let browser_config = BrowserConfig::new()
-            .headless(settings.headless)
-            .window_size(settings.window_width, settings.window_height);
-
-        let browser_config = if let Some(ref ua) = settings.user_agent {
-            browser_config.user_agent(ua)
-        } else {
-            browser_config
-        };
-
-        let browser_config = if let Some(ref proxy) = settings.proxy {
-            browser_config.proxy(proxy.to_url())
-        } else {
-            browser_config
-        };
-
         match CefBrowserEngine::new(browser_config).await {
             Ok(engine) => {
                 info!("CEF browser engine initialized successfully");
-                Some(engine)
+                Some(Arc::new(engine))
             }
             Err(e) => {
                 error!("Failed to initialize CEF browser engine: {}", e);
@@ -478,7 +532,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    #[cfg(not(any(feature = "chromium-browser", feature = "cef-browser")))]
+    #[cfg(not(feature = "cef-browser"))]
     {
         info!("Browser engine initialized (mock mode - no browser feature enabled)");
     }
@@ -490,24 +544,16 @@ async fn main() -> Result<()> {
         let ipc_channel = IpcChannel::new();
 
         // Set up browser command handler with the actual browser engine
-        #[cfg(feature = "chromium-browser")]
-        let handler = if let Some(engine) = _browser_engine.take() {
-            info!("Browser handler configured with Chromium engine");
-            ki_browser_standalone::api::BrowserCommandHandler::with_chromium(engine)
-        } else {
-            warn!("No Chromium engine available, using mock handler");
-            ki_browser_standalone::api::BrowserCommandHandler::new()
-        };
-
-        #[cfg(all(feature = "cef-browser", not(feature = "chromium-browser")))]
-        let handler = if let Some(ref _engine) = _browser_engine {
+        #[cfg(feature = "cef-browser")]
+        let handler = if let Some(ref engine) = _cef_engine {
             info!("Browser handler configured with CEF engine");
-            ki_browser_standalone::api::BrowserCommandHandler::new()
+            ki_browser_standalone::api::BrowserCommandHandler::with_cef_shared(engine.clone())
         } else {
+            warn!("No CEF engine available, using mock handler");
             ki_browser_standalone::api::BrowserCommandHandler::new()
         };
 
-        #[cfg(not(any(feature = "chromium-browser", feature = "cef-browser")))]
+        #[cfg(not(feature = "cef-browser"))]
         let handler = ki_browser_standalone::api::BrowserCommandHandler::new();
 
         // Start IPC processor in background
@@ -532,6 +578,15 @@ async fn main() -> Result<()> {
             bold = colors::BOLD,
             reset = colors::RESET
         );
+        if !settings.headless {
+            println!(
+                "{green}{bold}Dashboard:{reset}    http://127.0.0.1:{}/ui",
+                settings.api_port,
+                green = colors::GREEN,
+                bold = colors::BOLD,
+                reset = colors::RESET
+            );
+        }
         println!(
             "{dim}Press Ctrl+C to stop{reset}",
             dim = colors::DIM,

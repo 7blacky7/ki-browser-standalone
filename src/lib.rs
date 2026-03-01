@@ -112,19 +112,21 @@ pub mod api;
 /// Configuration management for loading settings from files, env, and CLI.
 pub mod config;
 
+/// GUI browser with embedded CEF rendering (requires `gui` feature).
+#[cfg(feature = "gui")]
+pub mod gui;
+
 // ============================================================================
 // Re-exports for Convenience
 // ============================================================================
 
 // Browser types
 pub use browser::{
-    BoundingBox, BrowserConfig, BrowserEngine, DomAccessor, DomElement, MockBrowserEngine,
-    MockDomAccessor, ScreenshotFormat, ScreenshotOptions, Tab, TabManager, TabStatus,
+    BoundingBox, BrowserConfig, BrowserEngine, DomAccessor, DomElement, FrameInfo,
+    MockBrowserEngine, MockDomAccessor, ScreenshotFormat, ScreenshotOptions, Tab, TabManager,
+    TabStatus,
 };
 
-// Chromiumoxide types (when feature enabled)
-#[cfg(feature = "chromium-browser")]
-pub use browser::ChromiumBrowserEngine;
 
 // CEF-specific types (when feature enabled)
 #[cfg(feature = "cef-browser")]
