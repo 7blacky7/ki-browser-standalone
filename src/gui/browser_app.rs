@@ -431,6 +431,104 @@ impl KiBrowserApp {
                         }
                     }
                 }
+                DevToolsAction::RunOcr { engines, .. } => {
+                    if let Some(tab) = self.tabs.get(self.active_tab) {
+                        let tab_id = tab.id;
+                        let port = self.api_port;
+                        let ocr_results = self.devtools_shared.state.ocr_results.clone();
+
+                        // Clear old results
+                        if let Ok(mut r) = ocr_results.lock() {
+                            r.clear();
+                        }
+
+                        // Screenshot holen und OCR parallel ausfuehren
+                        std::thread::spawn(move || {
+                            // Screenshot ueber API holen
+                            let rt = tokio::runtime::Builder::new_current_thread()
+                                .enable_all()
+                                .build();
+                            let screenshot_result = rt.as_ref().ok().and_then(|rt| {
+                                rt.block_on(async {
+                                    let client = reqwest::Client::new();
+                                    let url = format!(
+                                        "http://127.0.0.1:{}/screenshots?tab_id={}&format=png",
+                                        port, tab_id
+                                    );
+                                    let resp = client.get(&url).send().await.ok()?;
+                                    let text = resp.text().await.ok()?;
+                                    let val: serde_json::Value = serde_json::from_str(&text).ok()?;
+                                    let b64 = val.pointer("/data/data")
+                                        .or_else(|| val.pointer("/data/image"))
+                                        .and_then(|v| v.as_str())?;
+                                    use base64::Engine;
+                                    base64::engine::general_purpose::STANDARD.decode(b64).ok()
+                                })
+                            });
+
+                            let png_data = match screenshot_result {
+                                Some(data) => data,
+                                None => {
+                                    if let Ok(mut r) = ocr_results.lock() {
+                                        r.push(devtools::OcrDisplayResult {
+                                            engine: "system".to_string(),
+                                            full_text: String::new(),
+                                            result_count: 0,
+                                            duration_ms: 0,
+                                            error: Some("Screenshot konnte nicht geladen werden".to_string()),
+                                        });
+                                    }
+                                    return;
+                                }
+                            };
+
+                            // OCR Engines ausfuehren
+                            let all_engines = crate::ocr::all_engines();
+                            for ocr_engine in all_engines {
+                                if !engines.contains(&ocr_engine.name().to_string()) {
+                                    continue;
+                                }
+                                if !ocr_engine.is_available() {
+                                    if let Ok(mut r) = ocr_results.lock() {
+                                        r.push(devtools::OcrDisplayResult {
+                                            engine: ocr_engine.name().to_string(),
+                                            full_text: String::new(),
+                                            result_count: 0,
+                                            duration_ms: 0,
+                                            error: Some("Engine nicht verfuegbar".to_string()),
+                                        });
+                                    }
+                                    continue;
+                                }
+
+                                match ocr_engine.recognize(&png_data, None) {
+                                    Ok(response) => {
+                                        if let Ok(mut r) = ocr_results.lock() {
+                                            r.push(devtools::OcrDisplayResult {
+                                                engine: response.engine,
+                                                full_text: response.full_text,
+                                                result_count: response.results.len(),
+                                                duration_ms: response.duration_ms,
+                                                error: None,
+                                            });
+                                        }
+                                    }
+                                    Err(err) => {
+                                        if let Ok(mut r) = ocr_results.lock() {
+                                            r.push(devtools::OcrDisplayResult {
+                                                engine: ocr_engine.name().to_string(),
+                                                full_text: String::new(),
+                                                result_count: 0,
+                                                duration_ms: 0,
+                                                error: Some(err),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    }
+                }
             }
         }
     }

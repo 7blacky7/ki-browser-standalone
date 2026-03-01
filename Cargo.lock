@@ -2483,6 +2483,7 @@ dependencies = [
  "rusttype",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tokio-tungstenite 0.21.0",

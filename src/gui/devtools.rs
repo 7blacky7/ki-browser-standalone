@@ -35,6 +35,7 @@ pub enum VisionTactic {
     ContentExtract,
     StructureAnalysis,
     Forms,
+    Ocr,
 }
 
 impl VisionTactic {
@@ -48,6 +49,7 @@ impl VisionTactic {
             Self::ContentExtract => "Content Extract",
             Self::StructureAnalysis => "Seitenstruktur",
             Self::Forms => "Formulare",
+            Self::Ocr => "OCR",
         }
     }
 
@@ -61,6 +63,7 @@ impl VisionTactic {
             Self::ContentExtract => "Hauptinhalt der Seite (Readability)",
             Self::StructureAnalysis => "Seitenstruktur, Sektionen, Seitentyp",
             Self::Forms => "Erkannte Formulare mit Feldern",
+            Self::Ocr => "Text-Erkennung via Tesseract, PaddleOCR, Surya",
         }
     }
 
@@ -74,6 +77,7 @@ impl VisionTactic {
             Self::ContentExtract => Color32::from_rgb(255, 220, 100),
             Self::StructureAnalysis => Color32::from_rgb(100, 220, 200),
             Self::Forms => Color32::from_rgb(255, 180, 200),
+            Self::Ocr => Color32::from_rgb(255, 255, 100),
         }
     }
 
@@ -87,6 +91,7 @@ impl VisionTactic {
             Self::ContentExtract,
             Self::StructureAnalysis,
             Self::Forms,
+            Self::Ocr,
         ]
     }
 }
@@ -139,6 +144,30 @@ pub enum ImageState {
     Error(String),
 }
 
+/// OCR engine selection for the DevTools (which engines to run).
+#[derive(Clone)]
+pub struct OcrConfig {
+    pub tesseract: bool,
+    pub paddleocr: bool,
+    pub surya: bool,
+}
+
+impl Default for OcrConfig {
+    fn default() -> Self {
+        Self { tesseract: true, paddleocr: true, surya: true }
+    }
+}
+
+/// A single OCR engine result for display in DevTools.
+#[derive(Clone)]
+pub struct OcrDisplayResult {
+    pub engine: String,
+    pub full_text: String,
+    pub result_count: usize,
+    pub duration_ms: u64,
+    pub error: Option<String>,
+}
+
 /// Action requested by the DevTools window, queued for the main app to handle.
 pub enum DevToolsAction {
     /// Request to load the page source code for the active tab.
@@ -150,6 +179,11 @@ pub enum DevToolsAction {
     /// Run a KI vision tactic via REST API.
     RunVisionTactic {
         tactic: &'static str,
+        tab_id: Uuid,
+    },
+    /// Run OCR with selected engines.
+    RunOcr {
+        engines: Vec<String>,
         tab_id: Uuid,
     },
 }
@@ -179,6 +213,10 @@ pub struct DevToolsState {
     pub vision_texture: Arc<Mutex<Option<egui::TextureHandle>>>,
     /// Queued actions to be drained by the main app each frame.
     pub actions: Arc<Mutex<Vec<DevToolsAction>>>,
+    /// OCR engine configuration (which engines are enabled).
+    pub ocr_config: Arc<Mutex<OcrConfig>>,
+    /// OCR results per engine (loaded asynchronously).
+    pub ocr_results: Arc<Mutex<Vec<OcrDisplayResult>>>,
 }
 
 impl Default for DevToolsState {
@@ -192,6 +230,8 @@ impl Default for DevToolsState {
             vision_image: Arc::new(Mutex::new(ImageState::Empty)),
             vision_texture: Arc::new(Mutex::new(None)),
             actions: Arc::new(Mutex::new(Vec::new())),
+            ocr_config: Arc::new(Mutex::new(OcrConfig::default())),
+            ocr_results: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -247,6 +287,7 @@ impl DevToolsState {
             VisionTactic::ContentExtract => "content_extract",
             VisionTactic::StructureAnalysis => "structure_analysis",
             VisionTactic::Forms => "forms",
+            VisionTactic::Ocr => "ocr",
         }
     }
 
@@ -320,6 +361,8 @@ pub fn render_standalone(ctx: &egui::Context, shared: &DevToolsShared) {
     let vision_image = shared.state.vision_image.clone();
     let actions = shared.state.actions.clone();
     let vision_texture = shared.state.vision_texture.clone();
+    let ocr_config = shared.state.ocr_config.clone();
+    let ocr_results = shared.state.ocr_results.clone();
 
     // Dark theme for the standalone window
     ctx.set_visuals(egui::Visuals::dark());
@@ -362,7 +405,7 @@ pub fn render_standalone(ctx: &egui::Context, shared: &DevToolsShared) {
             Section::KiVision => {
                 if let Some(action) = render_ki_vision(
                     ui, ctx, &mut vision_tactic, &vision_text, &vision_image,
-                    &vision_texture, &page_info,
+                    &vision_texture, &page_info, &actions, &ocr_config, &ocr_results,
                 ) {
                     if let Ok(mut a) = actions.lock() {
                         a.push(action);
@@ -515,6 +558,9 @@ fn render_ki_vision(
     vision_image: &SharedImage,
     vision_texture: &Arc<Mutex<Option<egui::TextureHandle>>>,
     page_info: &PageInfo,
+    shared_actions: &Arc<Mutex<Vec<DevToolsAction>>>,
+    shared_ocr_config: &Arc<Mutex<OcrConfig>>,
+    shared_ocr_results: &Arc<Mutex<Vec<OcrDisplayResult>>>,
 ) -> Option<DevToolsAction> {
     let mut action = None;
 
@@ -583,60 +629,142 @@ fn render_ki_vision(
     });
     ui.add_space(4.0);
 
-    // Run button
+    // Run button (not shown for Ocr — it has its own section)
     let is_image_tactic = matches!(*tactic, VisionTactic::Annotated | VisionTactic::DomAnnotate);
-    let is_loading = if is_image_tactic {
-        vision_image.lock().ok()
-            .map(|s| matches!(*s, ImageState::Loading))
-            .unwrap_or(false)
-    } else {
-        vision_text.lock().ok()
-            .map(|s| matches!(*s, TextState::Loading))
-            .unwrap_or(false)
-    };
+    let is_ocr_tactic = *tactic == VisionTactic::Ocr;
 
-    ui.horizontal(|ui| {
-        let btn_text = if is_loading {
-            "Analysiere..."
+    if !is_ocr_tactic {
+        let is_loading = if is_image_tactic {
+            vision_image.lock().ok()
+                .map(|s| matches!(*s, ImageState::Loading))
+                .unwrap_or(false)
         } else {
-            "Analyse starten"
+            vision_text.lock().ok()
+                .map(|s| matches!(*s, TextState::Loading))
+                .unwrap_or(false)
         };
-        let btn = egui::Button::new(
-            RichText::new(btn_text).color(if is_loading { Color32::GRAY } else { Color32::WHITE }),
-        );
-        if ui.add_enabled(!is_loading, btn).clicked() {
-            action = Some(DevToolsAction::RunVisionTactic {
-                tactic: match *tactic {
-                    VisionTactic::Annotated => "annotated",
-                    VisionTactic::Labels => "labels",
-                    VisionTactic::DomSnapshot => "dom_snapshot",
-                    VisionTactic::DomAnnotate => "dom_annotate",
-                    VisionTactic::StructuredData => "structured_data",
-                    VisionTactic::ContentExtract => "content_extract",
-                    VisionTactic::StructureAnalysis => "structure_analysis",
-                    VisionTactic::Forms => "forms",
-                },
-                tab_id: Uuid::nil(), // Will be resolved in browser_app
-            });
-        }
 
-        ui.label(
-            RichText::new(format!("Port :{}", page_info.api_port))
-                .color(Color32::from_rgb(80, 80, 100))
-                .monospace()
-                .size(10.0),
-        );
-    });
-    ui.separator();
+        ui.horizontal(|ui| {
+            let btn_text = if is_loading {
+                "Analysiere..."
+            } else {
+                "Analyse starten"
+            };
+            let btn = egui::Button::new(
+                RichText::new(btn_text).color(if is_loading { Color32::GRAY } else { Color32::WHITE }),
+            );
+            if ui.add_enabled(!is_loading, btn).clicked() {
+                action = Some(DevToolsAction::RunVisionTactic {
+                    tactic: match *tactic {
+                        VisionTactic::Annotated => "annotated",
+                        VisionTactic::Labels => "labels",
+                        VisionTactic::DomSnapshot => "dom_snapshot",
+                        VisionTactic::DomAnnotate => "dom_annotate",
+                        VisionTactic::StructuredData => "structured_data",
+                        VisionTactic::ContentExtract => "content_extract",
+                        VisionTactic::StructureAnalysis => "structure_analysis",
+                        VisionTactic::Forms => "forms",
+                        VisionTactic::Ocr => "ocr",
+                    },
+                    tab_id: Uuid::nil(), // Will be resolved in browser_app
+                });
+            }
+
+            ui.label(
+                RichText::new(format!("Port :{}", page_info.api_port))
+                    .color(Color32::from_rgb(80, 80, 100))
+                    .monospace()
+                    .size(10.0),
+            );
+        });
+        ui.separator();
+    }
 
     // Result display
-    if is_image_tactic {
+    if is_ocr_tactic {
+        render_ocr_section(ui, shared_actions, shared_ocr_config, shared_ocr_results, page_info);
+    } else if is_image_tactic {
         render_vision_image(ui, ctx, vision_image, vision_texture);
     } else {
         render_vision_text(ui, vision_text);
     }
 
     action
+}
+
+/// Renders the OCR section with engine checkboxes, run button, and results.
+fn render_ocr_section(
+    ui: &mut egui::Ui,
+    actions: &Arc<Mutex<Vec<DevToolsAction>>>,
+    ocr_config: &Arc<Mutex<OcrConfig>>,
+    ocr_results: &Arc<Mutex<Vec<OcrDisplayResult>>>,
+    _page_info: &PageInfo,
+) {
+    ui.label(RichText::new("OCR Engines").color(Color32::WHITE).strong());
+    ui.add_space(4.0);
+
+    // Engine checkboxes
+    let mut config = ocr_config.lock().unwrap().clone();
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut config.tesseract, RichText::new("Tesseract").color(Color32::from_rgb(100, 200, 255)));
+        ui.checkbox(&mut config.paddleocr, RichText::new("PaddleOCR").color(Color32::from_rgb(100, 255, 100)));
+        ui.checkbox(&mut config.surya, RichText::new("Surya").color(Color32::from_rgb(255, 200, 100)));
+    });
+    *ocr_config.lock().unwrap() = config.clone();
+
+    ui.add_space(4.0);
+
+    // Run OCR button
+    let any_engine = config.tesseract || config.paddleocr || config.surya;
+    let results = ocr_results.lock().unwrap().clone();
+
+    if ui.add_enabled(any_engine, egui::Button::new(
+        RichText::new("OCR starten").color(if any_engine { Color32::WHITE } else { Color32::GRAY })
+    )).clicked() {
+        let mut engines = Vec::new();
+        if config.tesseract { engines.push("tesseract".to_string()); }
+        if config.paddleocr { engines.push("paddleocr".to_string()); }
+        if config.surya { engines.push("surya".to_string()); }
+        if let Ok(mut a) = actions.lock() {
+            a.push(DevToolsAction::RunOcr {
+                engines,
+                tab_id: Uuid::nil(),
+            });
+        }
+    }
+    ui.separator();
+
+    // Display results
+    if results.is_empty() {
+        ui.label(RichText::new("Keine OCR-Ergebnisse. Starte OCR mit den ausgewaehlten Engines.")
+            .color(Color32::from_rgb(100, 100, 115)).italics());
+    } else {
+        ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            for result in &results {
+                ui.group(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(&result.engine).color(Color32::WHITE).strong());
+                        ui.label(RichText::new(format!("{}ms", result.duration_ms))
+                            .color(Color32::GRAY).size(11.0));
+                        ui.label(RichText::new(format!("{} Regionen", result.result_count))
+                            .color(Color32::GRAY).size(11.0));
+                    });
+                    if let Some(ref err) = result.error {
+                        ui.label(RichText::new(format!("Fehler: {}", err)).color(Color32::RED));
+                    } else {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut result.full_text.as_str())
+                                .code_editor()
+                                .desired_width(f32::INFINITY)
+                                .desired_rows(4)
+                                .font(egui::TextStyle::Monospace),
+                        );
+                    }
+                });
+                ui.add_space(4.0);
+            }
+        });
+    }
 }
 
 /// Renders an image result (annotated screenshots).
@@ -896,7 +1024,7 @@ mod tests {
 
     #[test]
     fn test_vision_tactic_all_count() {
-        assert_eq!(VisionTactic::all().len(), 8);
+        assert_eq!(VisionTactic::all().len(), 9);
     }
 
     #[test]
