@@ -326,7 +326,7 @@ impl BrowserCommandHandler {
         engine: &Option<BrowserEngineWrapper>,
         tab_id: &str,
         selector: &str,
-        frame_id: Option<&str>,
+        _frame_id: Option<&str>,
     ) -> IpcResponse {
         let _uuid = match Uuid::parse_str(tab_id) {
             Ok(u) => u,
