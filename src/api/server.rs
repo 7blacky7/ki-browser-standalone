@@ -16,9 +16,11 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::{error, info, warn};
 
+use crate::api::agent_registry::AgentRegistry;
 use crate::api::routes::create_router;
 use crate::api::websocket::WebSocketHandler;
 use crate::api::ipc::IpcChannel;
+use crate::browser::TabLockManager;
 
 /// Represents a browser tab's state
 #[derive(Debug, Clone)]
@@ -91,6 +93,10 @@ pub struct AppState {
     pub api_enabled: Arc<RwLock<bool>>,
     /// CDP remote debugging port for Playwright/DevTools connections
     pub cdp_port: Option<u16>,
+    /// Registry for multi-agent session management and tab ownership
+    pub agent_registry: Arc<AgentRegistry>,
+    /// Per-tab async operation locks for serializing concurrent operations on the same tab
+    pub tab_locks: Arc<TabLockManager>,
 }
 
 impl AppState {
@@ -101,6 +107,8 @@ impl AppState {
             ipc_channel: Arc::new(ipc_channel),
             api_enabled: Arc::new(RwLock::new(true)),
             cdp_port: None,
+            agent_registry: Arc::new(AgentRegistry::new()),
+            tab_locks: Arc::new(TabLockManager::new()),
         }
     }
 
@@ -112,6 +120,8 @@ impl AppState {
             ipc_channel: Arc::new(ipc_channel),
             api_enabled: Arc::new(RwLock::new(true)),
             cdp_port,
+            agent_registry: Arc::new(AgentRegistry::new()),
+            tab_locks: Arc::new(TabLockManager::new()),
         }
     }
 

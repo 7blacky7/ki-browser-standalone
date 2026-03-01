@@ -16,7 +16,7 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use ki_browser_standalone::browser::{BrowserConfig, cef_engine::CefBrowserEngine};
+//! use ki_browser_standalone::browser::{BrowserConfig, BrowserEngine, cef_engine::CefBrowserEngine};
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
@@ -56,7 +56,7 @@ use cef::{
     // Traits needed to call methods on CEF types
     ImplCommandLine, ImplFrame, ImplBrowser, ImplBrowserHost,
     // rc module for Rc trait (needed by wrap macros)
-    rc::{Rc, RcImpl},
+    rc::Rc,
     sys,
 };
 #[cfg(feature = "cef-browser")]
@@ -75,7 +75,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 #[cfg(feature = "cef-browser")]
 use std::sync::Arc;
 #[cfg(feature = "cef-browser")]
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot};
 #[cfg(feature = "cef-browser")]
 use tracing::{debug, error, info, trace, warn};
 #[cfg(feature = "cef-browser")]
@@ -291,7 +291,7 @@ impl CefTab {
 
 /// Commands for the CEF message loop thread.
 #[cfg(feature = "cef-browser")]
-enum CefCommand {
+pub(crate) enum CefCommand {
     CreateBrowser {
         url: String,
         tab_id: Uuid,
@@ -391,7 +391,7 @@ pub struct CefBrowserEventSender {
 #[cfg(feature = "cef-browser")]
 impl CefBrowserEventSender {
     /// Creates a new event sender for a specific tab.
-    pub fn new(tab_id: Uuid, command_tx: mpsc::UnboundedSender<CefCommand>) -> Self {
+    pub(crate) fn new(tab_id: Uuid, command_tx: mpsc::UnboundedSender<CefCommand>) -> Self {
         Self {
             tab_id,
             command_tx,
@@ -465,7 +465,7 @@ impl crate::browser::cef_input::CefEventSender for CefBrowserEventSender {
 // CEF Callbacks Implementation
 // ============================================================================
 
-/// Application handler for CEF lifecycle using v144 API.
+// Application handler for CEF lifecycle using v144 API.
 #[cfg(feature = "cef-browser")]
 cef::wrap_app! {
     struct KiBrowserApp {
@@ -510,7 +510,7 @@ cef::wrap_app! {
     }
 }
 
-/// Client handler for browser events using v144 API.
+// Client handler for browser events using v144 API.
 #[cfg(feature = "cef-browser")]
 cef::wrap_client! {
     struct KiBrowserClient {
@@ -558,7 +558,7 @@ cef::wrap_client! {
     }
 }
 
-/// Render handler for off-screen rendering using v144 API.
+// Render handler for off-screen rendering using v144 API.
 #[cfg(feature = "cef-browser")]
 cef::wrap_render_handler! {
     struct KiBrowserRenderHandlerImpl {
@@ -640,8 +640,8 @@ cef::wrap_render_handler! {
     }
 }
 
-/// Life span handler for tab lifecycle events using v144 API.
-/// Includes popup interception for window.open() → new tab.
+// Life span handler for tab lifecycle events using v144 API.
+// Includes popup interception for window.open() -> new tab.
 #[cfg(feature = "cef-browser")]
 cef::wrap_life_span_handler! {
     struct KiBrowserLifeSpanHandlerImpl {
@@ -721,7 +721,7 @@ cef::wrap_life_span_handler! {
     }
 }
 
-/// Load handler for navigation events and stealth injection using v144 API.
+// Load handler for navigation events and stealth injection using v144 API.
 #[cfg(feature = "cef-browser")]
 cef::wrap_load_handler! {
     struct KiBrowserLoadHandlerImpl {
@@ -840,9 +840,9 @@ cef::wrap_load_handler! {
 // DisplayHandler: captures console.log for JS result communication
 // ============================================================================
 
-/// Display handler that intercepts console messages containing JS execution results.
-/// In single-process mode, CEF's MessageRouter IPC doesn't work, so we use
-/// console.log("KI_RESULT:<id>:<json>") as a reliable same-process callback mechanism.
+// Display handler that intercepts console messages containing JS execution results.
+// In single-process mode, CEF's MessageRouter IPC doesn't work, so we use
+// console.log("KI_RESULT:<id>:<json>") as a reliable same-process callback mechanism.
 #[cfg(feature = "cef-browser")]
 cef::wrap_display_handler! {
     struct KiBrowserDisplayHandlerImpl {
@@ -906,9 +906,9 @@ pub struct CefBrowserEngine {
     /// Whether the engine is running.
     is_running: Arc<AtomicBool>,
     /// CEF initialized flag (v144 doesn't have CefContext).
-    cef_initialized: Arc<AtomicBool>,
+    _cef_initialized: Arc<AtomicBool>,
     /// Browser ID counter.
-    browser_id_counter: Arc<AtomicI32>,
+    _browser_id_counter: Arc<AtomicI32>,
 }
 
 #[cfg(feature = "cef-browser")]
@@ -989,8 +989,8 @@ impl BrowserEngine for CefBrowserEngine {
             tabs,
             command_tx,
             is_running,
-            cef_initialized,
-            browser_id_counter,
+            _cef_initialized: cef_initialized,
+            _browser_id_counter: browser_id_counter,
         })
     }
 

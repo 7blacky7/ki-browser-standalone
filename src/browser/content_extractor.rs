@@ -18,7 +18,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use ki_browser::browser::content_extractor::ContentExtractor;
+//! use ki_browser_standalone::browser::content_extractor::ContentExtractor;
 //!
 //! // Extract main content
 //! let script = ContentExtractor::content_extraction_script();

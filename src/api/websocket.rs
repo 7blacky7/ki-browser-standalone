@@ -463,7 +463,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     // Binary messages not supported
                     debug!("Received unsupported binary message");
                 }
-                Message::Ping(data) => {
+                Message::Ping(_data) => {
                     // WebSocket protocol ping - handled automatically by axum
                     debug!("Received WebSocket ping");
                 }

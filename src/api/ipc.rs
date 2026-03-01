@@ -330,6 +330,26 @@ pub enum IpcCommand {
         await_promise: bool,
     },
 
+    /// Capture DOM snapshot with bounding-box information for all visible elements
+    DomSnapshot {
+        tab_id: String,
+        #[serde(default = "default_max_nodes")]
+        max_nodes: u32,
+        #[serde(default = "default_include_text")]
+        include_text: bool,
+    },
+
+    /// Capture annotated screenshot with numbered vision labels for KI agent interaction
+    VisionAnnotated {
+        tab_id: String,
+        format: String,
+    },
+
+    /// Get vision labels (bounding boxes + metadata) without screenshot
+    VisionLabels {
+        tab_id: String,
+    },
+
     /// Annotate screenshot with element overlays and optional OCR
     AnnotateElements {
         tab_id: String,
@@ -349,6 +369,14 @@ pub enum IpcCommand {
 
 fn default_ocr_lang() -> String {
     "deu+eng".to_string()
+}
+
+fn default_max_nodes() -> u32 {
+    1000
+}
+
+fn default_include_text() -> bool {
+    true
 }
 
 /// Response to an IPC command
@@ -426,6 +454,7 @@ pub enum IpcMessage {
 }
 
 /// Pending command awaiting response
+#[allow(dead_code)]
 struct PendingCommand {
     response_tx: oneshot::Sender<IpcResponse>,
 }
@@ -495,7 +524,7 @@ impl IpcChannel {
             IpcMessage::Command(cmd) => cmd,
             IpcMessage::Shutdown => {
                 // Special handling for shutdown
-                let (response_tx, response_rx) = oneshot::channel();
+                let (response_tx, _response_rx) = oneshot::channel();
                 let command_id = NEXT_COMMAND_ID.fetch_add(1, Ordering::SeqCst);
 
                 self.command_tx

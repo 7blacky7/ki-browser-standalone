@@ -9,7 +9,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use ki_browser::browser::structured_data::StructuredDataExtractor;
+//! use ki_browser_standalone::browser::structured_data::StructuredDataExtractor;
 //!
 //! // Generate the extraction script
 //! let script = StructuredDataExtractor::extraction_script();

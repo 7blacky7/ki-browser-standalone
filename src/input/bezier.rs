@@ -6,7 +6,7 @@
 //! # Example
 //!
 //! ```rust
-//! use ki_browser::input::bezier::{Point, BezierCurve, generate_human_path};
+//! use ki_browser_standalone::input::bezier::{Point, BezierCurve, generate_human_path};
 //!
 //! // Create a simple Bézier curve
 //! let start = Point::new(0.0, 0.0);
@@ -43,7 +43,7 @@ impl Point {
     /// # Example
     ///
     /// ```rust
-    /// use ki_browser::input::bezier::Point;
+    /// use ki_browser_standalone::input::bezier::Point;
     ///
     /// let p = Point::new(10.0, 20.0);
     /// assert_eq!(p.x, 10.0);
@@ -67,7 +67,7 @@ impl Point {
     /// # Example
     ///
     /// ```rust
-    /// use ki_browser::input::bezier::Point;
+    /// use ki_browser_standalone::input::bezier::Point;
     ///
     /// let a = Point::new(0.0, 0.0);
     /// let b = Point::new(3.0, 4.0);
@@ -100,7 +100,7 @@ impl Point {
     /// # Example
     ///
     /// ```rust
-    /// use ki_browser::input::bezier::Point;
+    /// use ki_browser_standalone::input::bezier::Point;
     ///
     /// let a = Point::new(0.0, 0.0);
     /// let b = Point::new(10.0, 10.0);
@@ -210,7 +210,7 @@ impl BezierCurve {
     /// # Example
     ///
     /// ```rust
-    /// use ki_browser::input::bezier::{Point, BezierCurve};
+    /// use ki_browser_standalone::input::bezier::{Point, BezierCurve};
     ///
     /// let curve = BezierCurve::new(
     ///     Point::new(0.0, 0.0),
@@ -264,7 +264,7 @@ impl BezierCurve {
     /// # Example
     ///
     /// ```rust
-    /// use ki_browser::input::bezier::{Point, BezierCurve};
+    /// use ki_browser_standalone::input::bezier::{Point, BezierCurve};
     ///
     /// let curve = BezierCurve::new(
     ///     Point::new(0.0, 0.0),
@@ -335,7 +335,7 @@ impl BezierCurve {
     /// # Example
     ///
     /// ```rust
-    /// use ki_browser::input::bezier::{Point, BezierCurve};
+    /// use ki_browser_standalone::input::bezier::{Point, BezierCurve};
     ///
     /// let curve = BezierCurve::new(
     ///     Point::new(0.0, 0.0),
@@ -564,7 +564,7 @@ pub mod easing {
 /// # Example
 ///
 /// ```rust
-/// use ki_browser::input::bezier::{Point, generate_human_path};
+/// use ki_browser_standalone::input::bezier::{Point, generate_human_path};
 ///
 /// let start = Point::new(100.0, 100.0);
 /// let end = Point::new(500.0, 300.0);

@@ -129,6 +129,13 @@ pub enum BrowserError {
     #[error("Invalid request: {0}")]
     InvalidRequest(String),
 
+    /// A tab-level operation lock could not be acquired within the timeout period.
+    ///
+    /// This occurs when another operation is already running on the same tab
+    /// and the lock acquisition deadline (default 30s) is exceeded.
+    #[error("Tab locked: operation on tab {0} timed out waiting for lock")]
+    TabLocked(uuid::Uuid),
+
     /// Catch-all for internal / unexpected errors.
     #[error("Internal error: {0}")]
     Internal(String),
@@ -289,6 +296,14 @@ mod tests {
     }
 
     #[test]
+    fn test_tab_locked_display() {
+        let tab_id = uuid::Uuid::nil();
+        let err = BrowserError::TabLocked(tab_id);
+        assert!(err.to_string().contains("Tab locked"));
+        assert!(err.to_string().contains(&tab_id.to_string()));
+    }
+
+    #[test]
     fn test_browser_result_ok() {
         let result: BrowserResult<i32> = Ok(42);
         assert_eq!(result.unwrap(), 42);
@@ -327,6 +342,7 @@ mod tests {
             BrowserError::FormError("e".into()),
             BrowserError::WebSocketError("e".into()),
             BrowserError::InvalidRequest("e".into()),
+            BrowserError::TabLocked(uuid::Uuid::nil()),
             BrowserError::Internal("e".into()),
         ];
         for v in &variants {

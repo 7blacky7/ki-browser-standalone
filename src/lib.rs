@@ -122,9 +122,9 @@ pub mod gui;
 
 // Browser types
 pub use browser::{
-    BoundingBox, BrowserConfig, BrowserEngine, DomAccessor, DomElement, FrameInfo,
-    MockBrowserEngine, MockDomAccessor, ScreenshotFormat, ScreenshotOptions, Tab, TabManager,
-    TabStatus,
+    BoundingBox, BrowserConfig, BrowserEngine, DomAccessor, DomElement, DomNode, DomSnapshot,
+    FrameInfo, MockBrowserEngine, MockDomAccessor, ScreenshotFormat, ScreenshotOptions,
+    SnapshotConfig, Tab, TabManager, TabStatus, ViewportInfo,
 };
 
 
@@ -162,6 +162,9 @@ pub use api::{
 
 // Session management types
 pub use api::{CookieInfo, HistoryEntry, Session, SessionManager, SessionSnapshot, TabSnapshot};
+
+// Multi-agent session types
+pub use api::{AgentInfo, AgentRegistry};
 
 // Config types
 pub use config::{BrowserSettings, CliArgs, ConfigError, ProxyConfig, ProxyType};

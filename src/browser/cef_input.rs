@@ -13,8 +13,8 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use ki_browser::browser::cef_input::{CefInputHandler, CefMouseButton};
-//! use ki_browser::input::HumanTiming;
+//! use ki_browser_standalone::browser::cef_input::{CefInputHandler, CefMouseButton};
+//! use ki_browser_standalone::input::HumanTiming;
 //!
 //! async fn example() {
 //!     let timing = HumanTiming::normal();
@@ -92,7 +92,9 @@ impl std::fmt::Display for CefMouseButton {
 }
 
 // CEF Event Flags (from cef_types.h)
+#[allow(dead_code)]
 const EVENTFLAG_NONE: u32 = 0;
+#[allow(dead_code)]
 const EVENTFLAG_CAPS_LOCK_ON: u32 = 1 << 0;
 const EVENTFLAG_SHIFT_DOWN: u32 = 1 << 1;
 const EVENTFLAG_CONTROL_DOWN: u32 = 1 << 2;
@@ -102,11 +104,17 @@ const EVENTFLAG_MIDDLE_MOUSE_BUTTON: u32 = 1 << 5;
 const EVENTFLAG_RIGHT_MOUSE_BUTTON: u32 = 1 << 6;
 // Command key on Mac, Windows key on Windows
 const EVENTFLAG_COMMAND_DOWN: u32 = 1 << 7;
+#[allow(dead_code)]
 const EVENTFLAG_NUM_LOCK_ON: u32 = 1 << 8;
+#[allow(dead_code)]
 const EVENTFLAG_IS_KEY_PAD: u32 = 1 << 9;
+#[allow(dead_code)]
 const EVENTFLAG_IS_LEFT: u32 = 1 << 10;
+#[allow(dead_code)]
 const EVENTFLAG_IS_RIGHT: u32 = 1 << 11;
+#[allow(dead_code)]
 const EVENTFLAG_ALTGR_DOWN: u32 = 1 << 12;
+#[allow(dead_code)]
 const EVENTFLAG_IS_REPEAT: u32 = 1 << 13;
 
 /// CEF mouse event structure.

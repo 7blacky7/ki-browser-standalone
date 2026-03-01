@@ -13,7 +13,7 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use ki_browser::input::{MouseSimulator, KeyboardSimulator, HumanTiming, MouseButton};
+//! use ki_browser_standalone::input::{MouseSimulator, KeyboardSimulator, HumanTiming, MouseButton};
 //!
 //! async fn example() {
 //!     let mut mouse = MouseSimulator::new();

@@ -281,7 +281,7 @@ impl BrowserFingerprint {
     pub fn to_js_overrides(&self) -> String {
         let plugins_json = self.plugins_to_json();
         let fonts_json = self.fonts_to_json();
-        let languages_json: Vec<String> =
+        let _languages_json: Vec<String> =
             self.languages.iter().map(|l| format!("\"{}\"", l)).collect();
         let dnt_value = match &self.do_not_track {
             Some(v) => format!("\"{}\"", v),

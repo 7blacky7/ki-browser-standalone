@@ -15,6 +15,8 @@ use tracing::{error, info};
 use crate::api::server::{AppState, TabState};
 use crate::api::ipc::{IpcCommand, IpcMessage};
 use crate::api::websocket::{self, BrowserEvent};
+use crate::api::agent_routes::agent_routes;
+use crate::api::vision_routes::vision_routes;
 use crate::api::extraction_routes::extraction_routes;
 use crate::api::batch_routes::batch_session_routes;
 
@@ -320,6 +322,25 @@ pub struct AnnotateResponse {
     pub elements: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ocr_text: Option<String>,
+}
+
+/// DOM snapshot query parameters
+#[derive(Debug, Deserialize)]
+pub struct DomSnapshotQuery {
+    #[serde(default)]
+    pub tab_id: Option<String>,
+    #[serde(default = "default_max_nodes")]
+    pub max_nodes: u32,
+    #[serde(default = "default_include_text")]
+    pub include_text: bool,
+}
+
+fn default_max_nodes() -> u32 {
+    1000
+}
+
+fn default_include_text() -> bool {
+    true
 }
 
 /// API toggle request
@@ -1132,6 +1153,66 @@ pub async fn annotate_elements(
     }
 }
 
+/// GET /dom/snapshot - Capture DOM snapshot with bounding-box information for KI agent vision
+pub async fn dom_snapshot(
+    State(state): State<AppState>,
+    Query(query): Query<DomSnapshotQuery>,
+) -> impl IntoResponse {
+    if !state.is_enabled().await {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiResponse::<serde_json::Value>::error("API is disabled")),
+        ).into_response();
+    }
+
+    let tab_id = match query.tab_id.or({
+        let browser_state = state.browser_state.read().await;
+        browser_state.active_tab_id.clone()
+    }) {
+        Some(id) => id,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::<serde_json::Value>::error("No tab specified and no active tab")),
+            ).into_response();
+        }
+    };
+
+    let command = IpcCommand::DomSnapshot {
+        tab_id,
+        max_nodes: query.max_nodes,
+        include_text: query.include_text,
+    };
+
+    match state.ipc_channel.send_command(IpcMessage::Command(command)).await {
+        Ok(response) => {
+            if response.success {
+                if let Some(data) = response.data {
+                    return Json(ApiResponse::success(data)).into_response();
+                }
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiResponse::<serde_json::Value>::error("Invalid snapshot response")),
+                ).into_response()
+            } else {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiResponse::<serde_json::Value>::error(
+                        response.error.unwrap_or_else(|| "DOM snapshot failed".to_string()),
+                    )),
+                ).into_response()
+            }
+        }
+        Err(e) => {
+            error!("Failed to capture DOM snapshot: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::<serde_json::Value>::error(format!("Failed to capture DOM snapshot: {}", e))),
+            ).into_response()
+        }
+    }
+}
+
 /// GET /cdp - Returns CDP remote debugging connection info for Playwright/DevTools integration
 async fn cdp_info(
     State(state): State<AppState>,
@@ -1206,6 +1287,7 @@ pub fn create_router(state: AppState) -> Router {
         // DOM operations
         .route("/dom/element", get(find_element))
         .route("/dom/annotate", post(annotate_elements))
+        .route("/dom/snapshot", get(dom_snapshot))
 
         // CDP remote debugging info
         .route("/cdp", get(cdp_info))
@@ -1219,6 +1301,12 @@ pub fn create_router(state: AppState) -> Router {
 
         // Batch operations and session management routes
         .merge(batch_session_routes())
+
+        // Multi-agent session management and tab ownership
+        .merge(agent_routes())
+
+        // Vision overlay for KI agent annotated screenshots
+        .merge(vision_routes())
 
         // WebSocket endpoint
         .route("/ws", get(websocket::ws_handler))

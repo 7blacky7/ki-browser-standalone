@@ -20,6 +20,7 @@ use ki_browser_standalone::{
 use ki_browser_standalone::browser::cef_headless::HeadlessRunner;
 
 /// ANSI color codes for terminal output
+#[allow(dead_code)]
 mod colors {
     pub const RESET: &str = "\x1b[0m";
     pub const BOLD: &str = "\x1b[1m";

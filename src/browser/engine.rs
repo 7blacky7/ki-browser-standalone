@@ -7,7 +7,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use ki_browser::browser::{BrowserEngine, BrowserConfig, MockBrowserEngine};
+//! use ki_browser_standalone::browser::{BrowserEngine, BrowserConfig, MockBrowserEngine};
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
@@ -145,6 +145,15 @@ impl BrowserConfig {
 ///
 /// This trait provides an abstraction layer for browser automation,
 /// allowing different browser implementations to be used interchangeably.
+///
+/// # Tab-Level Locking
+///
+/// Implementations should use [`TabLockManager`](crate::browser::tab_lock::TabLockManager)
+/// for serializing concurrent operations on the same tab. The lock manager ensures that
+/// parallel requests targeting different tabs proceed concurrently, while operations on
+/// the same tab are serialized to prevent race conditions. The API layer wraps all
+/// tab-targeted operations with `TabLockManager::with_tab_lock()` before dispatching
+/// to the engine.
 #[async_trait]
 pub trait BrowserEngine: Send + Sync {
     /// Creates a new browser engine instance with the given configuration.
@@ -253,6 +262,30 @@ pub trait BrowserEngine: Send + Sync {
         // Default implementation returns an error
         let _ = (tab_id, frame_id, script);
         Err(anyhow!("Frame evaluation not supported by this engine"))
+    }
+
+    /// Captures a DOM snapshot with bounding-box information for all visible elements.
+    ///
+    /// Executes JavaScript in the tab to traverse the DOM tree, collecting element
+    /// metadata, bounding rectangles, ARIA roles, and interactivity flags. The result
+    /// is used by the vision overlay system to map screen regions to DOM elements.
+    ///
+    /// # Arguments
+    ///
+    /// * `tab_id` - The UUID of the tab to snapshot
+    /// * `config` - Snapshot configuration (max nodes, include text)
+    ///
+    /// # Returns
+    ///
+    /// A Result containing the [`DomSnapshot`] or an error.
+    async fn dom_snapshot(
+        &self,
+        tab_id: Uuid,
+        config: &crate::browser::dom_snapshot::SnapshotConfig,
+    ) -> Result<crate::browser::dom_snapshot::DomSnapshot> {
+        // Default implementation returns an error for engines that don't support snapshots
+        let _ = (tab_id, config);
+        Err(anyhow!("DOM snapshot not supported by this engine"))
     }
 }
 

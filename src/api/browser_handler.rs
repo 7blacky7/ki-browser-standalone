@@ -116,19 +116,19 @@ impl BrowserCommandHandler {
             IpcCommand::Navigate { tab_id, url } => {
                 self.handle_navigate(&engine_guard, &tab_id, &url).await
             }
-            IpcCommand::ClickCoordinates { tab_id, x, y, button, modifiers } => {
+            IpcCommand::ClickCoordinates { tab_id, x, y, button, modifiers: _ } => {
                 self.handle_click(&engine_guard, &tab_id, x, y, &button).await
             }
             IpcCommand::Drag { tab_id, from_x, from_y, to_x, to_y, steps, duration_ms } => {
                 self.handle_drag(&engine_guard, &tab_id, from_x, from_y, to_x, to_y, steps.unwrap_or(20), duration_ms.unwrap_or(300)).await
             }
-            IpcCommand::ClickElement { tab_id, selector, button, modifiers, frame_id } => {
+            IpcCommand::ClickElement { tab_id, selector, button: _, modifiers: _, frame_id } => {
                 self.handle_click_element(&engine_guard, &tab_id, &selector, frame_id.as_deref()).await
             }
-            IpcCommand::TypeText { tab_id, text, selector, clear_first, frame_id } => {
+            IpcCommand::TypeText { tab_id, text, selector, clear_first: _, frame_id } => {
                 self.handle_type_text(&engine_guard, &tab_id, &text, selector.as_deref(), frame_id.as_deref()).await
             }
-            IpcCommand::Scroll { tab_id, x, y, delta_x, delta_y, selector, behavior } => {
+            IpcCommand::Scroll { tab_id, x, y, delta_x, delta_y, selector: _, behavior: _ } => {
                 self.handle_scroll(&engine_guard, &tab_id, x, y, delta_x, delta_y).await
             }
             IpcCommand::CaptureScreenshot { tab_id, format, quality, full_page, selector, clip_x, clip_y, clip_width, clip_height, clip_scale } => {
@@ -139,11 +139,14 @@ impl BrowserCommandHandler {
                 };
                 self.handle_screenshot(&engine_guard, &tab_id, &format, quality, full_page, selector.as_deref(), clip).await
             }
-            IpcCommand::EvaluateScript { tab_id, script, await_promise, frame_id } => {
+            IpcCommand::EvaluateScript { tab_id, script, await_promise: _, frame_id } => {
                 self.handle_evaluate(&engine_guard, &tab_id, &script, frame_id.as_deref()).await
             }
             IpcCommand::GetTabs => {
                 self.handle_get_tabs(&engine_guard).await
+            }
+            IpcCommand::DomSnapshot { tab_id, max_nodes, include_text } => {
+                self.handle_dom_snapshot(&engine_guard, &tab_id, max_nodes, include_text).await
             }
             IpcCommand::AnnotateElements { tab_id, types, selector, ocr, ocr_lang } => {
                 self.handle_annotate(&engine_guard, &tab_id, types, selector, ocr, ocr_lang).await
@@ -151,7 +154,7 @@ impl BrowserCommandHandler {
             IpcCommand::GetFrameTree { tab_id } => {
                 self.handle_get_frame_tree(&engine_guard, &tab_id).await
             }
-            IpcCommand::EvaluateInFrame { tab_id, frame_id, script, await_promise } => {
+            IpcCommand::EvaluateInFrame { tab_id, frame_id, script, await_promise: _ } => {
                 self.handle_evaluate_in_frame(&engine_guard, &tab_id, &frame_id, &script).await
             }
             IpcCommand::FindElement { tab_id, selector, timeout } => {
@@ -323,7 +326,7 @@ impl BrowserCommandHandler {
         selector: &str,
         frame_id: Option<&str>,
     ) -> IpcResponse {
-        let uuid = match Uuid::parse_str(tab_id) {
+        let _uuid = match Uuid::parse_str(tab_id) {
             Ok(u) => u,
             Err(_) => return IpcResponse::error("Invalid tab ID"),
         };
@@ -408,8 +411,8 @@ impl BrowserCommandHandler {
         format: &str,
         quality: Option<u8>,
         full_page: bool,
-        selector: Option<&str>,
-        clip: Option<(f64, f64, f64, f64, f64)>,
+        _selector: Option<&str>,
+        _clip: Option<(f64, f64, f64, f64, f64)>,
     ) -> IpcResponse {
         let uuid = match Uuid::parse_str(tab_id) {
             Ok(u) => u,
@@ -643,6 +646,56 @@ impl BrowserCommandHandler {
         }
     }
 
+    async fn handle_dom_snapshot(
+        &self,
+        engine: &Option<BrowserEngineWrapper>,
+        tab_id: &str,
+        max_nodes: u32,
+        include_text: bool,
+    ) -> IpcResponse {
+        let uuid = match Uuid::parse_str(tab_id) {
+            Ok(u) => u,
+            Err(_) => return IpcResponse::error("Invalid tab ID"),
+        };
+
+        let config = crate::browser::dom_snapshot::SnapshotConfig {
+            max_nodes,
+            include_text,
+        };
+        let script = crate::browser::dom_snapshot::build_snapshot_script(&config);
+
+        match engine {
+            #[cfg(feature = "cef-browser")]
+            Some(BrowserEngineWrapper::Cef(e)) => {
+                match e.execute_js_with_result(uuid, &script).await {
+                    Ok(Some(json_str)) => {
+                        match crate::browser::dom_snapshot::parse_snapshot_json(&json_str) {
+                            Ok(snapshot) => {
+                                match serde_json::to_value(&snapshot) {
+                                    Ok(val) => IpcResponse::success_with_data(val),
+                                    Err(e) => IpcResponse::error(format!("Serialization failed: {}", e)),
+                                }
+                            }
+                            Err(e) => IpcResponse::error(format!("Snapshot parse failed: {}", e)),
+                        }
+                    }
+                    Ok(None) => IpcResponse::error("DOM snapshot returned no data"),
+                    Err(e) => IpcResponse::error(format!("JS evaluation failed: {}", e)),
+                }
+            }
+            _ => {
+                debug!("DomSnapshot (mock): {}", tab_id);
+                IpcResponse::success_with_data(serde_json::json!({
+                    "nodes": [],
+                    "viewport": { "width": 1920, "height": 1080, "scroll_x": 0.0, "scroll_y": 0.0 },
+                    "device_pixel_ratio": 1.0,
+                    "url": "about:blank",
+                    "timestamp": chrono::Utc::now().to_rfc3339()
+                }))
+            }
+        }
+    }
+
     async fn handle_get_tabs(&self, engine: &Option<BrowserEngineWrapper>) -> IpcResponse {
         match engine {
             Some(BrowserEngineWrapper::Mock(e)) => {
@@ -687,7 +740,7 @@ impl BrowserCommandHandler {
         engine: &Option<BrowserEngineWrapper>,
         tab_id: &str,
     ) -> IpcResponse {
-        let uuid = match Uuid::parse_str(tab_id) {
+        let _uuid = match Uuid::parse_str(tab_id) {
             Ok(u) => u,
             Err(_) => return IpcResponse::error("Invalid tab ID"),
         };
@@ -716,7 +769,7 @@ impl BrowserCommandHandler {
         frame_id: &str,
         script: &str,
     ) -> IpcResponse {
-        let uuid = match Uuid::parse_str(tab_id) {
+        let _uuid = match Uuid::parse_str(tab_id) {
             Ok(u) => u,
             Err(_) => return IpcResponse::error("Invalid tab ID"),
         };
@@ -744,6 +797,7 @@ impl Default for BrowserCommandHandler {
 }
 
 /// Detect image dimensions from raw PNG/JPEG/WebP bytes
+#[allow(dead_code)]
 fn detect_image_dimensions(data: &[u8]) -> (u32, u32) {
     // PNG: width/height at bytes 16-23 (big-endian u32)
     if data.len() >= 24 && &data[0..8] == b"\x89PNG\r\n\x1a\n" {

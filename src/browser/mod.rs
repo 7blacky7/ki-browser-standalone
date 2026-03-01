@@ -19,11 +19,14 @@
 pub mod annotate;
 pub mod content_extractor;
 pub mod dom;
+pub mod dom_snapshot;
 pub mod engine;
 pub mod forms;
 pub mod screenshot;
 pub mod structured_data;
 pub mod tab;
+pub mod tab_lock;
+pub mod vision;
 
 
 #[cfg(feature = "cef-browser")]
@@ -46,6 +49,7 @@ pub use content_extractor::{
     SectionRole,
 };
 pub use dom::{BoundingBox, DomAccessor, DomElement, FrameInfo, MockDomAccessor};
+pub use dom_snapshot::{DomNode, DomSnapshot, SnapshotConfig, ViewportInfo};
 pub use forms::{
     FieldOption, FieldType, FormButton, FormField, FormFillError, FormFillRequest, FormFillResult,
     FormHandler, FormInfo, FormValidationResult, ValidationError,
@@ -57,6 +61,8 @@ pub use structured_data::{
     StructuredPageData, TwitterCardData,
 };
 pub use tab::{Tab, TabManager, TabStatus};
+pub use tab_lock::TabLockManager;
+pub use vision::{VisionLabel, VisionOverlay};
 
 
 #[cfg(feature = "cef-browser")]

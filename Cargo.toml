@@ -93,6 +93,7 @@ cef-browser = ["dep:cef"]
 gui = ["cef-browser", "dep:eframe", "dep:egui"]
 ocr = ["dep:leptess"]
 mock-browser = []
+webp = []
 
 [dependencies.cef]
 version = "144"
@@ -112,6 +113,9 @@ optional = true
 [dependencies.leptess]
 version = "0.14"
 optional = true
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
 
 # Pin home crate to version compatible with Rust 1.84
 [dependencies.home]

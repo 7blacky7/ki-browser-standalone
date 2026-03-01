@@ -7,7 +7,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use ki_browser::browser::dom::{DomAccessor, MockDomAccessor, DomElement};
+//! use ki_browser_standalone::browser::dom::{DomAccessor, MockDomAccessor, DomElement};
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
