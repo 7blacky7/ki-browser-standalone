@@ -31,8 +31,7 @@
 //! }
 //! ```
 
-#![cfg(feature = "cef-browser")]
-
+#[cfg(feature = "cef-browser")]
 use crate::input::bezier::{generate_human_path, Point};
 use crate::input::timing::HumanTiming;
 use crate::input::{InputError, InputResult, Modifier};

@@ -682,13 +682,13 @@ fn apply_human_easing(points: &mut [Point], _start: Point, end: Point) {
     // This simulates the "homing in" behavior as the cursor approaches the target
     let decel_start = (n as f64 * 0.7) as usize;
 
-    for i in decel_start..n {
+    for (i, point) in points.iter_mut().enumerate().take(n).skip(decel_start) {
         let progress = (i - decel_start) as f64 / (n - decel_start) as f64;
         let correction_factor = 1.0 - progress * 0.1; // Subtle correction
 
         // Slightly adjust points toward the end target
-        let current = points[i];
-        points[i] = Point::new(
+        let current = *point;
+        *point = Point::new(
             current.x + (end.x - current.x) * (1.0 - correction_factor) * 0.1,
             current.y + (end.y - current.y) * (1.0 - correction_factor) * 0.1,
         );

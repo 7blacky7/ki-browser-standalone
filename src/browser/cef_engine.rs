@@ -101,12 +101,19 @@ const CEF_MESSAGE_LOOP_DELAY_MS: u64 = 10;
 // MessageRouter Global State
 // ============================================================================
 
+/// Type alias for the JS result sender map to reduce type complexity.
+#[cfg(feature = "cef-browser")]
+type JsResultStore = parking_lot::Mutex<std::collections::HashMap<i64, std::sync::mpsc::Sender<Result<String, String>>>>;
+
+/// Type alias for tab frame buffer data (pixel buffer + dimensions).
+#[cfg(feature = "cef-browser")]
+pub type TabFrameBuffer = (Arc<RwLock<Vec<u8>>>, Arc<RwLock<(u32, u32)>>);
+
 /// Global JS-Result-Store: query_id → mpsc::Sender for results.
 /// Used to pass cefQuery results back to execute_js_with_result_internal.
 #[cfg(feature = "cef-browser")]
-static JS_RESULT_STORE: once_cell::sync::Lazy<
-    parking_lot::Mutex<std::collections::HashMap<i64, std::sync::mpsc::Sender<Result<String, String>>>>
-> = once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+static JS_RESULT_STORE: once_cell::sync::Lazy<JsResultStore> =
+    once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
 
 /// Global BrowserSideRouter (initialized once on first use on the CEF thread).
 #[cfg(feature = "cef-browser")]
@@ -1226,11 +1233,13 @@ impl CefBrowserEngine {
         info!("CEF directory: {:?}", cef_dir);
 
         // Configure CEF settings - use run_message_loop() style (not external pump)
-        let mut settings = Settings::default();
-        settings.windowless_rendering_enabled = 1;
-        settings.no_sandbox = 1;
-        settings.multi_threaded_message_loop = 0;
-        settings.external_message_pump = 1; // We pump CEF via do_message_loop_work()
+        let mut settings = Settings {
+            windowless_rendering_enabled: 1,
+            no_sandbox: 1,
+            multi_threaded_message_loop: 0,
+            external_message_pump: 1, // We pump CEF via do_message_loop_work()
+            ..Default::default()
+        };
 
         // Note: LD_LIBRARY_PATH is no longer needed here.
         // build.rs copies libcef.so to target/<profile>/ and sets RPATH=$ORIGIN,
@@ -1547,18 +1556,22 @@ impl CefBrowserEngine {
         );
 
         // Browser settings
-        let mut browser_settings = BrowserSettings::default();
-        browser_settings.windowless_frame_rate = DEFAULT_FRAME_RATE;
+        let browser_settings = BrowserSettings {
+            windowless_frame_rate: DEFAULT_FRAME_RATE,
+            ..Default::default()
+        };
 
         // Window info for OSR (off-screen rendering)
-        let mut window_info = WindowInfo::default();
-        window_info.bounds = Rect {
-            x: 0,
-            y: 0,
-            width: viewport_dims.0 as i32,
-            height: viewport_dims.1 as i32,
+        let window_info = WindowInfo {
+            bounds: Rect {
+                x: 0,
+                y: 0,
+                width: viewport_dims.0 as i32,
+                height: viewport_dims.1 as i32,
+            },
+            windowless_rendering_enabled: 1,
+            ..Default::default()
         };
-        window_info.windowless_rendering_enabled = 1;
 
         // Create browser using v144 API
         let url_string = CefString::from(url);
@@ -1983,6 +1996,7 @@ impl CefBrowserEngine {
     }
 
     /// Simulates a drag-and-drop by sending mousedown, mousemoves, mouseup.
+    #[allow(clippy::too_many_arguments)]
     fn drag_internal(
         tab_id: Uuid,
         from_x: i32,
@@ -2395,7 +2409,7 @@ impl CefBrowserEngine {
     }
 
     /// Returns the frame buffer and size Arcs for a tab (for GUI rendering).
-    pub fn get_tab_frame_buffer(&self, tab_id: Uuid) -> Option<(Arc<RwLock<Vec<u8>>>, Arc<RwLock<(u32, u32)>>)> {
+    pub fn get_tab_frame_buffer(&self, tab_id: Uuid) -> Option<TabFrameBuffer> {
         let tabs = self.tabs.read();
         tabs.get(&tab_id).map(|tab| {
             (tab.frame_buffer.clone(), tab.frame_size.clone())
@@ -2732,6 +2746,7 @@ impl CefBrowserEngine {
     /// * `to_y` - End Y coordinate
     /// * `steps` - Number of intermediate move steps
     /// * `duration_ms` - Total duration in milliseconds
+    #[allow(clippy::too_many_arguments)]
     pub async fn drag(&self, tab_id: Uuid, from_x: i32, from_y: i32, to_x: i32, to_y: i32, steps: u32, duration_ms: u64) -> Result<()> {
         if !self.is_running.load(Ordering::SeqCst) {
             return Err(anyhow!("Browser engine is not running"));

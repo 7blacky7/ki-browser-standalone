@@ -352,8 +352,7 @@ impl DomSnapshot {
     pub fn node_at_point(&self, x: f64, y: f64) -> Option<&DomNode> {
         self.nodes
             .iter()
-            .filter(|n| n.is_visible && n.bbox.contains_point(x, y))
-            .next_back()
+            .rfind(|n| n.is_visible && n.bbox.contains_point(x, y))
     }
 
     /// Finds a node by its snapshot-local ID.

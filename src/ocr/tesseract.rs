@@ -16,6 +16,12 @@ pub struct TesseractEngine {
     available: bool,
 }
 
+impl Default for TesseractEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TesseractEngine {
     /// Probes whether libtesseract is usable by attempting to create a session.
     pub fn new() -> Self {

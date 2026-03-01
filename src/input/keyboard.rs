@@ -154,7 +154,7 @@ impl SpecialKey {
     }
 
     /// Parses a string into a SpecialKey if it matches
-    pub fn from_str(s: &str) -> Option<SpecialKey> {
+    pub fn parse_from_str(s: &str) -> Option<SpecialKey> {
         match s.to_lowercase().as_str() {
             "enter" | "return" => Some(SpecialKey::Enter),
             "tab" => Some(SpecialKey::Tab),

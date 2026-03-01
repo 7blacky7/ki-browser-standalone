@@ -15,6 +15,12 @@ pub struct PaddleOcrEngine {
     version: Option<String>,
 }
 
+impl Default for PaddleOcrEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PaddleOcrEngine {
     /// Probes whether `python3 -c "import paddleocr"` succeeds.
     pub fn new() -> Self {

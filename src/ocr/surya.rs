@@ -15,6 +15,12 @@ pub struct SuryaEngine {
     version: Option<String>,
 }
 
+impl Default for SuryaEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SuryaEngine {
     /// Probes whether `python3 -c "import surya"` succeeds.
     pub fn new() -> Self {
