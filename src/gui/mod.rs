@@ -8,6 +8,8 @@ pub mod browser_app;
 pub mod context_menu;
 pub mod devtools;
 pub mod element_inspector;
+pub mod gui_devtools_actions;
+pub mod gui_inspect;
 pub mod gui_vision;
 pub mod handle;
 pub mod tab_bar;
