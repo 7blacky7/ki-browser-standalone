@@ -14,7 +14,7 @@ use tracing::{error, info};
 
 use crate::api::server::{AppState, TabState};
 use crate::api::ipc::{IpcCommand, IpcMessage};
-use crate::api::websocket::BrowserEvent;
+use crate::api::websocket::{self, BrowserEvent};
 use crate::api::extraction_routes::extraction_routes;
 use crate::api::batch_routes::batch_session_routes;
 
@@ -136,10 +136,27 @@ pub struct ClickRequest {
     pub button: String,
     #[serde(default)]
     pub modifiers: Option<Vec<String>>,
+    #[serde(default)]
+    pub frame_id: Option<String>,
 }
 
 fn default_click_button() -> String {
     "left".to_string()
+}
+
+/// Drag request - drag from one position to another
+#[derive(Debug, Deserialize)]
+pub struct DragRequest {
+    #[serde(default)]
+    pub tab_id: Option<String>,
+    pub from_x: i32,
+    pub from_y: i32,
+    pub to_x: i32,
+    pub to_y: i32,
+    #[serde(default)]
+    pub steps: Option<u32>,
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
 }
 
 /// Type text request
@@ -152,6 +169,8 @@ pub struct TypeRequest {
     pub selector: Option<String>,
     #[serde(default)]
     pub clear_first: Option<bool>,
+    #[serde(default)]
+    pub frame_id: Option<String>,
 }
 
 /// Evaluate JavaScript request
@@ -162,12 +181,20 @@ pub struct EvaluateRequest {
     pub script: String,
     #[serde(default)]
     pub await_promise: Option<bool>,
+    #[serde(default)]
+    pub frame_id: Option<String>,
 }
 
 /// Evaluate JavaScript response
 #[derive(Debug, Serialize)]
 pub struct EvaluateResponse {
     pub result: serde_json::Value,
+}
+
+/// Frames query parameters
+#[derive(Debug, Deserialize)]
+pub struct FramesQuery {
+    pub tab_id: String,
 }
 
 /// Screenshot query parameters
@@ -183,6 +210,21 @@ pub struct ScreenshotQuery {
     pub full_page: Option<bool>,
     #[serde(default)]
     pub selector: Option<String>,
+    /// Clip/Zoom region: x coordinate
+    #[serde(default)]
+    pub clip_x: Option<f64>,
+    /// Clip/Zoom region: y coordinate
+    #[serde(default)]
+    pub clip_y: Option<f64>,
+    /// Clip/Zoom region: width
+    #[serde(default)]
+    pub clip_width: Option<f64>,
+    /// Clip/Zoom region: height
+    #[serde(default)]
+    pub clip_height: Option<f64>,
+    /// Scale factor for clip region (default 1.0, use 2.0 to zoom 2x)
+    #[serde(default)]
+    pub clip_scale: Option<f64>,
 }
 
 fn default_screenshot_format() -> String {
@@ -546,6 +588,7 @@ pub async fn click(
             selector,
             button: request.button,
             modifiers: request.modifiers,
+            frame_id: request.frame_id,
         }
     } else if let (Some(x), Some(y)) = (request.x, request.y) {
         IpcCommand::ClickCoordinates {
@@ -583,6 +626,62 @@ pub async fn click(
     }
 }
 
+/// POST /drag - Drag from one position to another
+pub async fn drag(
+    State(state): State<AppState>,
+    Json(request): Json<DragRequest>,
+) -> impl IntoResponse {
+    if !state.is_enabled().await {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiResponse::<()>::error("API is disabled")),
+        ).into_response();
+    }
+
+    let tab_id = match request.tab_id.or({
+        let browser_state = state.browser_state.read().await;
+        browser_state.active_tab_id.clone()
+    }) {
+        Some(id) => id,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::<()>::error("No tab specified and no active tab")),
+            ).into_response();
+        }
+    };
+
+    let command = IpcCommand::Drag {
+        tab_id,
+        from_x: request.from_x,
+        from_y: request.from_y,
+        to_x: request.to_x,
+        to_y: request.to_y,
+        steps: request.steps,
+        duration_ms: request.duration_ms,
+    };
+
+    match state.ipc_channel.send_command(IpcMessage::Command(command)).await {
+        Ok(response) => {
+            if response.success {
+                Json(ApiResponse::success(())).into_response()
+            } else {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiResponse::<()>::error(response.error.unwrap_or_else(|| "Drag failed".to_string()))),
+                ).into_response()
+            }
+        }
+        Err(e) => {
+            error!("Failed to drag: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::<()>::error(format!("Failed to drag: {}", e))),
+            ).into_response()
+        }
+    }
+}
+
 /// POST /type - Type text
 pub async fn type_text(
     State(state): State<AppState>,
@@ -613,6 +712,7 @@ pub async fn type_text(
         text: request.text,
         selector: request.selector,
         clear_first: request.clear_first.unwrap_or(false),
+        frame_id: request.frame_id,
     };
 
     match state.ipc_channel.send_command(IpcMessage::Command(command)).await {
@@ -665,6 +765,7 @@ pub async fn evaluate(
         tab_id,
         script: request.script,
         await_promise: request.await_promise.unwrap_or(true),
+        frame_id: request.frame_id,
     };
 
     match state.ipc_channel.send_command(IpcMessage::Command(command)).await {
@@ -684,6 +785,57 @@ pub async fn evaluate(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ApiResponse::<EvaluateResponse>::error(format!("Failed to evaluate: {}", e))),
+            ).into_response()
+        }
+    }
+}
+
+/// GET /frames - Get frame tree for a tab
+pub async fn get_frames(
+    State(state): State<AppState>,
+    Query(query): Query<FramesQuery>,
+) -> impl IntoResponse {
+    if !state.is_enabled().await {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiResponse::<serde_json::Value>::error("API is disabled")),
+        ).into_response();
+    }
+
+    let command = IpcCommand::GetFrameTree {
+        tab_id: query.tab_id.clone(),
+    };
+
+    match state.ipc_channel.send_command(IpcMessage::Command(command)).await {
+        Ok(response) => {
+            if response.success {
+                if let Some(data) = response.data {
+                    // The data should contain a "frames" array
+                    if let Some(frames) = data.get("frames") {
+                        let response_data = serde_json::json!({
+                            "frames": frames
+                        });
+                        return Json(ApiResponse::success(response_data)).into_response();
+                    }
+                }
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiResponse::<serde_json::Value>::error("Invalid frame tree response")),
+                ).into_response()
+            } else {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiResponse::<serde_json::Value>::error(
+                        response.error.unwrap_or_else(|| "Failed to get frame tree".to_string()),
+                    )),
+                ).into_response()
+            }
+        }
+        Err(e) => {
+            error!("Failed to get frame tree: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::<serde_json::Value>::error(format!("Failed to get frame tree: {}", e))),
             ).into_response()
         }
     }
@@ -720,6 +872,11 @@ pub async fn screenshot(
         quality: query.quality,
         full_page: query.full_page.unwrap_or(false),
         selector: query.selector,
+        clip_x: query.clip_x,
+        clip_y: query.clip_y,
+        clip_width: query.clip_width,
+        clip_height: query.clip_height,
+        clip_scale: query.clip_scale,
     };
 
     match state.ipc_channel.send_command(IpcMessage::Command(command)).await {
@@ -975,6 +1132,24 @@ pub async fn annotate_elements(
     }
 }
 
+/// GET /cdp - Returns CDP remote debugging connection info for Playwright/DevTools integration
+async fn cdp_info(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let cdp_port = state.cdp_port.unwrap_or(9222);
+    let base = format!("http://127.0.0.1:{}", cdp_port);
+    Json(serde_json::json!({
+        "success": true,
+        "data": {
+            "base_url": base,
+            "json_list": format!("{}/json/list", base),
+            "json_version": format!("{}/json/version", base),
+            "ws_base": format!("ws://127.0.0.1:{}", cdp_port),
+            "port": cdp_port
+        }
+    }))
+}
+
 /// POST /api/toggle - Toggle API enabled state
 pub async fn toggle_api(
     State(state): State<AppState>,
@@ -1021,14 +1196,19 @@ pub fn create_router(state: AppState) -> Router {
         // Navigation and interaction
         .route("/navigate", post(navigate))
         .route("/click", post(click))
+        .route("/drag", post(drag))
         .route("/type", post(type_text))
         .route("/evaluate", post(evaluate))
         .route("/screenshot", get(screenshot))
         .route("/scroll", post(scroll))
+        .route("/frames", get(get_frames))
 
         // DOM operations
         .route("/dom/element", get(find_element))
         .route("/dom/annotate", post(annotate_elements))
+
+        // CDP remote debugging info
+        .route("/cdp", get(cdp_info))
 
         // API management
         .route("/api/toggle", post(toggle_api))
@@ -1040,7 +1220,8 @@ pub fn create_router(state: AppState) -> Router {
         // Batch operations and session management routes
         .merge(batch_session_routes())
 
-        // WebSocket endpoint is handled separately
+        // WebSocket endpoint
+        .route("/ws", get(websocket::ws_handler))
 
         .with_state(state)
 }

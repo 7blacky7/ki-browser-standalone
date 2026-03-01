@@ -36,6 +36,10 @@ pub mod cef_render;
 #[cfg(feature = "cef-browser")]
 pub mod cef_engine;
 
+/// CEF headless runner for windowless/offscreen browser operation (requires `cef-browser` feature).
+#[cfg(feature = "cef-browser")]
+pub mod cef_headless;
+
 // Re-export commonly used types for convenience
 pub use content_extractor::{
     ContentExtractor, ExtractedContent, NavElement, PageSection, PageStructure, PageType,
@@ -60,6 +64,9 @@ pub use cef_render::{CefRenderHandler, DirtyRect, OffScreenRenderHandler, Screen
 
 #[cfg(feature = "cef-browser")]
 pub use cef_engine::{CefBrowserEngine, CefBrowserEventSender};
+
+#[cfg(feature = "cef-browser")]
+pub use cef_headless::HeadlessRunner;
 
 #[cfg(feature = "cef-browser")]
 pub use cef_input::{

@@ -89,6 +89,8 @@ pub struct AppState {
     pub ipc_channel: Arc<IpcChannel>,
     /// Flag indicating if the API is enabled
     pub api_enabled: Arc<RwLock<bool>>,
+    /// CDP remote debugging port for Playwright/DevTools connections
+    pub cdp_port: Option<u16>,
 }
 
 impl AppState {
@@ -98,6 +100,18 @@ impl AppState {
             ws_handler: Arc::new(WebSocketHandler::new()),
             ipc_channel: Arc::new(ipc_channel),
             api_enabled: Arc::new(RwLock::new(true)),
+            cdp_port: None,
+        }
+    }
+
+    /// Create AppState with CDP remote debugging port for external tool connections
+    pub fn new_with_cdp(ipc_channel: IpcChannel, cdp_port: Option<u16>) -> Self {
+        Self {
+            browser_state: Arc::new(RwLock::new(BrowserState::new())),
+            ws_handler: Arc::new(WebSocketHandler::new()),
+            ipc_channel: Arc::new(ipc_channel),
+            api_enabled: Arc::new(RwLock::new(true)),
+            cdp_port,
         }
     }
 

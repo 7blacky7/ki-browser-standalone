@@ -16,6 +16,9 @@ use ki_browser_standalone::{
     stealth::StealthConfig, NAME, VERSION,
 };
 
+#[cfg(feature = "cef-browser")]
+use ki_browser_standalone::browser::cef_headless::HeadlessRunner;
+
 /// ANSI color codes for terminal output
 mod colors {
     pub const RESET: &str = "\x1b[0m";
@@ -238,6 +241,13 @@ fn build_cli() -> Command {
                 .value_parser(clap::value_parser!(u64)),
         )
         .arg(
+            Arg::new("cdp-port")
+                .long("cdp-port")
+                .value_name("PORT")
+                .help("CDP remote debugging port (default: 9222, 0 to disable)")
+                .value_parser(clap::value_parser!(u16)),
+        )
+        .arg(
             Arg::new("proxy")
                 .long("proxy")
                 .value_name("HOST:PORT")
@@ -291,6 +301,7 @@ fn parse_cli_args(matches: &clap::ArgMatches) -> CliArgs {
     args.profile_path = matches.get_one::<PathBuf>("profile").cloned();
     args.max_tabs = matches.get_one::<usize>("max-tabs").copied();
     args.timeout_ms = matches.get_one::<u64>("timeout").copied();
+    args.cdp_port = matches.get_one::<u16>("cdp-port").copied();
 
     // Handle headless flag
     if matches.get_flag("headless") {
@@ -450,7 +461,8 @@ async fn main() -> Result<()> {
 
         let mut browser_config = BrowserConfig::new()
             .headless(false)
-            .window_size(settings.window_width, settings.window_height);
+            .window_size(settings.window_width, settings.window_height)
+            .cdp_port(settings.cdp_port);
 
         if let Some(ref ua) = settings.user_agent {
             browser_config = browser_config.user_agent(ua);
@@ -501,15 +513,16 @@ async fn main() -> Result<()> {
     // Initialize browser engine
     info!("Initializing browser engine...");
 
-    // CEF browser engine (headless, no GUI)
+    // CEF browser engine (headless, no GUI) — managed by HeadlessRunner
     #[cfg(feature = "cef-browser")]
-    let _cef_engine = {
+    let (_cef_engine, _headless_runner) = {
         use std::sync::Arc;
         use ki_browser_standalone::browser::{BrowserConfig, CefBrowserEngine, BrowserEngine};
 
         let mut browser_config = BrowserConfig::new()
             .headless(settings.headless)
-            .window_size(settings.window_width, settings.window_height);
+            .window_size(settings.window_width, settings.window_height)
+            .cdp_port(settings.cdp_port);
 
         if let Some(ref ua) = settings.user_agent {
             browser_config = browser_config.user_agent(ua);
@@ -521,13 +534,16 @@ async fn main() -> Result<()> {
 
         match CefBrowserEngine::new(browser_config).await {
             Ok(engine) => {
-                info!("CEF browser engine initialized successfully");
-                Some(Arc::new(engine))
+                let engine = Arc::new(engine);
+                let runner = HeadlessRunner::new(engine.clone());
+                runner.start().await.map_err(|e| anyhow::anyhow!("Failed to start headless runner: {}", e))?;
+                info!("CEF headless mode active");
+                (Some(engine), Some(runner))
             }
             Err(e) => {
                 error!("Failed to initialize CEF browser engine: {}", e);
                 warn!("Falling back to mock mode");
-                None
+                (None, None)
             }
         }
     };
