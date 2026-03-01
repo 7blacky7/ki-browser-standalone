@@ -886,9 +886,25 @@ cef::wrap_load_handler! {
 cef::wrap_display_handler! {
     struct KiBrowserDisplayHandlerImpl {
         tab_id: Uuid,
+        tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
     }
 
     impl DisplayHandler {
+        fn on_title_change(
+            &self,
+            _browser: Option<&mut Browser>,
+            title: Option<&CefString>,
+        ) {
+            if let Some(t) = title {
+                let title_str = t.to_string();
+                debug!("Title changed for tab {}: {}", self.tab_id, title_str);
+                let mut tabs = self.tabs.write();
+                if let Some(tab) = tabs.get_mut(&self.tab_id) {
+                    tab.title = title_str;
+                }
+            }
+        }
+
         fn on_console_message(
             &self,
             _browser: Option<&mut Browser>,
@@ -1431,8 +1447,19 @@ impl CefBrowserEngine {
                                     tabs_guard.keys().cloned().collect()
                                 };
 
-                                for tab_id in tab_ids {
-                                    let _ = Self::close_browser_internal(tab_id, tabs.clone());
+                                for tab_id in &tab_ids {
+                                    let _ = Self::close_browser_internal(*tab_id, tabs.clone());
+                                }
+
+                                // Pump the CEF message loop so on_before_close callbacks
+                                // can fire and CEF can clean up its internal browser_info_map.
+                                // Without this, cef::shutdown() panics with "missing browser info map".
+                                if !tab_ids.is_empty() {
+                                    info!("Pumping CEF message loop for browser cleanup ({} browsers)", tab_ids.len());
+                                    for _ in 0..50 {
+                                        cef::do_message_loop_work();
+                                        std::thread::sleep(std::time::Duration::from_millis(10));
+                                    }
                                 }
 
                                 is_running.store(false, Ordering::SeqCst);
@@ -1506,7 +1533,7 @@ impl CefBrowserEngine {
         );
 
         // Create display handler (captures console.log for JS result communication)
-        let display_handler = KiBrowserDisplayHandlerImpl::new(tab_id);
+        let display_handler = KiBrowserDisplayHandlerImpl::new(tab_id, tabs.clone());
 
         // Create client using v144 API
         let mut client = KiBrowserClient::new(
@@ -2497,6 +2524,16 @@ impl CefBrowserEngine {
         let _ = self.command_tx.send(CefCommand::TypeText {
             tab_id,
             text: text.to_string(),
+            response: response_tx,
+        });
+    }
+
+    /// Executes JavaScript in a tab without blocking (fire-and-forget).
+    pub fn send_execute_js(&self, tab_id: Uuid, script: &str) {
+        let (response_tx, _) = oneshot::channel();
+        let _ = self.command_tx.send(CefCommand::ExecuteJs {
+            tab_id,
+            script: script.to_string(),
             response: response_tx,
         });
     }
