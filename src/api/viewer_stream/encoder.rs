@@ -131,11 +131,20 @@ impl H264NvencEncoder {
             .open_with(opts)
             .map_err(|e| format!("Failed to open encoder: {e}"))?;
 
-        // Extract SPS/PPS from extradata.
-        let extradata = encoder.codec().map(|_| {
-            // Extradata (SPS/PPS) will be available from encoder context.
-            Vec::new()
-        }).unwrap_or_default();
+        // SAFETY: The encoder owns the AVCodecContext; extradata is valid after open_with().
+        let extradata = unsafe {
+            let ctx = encoder.as_ptr();
+            let ptr = (*ctx).extradata;
+            let size = (*ctx).extradata_size;
+            if !ptr.is_null() && size > 0 {
+                let data = std::slice::from_raw_parts(ptr, size as usize).to_vec();
+                info!("H.264 extradata extracted: {} bytes (SPS/PPS)", data.len());
+                data
+            } else {
+                info!("H.264 extradata empty — SPS/PPS will be in-stream with IDR frames");
+                Vec::new()
+            }
+        };
 
         // Scaler: BGRA → NV12
         let scaler = ffmpeg_next::software::scaling::Context::get(

@@ -115,7 +115,16 @@ impl FrameDecoder for H264Decoder {
     }
 
     fn decode(&mut self, data: &[u8]) -> Option<DecodedFrame> {
-        let packet = ffmpeg_next::Packet::copy(data);
+        let combined;
+        let packet_data = if !self.config_data.is_empty() {
+            debug!("Prepending {} bytes SPS/PPS config to first H.264 packet", self.config_data.len());
+            combined = [&self.config_data[..], data].concat();
+            self.config_data.clear();
+            &combined
+        } else {
+            data
+        };
+        let packet = ffmpeg_next::Packet::copy(packet_data);
         if self.decoder.send_packet(&packet).is_err() {
             debug!("Failed to send packet to decoder");
             return None;
