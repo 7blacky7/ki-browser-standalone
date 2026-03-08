@@ -3,6 +3,7 @@
 //! Polls the CEF frame buffer at ~30fps, encodes changed frames as JPEG,
 //! and sends them as binary WebSocket messages. Receives input events
 //! (mouse, keyboard) from the client and forwards them to the CEF engine.
+//! Supports multi-tab switching and sends tab-state updates on changes.
 
 #[cfg(feature = "cef-browser")]
 use crate::browser::cef_engine::CefBrowserEngine;
@@ -60,14 +61,15 @@ async fn handle_viewer_socket(socket: WebSocket, state: AppState) {
         info!("Viewer client connected");
         let (mut ws_sender, mut ws_receiver) = socket.split();
 
-        // Send initial Connected message with tab list.
+        // Determine initial active tab and build tab list.
         let tabs_info = build_tab_list(&engine);
-        let active = engine
-            .get_tabs_sync()
-            .first()
-            .map(|t| tab_id_str(t.id));
+        let initial_active = engine.get_tabs_sync().first().map(|t| t.id);
+        let active_tab_id: Arc<parking_lot::Mutex<Option<Uuid>>> =
+            Arc::new(parking_lot::Mutex::new(initial_active));
+
+        // Send initial Connected message with tab list.
         let connected = ServerMessage::Connected {
-            active_tab: active,
+            active_tab: initial_active.map(tab_id_str),
             tabs: tabs_info,
         };
         if ws_sender
@@ -80,14 +82,47 @@ async fn handle_viewer_socket(socket: WebSocket, state: AppState) {
             return;
         }
 
-        // Frame sending task: poll frame buffer and send JPEG.
+        // Channel for sending tab-update messages from recv_task to send_task.
+        let (tab_update_tx, mut tab_update_rx) =
+            tokio::sync::mpsc::unbounded_channel::<ServerMessage>();
+
+        // Frame sending task: poll frame buffer, send JPEG, and forward tab updates.
         let send_engine = engine.clone();
+        let send_active = active_tab_id.clone();
         let send_task = tokio::spawn(async move {
             let mut last_version: u64 = 0;
+            let mut last_tab_snapshot = build_tab_snapshot(&send_engine);
             let mut interval = tokio::time::interval(Duration::from_millis(33)); // ~30fps
             loop {
+                // Check for pending tab-update messages first (non-blocking).
+                while let Ok(update_msg) = tab_update_rx.try_recv() {
+                    let json = serde_json::to_string(&update_msg).unwrap();
+                    if ws_sender.send(Message::Text(json.into())).await.is_err() {
+                        return;
+                    }
+                }
+
                 interval.tick().await;
-                match encode_frame_if_new(&send_engine, &mut last_version) {
+
+                // Detect tab-list changes and send TabUpdate.
+                let current_snapshot = build_tab_snapshot(&send_engine);
+                if current_snapshot != last_tab_snapshot {
+                    let active = send_active.lock().map(tab_id_str);
+                    let tabs_info = snapshot_to_tab_info(&current_snapshot);
+                    let update = ServerMessage::TabUpdate {
+                        active_tab: active,
+                        tabs: tabs_info,
+                    };
+                    let json = serde_json::to_string(&update).unwrap();
+                    if ws_sender.send(Message::Text(json.into())).await.is_err() {
+                        break;
+                    }
+                    last_tab_snapshot = current_snapshot;
+                }
+
+                // Encode and send frame from active tab.
+                let current_active = *send_active.lock();
+                match encode_frame_if_new(&send_engine, current_active, &mut last_version) {
                     Some(jpeg_data) => {
                         if ws_sender
                             .send(Message::Binary(jpeg_data.into()))
@@ -104,11 +139,17 @@ async fn handle_viewer_socket(socket: WebSocket, state: AppState) {
 
         // Input receiving task: parse client messages and forward to CEF.
         let recv_engine = engine.clone();
+        let recv_active = active_tab_id.clone();
         let recv_task = tokio::spawn(async move {
             while let Some(Ok(msg)) = ws_receiver.next().await {
                 match msg {
                     Message::Text(text) => {
-                        handle_client_message(&text, &recv_engine);
+                        handle_client_message(
+                            &text,
+                            &recv_engine,
+                            &recv_active,
+                            &tab_update_tx,
+                        );
                     }
                     Message::Close(_) => break,
                     _ => {}
@@ -127,12 +168,15 @@ async fn handle_viewer_socket(socket: WebSocket, state: AppState) {
 }
 
 /// Encode the current frame buffer as JPEG if the frame version changed.
+/// Uses the tracked active tab, falling back to first tab if none selected.
 #[cfg(feature = "cef-browser")]
-fn encode_frame_if_new(engine: &Arc<CefBrowserEngine>, last_version: &mut u64) -> Option<Vec<u8>> {
-    // Find active tab (first tab for now).
-    let tabs = engine.get_tabs_sync();
-    let tab = tabs.first()?;
-    let (fb_arc, size_arc, version_arc) = engine.get_tab_frame_buffer(tab.id)?;
+fn encode_frame_if_new(
+    engine: &Arc<CefBrowserEngine>,
+    active_tab: Option<Uuid>,
+    last_version: &mut u64,
+) -> Option<Vec<u8>> {
+    let tab_id = active_tab.or_else(|| engine.get_tabs_sync().first().map(|t| t.id))?;
+    let (fb_arc, size_arc, version_arc) = engine.get_tab_frame_buffer(tab_id)?;
 
     let current = version_arc.load(Ordering::Acquire);
     if current == *last_version {
@@ -173,8 +217,14 @@ fn encode_frame_if_new(engine: &Arc<CefBrowserEngine>, last_version: &mut u64) -
 }
 
 /// Process a client input message and forward it to the CEF engine.
+/// Handles SetActiveTab by updating the shared active tab tracker.
 #[cfg(feature = "cef-browser")]
-fn handle_client_message(text: &str, engine: &Arc<CefBrowserEngine>) {
+fn handle_client_message(
+    text: &str,
+    engine: &Arc<CefBrowserEngine>,
+    active_tab_id: &Arc<parking_lot::Mutex<Option<Uuid>>>,
+    tab_update_tx: &tokio::sync::mpsc::UnboundedSender<ServerMessage>,
+) {
     let msg: ClientMessage = match serde_json::from_str(text) {
         Ok(m) => m,
         Err(e) => {
@@ -183,18 +233,42 @@ fn handle_client_message(text: &str, engine: &Arc<CefBrowserEngine>) {
         }
     };
 
-    // Resolve active tab (first tab for now).
-    let active_tab = match engine.get_tabs_sync().first().map(|t| t.id) {
-        Some(id) => id,
-        None => return,
+    // Resolve active tab, falling back to first tab.
+    let resolve_active = || -> Option<Uuid> {
+        active_tab_id
+            .lock()
+            .or_else(|| engine.get_tabs_sync().first().map(|t| t.id))
     };
 
     match msg {
+        ClientMessage::SetActiveTab { tab_id } => {
+            if let Ok(uuid) = Uuid::parse_str(&tab_id) {
+                // Verify the tab exists before switching.
+                let tabs = engine.get_tabs_sync();
+                if tabs.iter().any(|t| t.id == uuid) {
+                    *active_tab_id.lock() = Some(uuid);
+                    info!("Viewer switched to tab {uuid}");
+                    // Notify client of tab switch.
+                    let tabs_info = build_tab_list(engine);
+                    let update = ServerMessage::TabUpdate {
+                        active_tab: Some(tab_id_str(uuid)),
+                        tabs: tabs_info,
+                    };
+                    let _ = tab_update_tx.send(update);
+                } else {
+                    debug!("SetActiveTab: tab {tab_id} not found");
+                }
+            }
+        }
         ClientMessage::MouseMove { x, y } => {
-            engine.send_mouse_move(active_tab, x, y);
+            if let Some(tab) = resolve_active() {
+                engine.send_mouse_move(tab, x, y);
+            }
         }
         ClientMessage::MouseClick { x, y, button } => {
-            engine.send_mouse_click(active_tab, x, y, button);
+            if let Some(tab) = resolve_active() {
+                engine.send_mouse_click(tab, x, y, button);
+            }
         }
         ClientMessage::MouseWheel {
             x,
@@ -202,7 +276,9 @@ fn handle_client_message(text: &str, engine: &Arc<CefBrowserEngine>) {
             delta_x,
             delta_y,
         } => {
-            engine.send_mouse_wheel(active_tab, x, y, delta_x, delta_y);
+            if let Some(tab) = resolve_active() {
+                engine.send_mouse_wheel(tab, x, y, delta_x, delta_y);
+            }
         }
         ClientMessage::KeyEvent {
             event_type,
@@ -210,36 +286,82 @@ fn handle_client_message(text: &str, engine: &Arc<CefBrowserEngine>) {
             windows_key_code,
             character,
         } => {
-            engine.send_key_event(active_tab, event_type, modifiers, windows_key_code, character);
+            if let Some(tab) = resolve_active() {
+                engine.send_key_event(tab, event_type, modifiers, windows_key_code, character);
+            }
         }
         ClientMessage::TypeText { text } => {
-            engine.send_type_text(active_tab, &text);
+            if let Some(tab) = resolve_active() {
+                engine.send_type_text(tab, &text);
+            }
         }
         ClientMessage::Navigate { url } => {
-            engine.send_navigate(active_tab, &url);
+            if let Some(tab) = resolve_active() {
+                engine.send_navigate(tab, &url);
+            }
         }
         ClientMessage::CreateTab { url } => {
-            let _ = engine.send_create_tab(&url);
+            let new_id = engine.send_create_tab(&url);
+            // Auto-switch to the newly created tab.
+            *active_tab_id.lock() = Some(new_id);
         }
         ClientMessage::CloseTab { tab_id } => {
             if let Ok(uuid) = Uuid::parse_str(&tab_id) {
                 engine.send_close_tab(uuid);
+                // If closing the active tab, switch to first remaining tab.
+                let mut active = active_tab_id.lock();
+                if *active == Some(uuid) {
+                    *active = engine
+                        .get_tabs_sync()
+                        .iter()
+                        .find(|t| t.id != uuid)
+                        .map(|t| t.id);
+                }
             }
         }
-        ClientMessage::SetActiveTab { .. } => {
-            // Multi-tab switching will be implemented when the client supports it.
-            debug!("SetActiveTab not yet implemented");
-        }
         ClientMessage::Resize { width, height } => {
-            engine.send_resize_viewport(active_tab, width, height);
+            if let Some(tab) = resolve_active() {
+                engine.send_resize_viewport(tab, width, height);
+            }
         }
         ClientMessage::GoBack => {
-            engine.send_go_back(active_tab);
+            if let Some(tab) = resolve_active() {
+                engine.send_go_back(tab);
+            }
         }
         ClientMessage::GoForward => {
-            engine.send_go_forward(active_tab);
+            if let Some(tab) = resolve_active() {
+                engine.send_go_forward(tab);
+            }
         }
     }
+}
+
+/// Lightweight tab snapshot for change detection (id, url, title).
+#[cfg(feature = "cef-browser")]
+type TabSnapshot = Vec<(String, String, String)>;
+
+/// Build a comparable snapshot of the current tab list.
+#[cfg(feature = "cef-browser")]
+fn build_tab_snapshot(engine: &Arc<CefBrowserEngine>) -> TabSnapshot {
+    engine
+        .get_tabs_sync()
+        .iter()
+        .map(|t| (tab_id_str(t.id), t.url.clone(), t.title.clone()))
+        .collect()
+}
+
+/// Convert a tab snapshot into TabInfo vec for protocol messages.
+#[cfg(feature = "cef-browser")]
+fn snapshot_to_tab_info(snapshot: &TabSnapshot) -> Vec<TabInfo> {
+    snapshot
+        .iter()
+        .map(|(id, url, title)| TabInfo {
+            id: id.clone(),
+            url: url.clone(),
+            title: title.clone(),
+        })
+        .collect()
 }
 
 /// Build a list of TabInfo from the engine's current tabs.
