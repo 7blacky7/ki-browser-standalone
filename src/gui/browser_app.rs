@@ -140,7 +140,7 @@ impl KiBrowserApp {
 }
 
 impl eframe::App for KiBrowserApp {
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+    fn on_exit(&mut self) {
         // Safety net: ensure CEF shutdown was sent even if update() missed it.
         if !self.shutdown_initiated {
             info!("on_exit: sending belated CEF shutdown");

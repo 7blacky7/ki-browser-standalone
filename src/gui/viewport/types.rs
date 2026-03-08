@@ -88,19 +88,24 @@ impl ViewportState {
 
             let expected = (w as usize) * (h as usize) * 4;
             let len = fb.len().min(expected);
-            let mut rgba = Vec::with_capacity(len);
-            for chunk in fb[..len].chunks_exact(4) {
-                rgba.push(chunk[2]); // R from BGRA[2]
-                rgba.push(chunk[1]); // G from BGRA[1]
-                rgba.push(chunk[0]); // B from BGRA[0]
-                rgba.push(chunk[3]); // A from BGRA[3]
+            // Single memcpy + in-place B/R swap (faster than per-byte push loop)
+            let mut rgba = fb[..len].to_vec();
+            for chunk in rgba.chunks_exact_mut(4) {
+                chunk.swap(0, 2); // Swap B↔R: BGRA → RGBA
             }
             (rgba, w, h)
         };
         // Read lock released here — single allocation, no intermediate clone.
 
         let image = ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
-        self.texture = Some(ctx.load_texture("cef_page", image, TextureOptions::LINEAR));
+
+        if let Some(tex) = &mut self.texture {
+            // Reuse existing GPU texture — avoids allocation + deallocation per frame
+            tex.set(image, TextureOptions::LINEAR);
+        } else {
+            // First frame — allocate new texture
+            self.texture = Some(ctx.load_texture("cef_page", image, TextureOptions::LINEAR));
+        }
         self.last_frame_version = current_version;
     }
 }

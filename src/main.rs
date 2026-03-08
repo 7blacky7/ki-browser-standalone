@@ -415,12 +415,8 @@ async fn main() -> Result<()> {
             std::process::exit(exit_code);
         }
 
-        // Set Chrome flags via environment for GPU disable (applies to all subprocesses)
-        // This ensures GPU subprocess doesn't get launched at all
-        let chrome_flags = std::env::var("CHROME_FLAGS").unwrap_or_default();
-        if !chrome_flags.contains("disable-gpu") {
-            std::env::set_var("CHROME_FLAGS", format!("{} --disable-gpu --disable-gpu-compositing --in-process-gpu", chrome_flags));
-        }
+        // Note: GPU flags are set conditionally in KiBrowserApp::on_before_command_line_processing
+        // based on headless vs GUI mode. No blanket CHROME_FLAGS needed here.
     }
 
     // Parse CLI arguments

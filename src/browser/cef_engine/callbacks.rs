@@ -152,12 +152,14 @@ cef::wrap_render_process_handler! {
 
 /// Application handler for CEF lifecycle using v144 API.
 ///
-/// Configures command line switches for stealth mode during CEF initialization,
-/// disabling automation-detection features and GPU for headless stability.
+/// Configures command line switches for stealth mode during CEF initialization.
+/// In headless mode, GPU is disabled for stability. In GUI mode, GPU stays
+/// enabled for hardware-accelerated rendering.
 cef::wrap_app! {
     pub(crate) struct KiBrowserApp {
         stealth_config: Arc<StealthConfig>,
         render_process_handler_val: RenderProcessHandler,
+        headless: bool,
     }
 
     impl App {
@@ -174,11 +176,19 @@ cef::wrap_app! {
                 cmd.append_switch(Some(&CefString::from("no-first-run")));
                 cmd.append_switch(Some(&CefString::from("no-default-browser-check")));
 
-                // Disable GPU process (prevents GPU subprocess crash)
-                cmd.append_switch(Some(&CefString::from("disable-gpu")));
-                cmd.append_switch(Some(&CefString::from("disable-gpu-compositing")));
-                cmd.append_switch(Some(&CefString::from("in-process-gpu")));
-                cmd.append_switch(Some(&CefString::from("disable-software-rasterizer")));
+                if self.headless {
+                    // Headless: disable GPU entirely (prevents GPU subprocess crash)
+                    cmd.append_switch(Some(&CefString::from("disable-gpu")));
+                    cmd.append_switch(Some(&CefString::from("disable-gpu-compositing")));
+                    cmd.append_switch(Some(&CefString::from("in-process-gpu")));
+                    cmd.append_switch(Some(&CefString::from("disable-software-rasterizer")));
+                    debug!("CEF: GPU disabled (headless mode)");
+                } else {
+                    // GUI: keep GPU enabled for hardware-accelerated rendering
+                    cmd.append_switch(Some(&CefString::from("in-process-gpu")));
+                    cmd.append_switch(Some(&CefString::from("enable-gpu-rasterization")));
+                    debug!("CEF: GPU enabled (GUI mode)");
+                }
 
                 // Run network service in-process to avoid subprocess crashes
                 cmd.append_switch_with_value(
@@ -266,6 +276,7 @@ cef::wrap_render_handler! {
         frame_buffer: Arc<RwLock<Vec<u8>>>,
         frame_size: Arc<RwLock<(u32, u32)>>,
         viewport_size: Arc<RwLock<(u32, u32)>>,
+        frame_version: Arc<std::sync::atomic::AtomicU64>,
     }
 
     impl RenderHandler {
@@ -326,7 +337,8 @@ cef::wrap_render_handler! {
                 let mut size = self.frame_size.write();
                 *size = (width as u32, height as u32);
 
-                // Signal the GUI that a new frame is available.
+                // Signal that a new frame is available (for stream encoder + GUI).
+                self.frame_version.fetch_add(1, std::sync::atomic::Ordering::Release);
                 #[cfg(feature = "gui")]
                 crate::gui::viewport::bump_frame_version();
 
@@ -416,8 +428,10 @@ cef::wrap_life_span_handler! {
 
         fn on_before_close(&self, browser: Option<&mut Browser>) {
             info!("Browser closing for tab {}", self.tab_id);
-            // Notify the MessageRouter so it can cancel pending queries for this browser.
-            BROWSER_ROUTER.on_before_close(browser.map(|b| b.clone()));
+            // Note: BROWSER_ROUTER.on_before_close() is NOT called here because in
+            // single-process mode we use console.log for JS results, not MessageRouter.
+            // Calling it without prior query registration causes a panic in
+            // BrowserInfoMap::find_browser_all ("missing browser info map").
             let mut tabs = self.tabs.write();
             if let Some(tab) = tabs.get_mut(&self.tab_id) {
                 tab.status = TabStatus::Closed;

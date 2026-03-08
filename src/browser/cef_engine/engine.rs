@@ -294,11 +294,11 @@ impl CefBrowserEngine {
         &self.stealth_config
     }
 
-    /// Returns the frame buffer and size Arcs for a tab (for GUI rendering).
+    /// Returns the frame buffer, size, and version Arcs for a tab.
     pub fn get_tab_frame_buffer(&self, tab_id: Uuid) -> Option<TabFrameBuffer> {
         let tabs = self.tabs.read();
         tabs.get(&tab_id).map(|tab| {
-            (tab.frame_buffer.clone(), tab.frame_size.clone())
+            (tab.frame_buffer.clone(), tab.frame_size.clone(), tab.frame_version.clone())
         })
     }
 
@@ -368,8 +368,18 @@ impl CefBrowserEngine {
         });
     }
 
-    /// Sends a mouse click (down + up) without blocking.
+    /// Sends a mouse click (move + down + up) without blocking.
+    /// Sends a mouse-move first so CEF fires mouseenter/mouseover on the target
+    /// element before the click — without this, clicks can be lost or misrouted.
     pub fn send_mouse_click(&self, tab_id: Uuid, x: i32, y: i32, button: i32) {
+        // Move cursor to click position first (CEF needs hover state)
+        let (response_tx, _) = oneshot::channel();
+        let _ = self.command_tx.send(CefCommand::MouseMove {
+            tab_id,
+            x,
+            y,
+            response: response_tx,
+        });
         // Mouse down
         let (response_tx, _) = oneshot::channel();
         let _ = self.command_tx.send(CefCommand::MouseClick {

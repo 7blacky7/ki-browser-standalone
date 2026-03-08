@@ -13,7 +13,7 @@ use cef::{
 };
 use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -98,7 +98,7 @@ pub(crate) fn run_cef_message_loop(
     let rph = KiBrowserRenderProcessHandler::new();
 
     // Create app with v144 API (wrap_app! macro generates ::new())
-    let mut app = KiBrowserApp::new(stealth_config.clone(), rph);
+    let mut app = KiBrowserApp::new(stealth_config.clone(), rph, config.headless);
 
     // Initialize CEF using v144 API
     let result = cef::initialize(
@@ -363,6 +363,7 @@ fn create_browser_internal(
         (viewport_dims.0 * viewport_dims.1 * 4) as usize,
     )));
     let frame_size = Arc::new(RwLock::new((0u32, 0u32)));
+    let frame_version = Arc::new(AtomicU64::new(0));
     let browser_created = Arc::new(AtomicBool::new(false));
 
     // Create render handler using v144 wrap_render_handler! macro
@@ -371,6 +372,7 @@ fn create_browser_internal(
         frame_buffer.clone(),
         frame_size.clone(),
         viewport_size.clone(),
+        frame_version.clone(),
     );
 
     // Create life span handler with popup_tx for popup interception
@@ -436,7 +438,7 @@ fn create_browser_internal(
     }
 
     // Store tab BEFORE browser creation (browser will be set in on_after_created)
-    let cef_tab = CefTab::new(tab_id, url.to_string(), frame_buffer, frame_size, viewport_size);
+    let cef_tab = CefTab::new(tab_id, url.to_string(), frame_buffer, frame_size, viewport_size, frame_version);
     tabs.write().insert(tab_id, cef_tab);
 
     // Wait for browser to be created (callback will be triggered)

@@ -36,10 +36,11 @@ impl KiBrowserApp {
         // Add new tabs from engine that we don't have
         for et in &engine_tabs {
             if !self.tabs.iter().any(|t| t.id == et.id) {
-                let (frame_buffer, frame_size) = self.engine
+                let (frame_buffer, frame_size, _frame_version) = self.engine
                     .get_tab_frame_buffer(et.id)
                     .unwrap_or_else(|| {
-                        (Arc::new(RwLock::new(Vec::new())), Arc::new(RwLock::new((0, 0))))
+                        (Arc::new(RwLock::new(Vec::new())), Arc::new(RwLock::new((0, 0))),
+                         Arc::new(std::sync::atomic::AtomicU64::new(0)))
                     });
                 self.tabs.push(GuiTab {
                     id: et.id,

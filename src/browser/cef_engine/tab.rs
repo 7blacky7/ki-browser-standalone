@@ -6,7 +6,7 @@
 
 use cef::Browser;
 use parking_lot::RwLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -42,6 +42,9 @@ pub(crate) struct CefTab {
     pub(crate) can_go_forward: AtomicBool,
     /// Shared viewport dimensions for the render handler (updated on resize).
     pub(crate) viewport_size: Arc<RwLock<(u32, u32)>>,
+    /// Frame version counter, incremented on every on_paint callback.
+    /// Used by the video stream encoder to detect new frames.
+    pub(crate) frame_version: Arc<AtomicU64>,
 }
 
 impl CefTab {
@@ -52,6 +55,7 @@ impl CefTab {
         frame_buffer: Arc<RwLock<Vec<u8>>>,
         frame_size: Arc<RwLock<(u32, u32)>>,
         viewport_size: Arc<RwLock<(u32, u32)>>,
+        frame_version: Arc<AtomicU64>,
     ) -> Self {
         Self {
             id,
@@ -66,6 +70,7 @@ impl CefTab {
             can_go_back: AtomicBool::new(false),
             can_go_forward: AtomicBool::new(false),
             viewport_size,
+            frame_version,
         }
     }
 

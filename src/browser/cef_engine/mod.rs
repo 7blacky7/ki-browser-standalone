@@ -73,9 +73,9 @@ pub(crate) const DEFAULT_FRAME_RATE: i32 = 30;
 #[cfg(feature = "cef-browser")]
 type JsResultStore = parking_lot::Mutex<std::collections::HashMap<i64, std::sync::mpsc::Sender<Result<String, String>>>>;
 
-/// Type alias for tab frame buffer data (pixel buffer + dimensions).
+/// Type alias for tab frame buffer data (pixel buffer + dimensions + frame version).
 #[cfg(feature = "cef-browser")]
-pub type TabFrameBuffer = (Arc<RwLock<Vec<u8>>>, Arc<RwLock<(u32, u32)>>);
+pub type TabFrameBuffer = (Arc<RwLock<Vec<u8>>>, Arc<RwLock<(u32, u32)>>, Arc<std::sync::atomic::AtomicU64>);
 
 /// Global JS-Result-Store: query_id -> mpsc::Sender for results.
 /// Used to pass cefQuery results back to execute_js_with_result_internal.

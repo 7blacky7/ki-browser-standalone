@@ -38,13 +38,14 @@ pub fn render(
                 egui::Color32::WHITE,
             );
 
-            // Request focus on any click so keyboard events are captured
-            let any_click = ui.input(|i| {
-                i.pointer.button_clicked(egui::PointerButton::Primary)
-                    || i.pointer.button_clicked(egui::PointerButton::Secondary)
-                    || i.pointer.button_clicked(egui::PointerButton::Middle)
+            // Request focus on mouse-down (not completed click) so keyboard
+            // events work immediately without waiting for mouse-up.
+            let any_press = ui.input(|i| {
+                i.pointer.button_pressed(egui::PointerButton::Primary)
+                    || i.pointer.button_pressed(egui::PointerButton::Secondary)
+                    || i.pointer.button_pressed(egui::PointerButton::Middle)
             });
-            if any_click && response.hovered() {
+            if any_press && response.hovered() {
                 response.request_focus();
             }
 
