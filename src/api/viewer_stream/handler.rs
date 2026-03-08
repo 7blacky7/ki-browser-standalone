@@ -18,7 +18,7 @@ use axum::response::IntoResponse;
 use futures::{SinkExt, StreamExt};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{debug, info};
 use uuid::Uuid;
 
@@ -96,6 +96,7 @@ async fn handle_viewer_socket(socket: WebSocket, state: AppState) {
             let mut last_tab_snapshot = build_tab_snapshot(&send_engine);
             let mut frame_encoder: Option<Box<dyn FrameEncoder>> = None;
             let mut interval = tokio::time::interval(Duration::from_millis(33)); // ~30fps
+            let mut last_force_sent = Instant::now();
             loop {
                 // Check for pending tab-update messages first (non-blocking).
                 while let Ok(update_msg) = tab_update_rx.try_recv() {
@@ -123,6 +124,11 @@ async fn handle_viewer_socket(socket: WebSocket, state: AppState) {
                     last_tab_snapshot = current_snapshot;
                 }
 
+                // Periodically force re-encode to flush H.264 decoder buffer on client.
+                // The cuvid decoder buffers the first packet and only outputs a frame
+                // once a second packet arrives; this ensures static pages are visible.
+                let force_refresh = last_force_sent.elapsed() > Duration::from_secs(1);
+
                 // Read frame buffer from active tab.
                 let current_active = *send_active.lock();
                 let messages = encode_frame_if_new(
@@ -130,7 +136,11 @@ async fn handle_viewer_socket(socket: WebSocket, state: AppState) {
                     current_active,
                     &mut last_version,
                     &mut frame_encoder,
+                    force_refresh,
                 );
+                if !messages.is_empty() && force_refresh {
+                    last_force_sent = Instant::now();
+                }
                 for data in messages {
                     if ws_sender
                         .send(Message::Binary(data.into()))
@@ -173,8 +183,11 @@ async fn handle_viewer_socket(socket: WebSocket, state: AppState) {
     }
 }
 
-/// Encode the current frame buffer if the frame version changed.
+/// Encode the current frame buffer if the frame version changed or force is set.
 /// Lazily initializes the encoder on first frame (needs dimensions).
+/// When `force` is true, re-encodes the current frame even if frame_version has
+/// not changed — this flushes the H.264 decoder buffer on the client side, which
+/// requires at least two packets before producing output.
 /// Returns zero or more binary messages (prefixed with codec byte).
 #[cfg(feature = "cef-browser")]
 fn encode_frame_if_new(
@@ -182,6 +195,7 @@ fn encode_frame_if_new(
     active_tab: Option<Uuid>,
     last_version: &mut u64,
     frame_encoder: &mut Option<Box<dyn FrameEncoder>>,
+    force: bool,
 ) -> Vec<Vec<u8>> {
     let tab_id = match active_tab.or_else(|| engine.get_tabs_sync().first().map(|t| t.id)) {
         Some(id) => id,
@@ -193,7 +207,7 @@ fn encode_frame_if_new(
     };
 
     let current = version_arc.load(Ordering::Acquire);
-    if current == *last_version {
+    if current == *last_version && !force {
         return Vec::new();
     }
     *last_version = current;

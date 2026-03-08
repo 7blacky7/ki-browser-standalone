@@ -132,7 +132,13 @@ impl FrameDecoder for H264Decoder {
 
         let mut decoded = ffmpeg_next::util::frame::Video::empty();
         if self.decoder.receive_frame(&mut decoded).is_err() {
-            return None; // Frame not yet complete (normal for P-frames).
+            // First receive_frame may fail because some decoders (e.g. h264_cuvid)
+            // buffer the first packet. Retry once — the decoder may have flushed
+            // a frame from a previously buffered packet.
+            debug!("First receive_frame returned no output, retrying once");
+            if self.decoder.receive_frame(&mut decoded).is_err() {
+                return None; // Frame not yet complete (normal for buffered decoders).
+            }
         }
 
         let width = decoded.width();
