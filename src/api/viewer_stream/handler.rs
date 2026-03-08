@@ -1,13 +1,15 @@
-//! WebSocket handler for /ws/viewer — streams JPEG frames and forwards input.
+//! WebSocket handler for /ws/viewer — streams encoded frames and forwards input.
 //!
-//! Polls the CEF frame buffer at ~30fps, encodes changed frames as JPEG,
-//! and sends them as binary WebSocket messages. Receives input events
-//! (mouse, keyboard) from the client and forwards them to the CEF engine.
+//! Polls the CEF frame buffer at ~30fps, encodes changed frames (JPEG or H.264
+//! NVENC when the h264 feature is enabled), and sends them as binary WebSocket
+//! messages. Receives input events (mouse, keyboard) from the client and
+//! forwards them to the CEF engine.
 //! Supports multi-tab switching and sends tab-state updates on changes.
 
 #[cfg(feature = "cef-browser")]
 use crate::browser::cef_engine::CefBrowserEngine;
 use crate::api::server::AppState;
+use crate::api::viewer_stream::encoder::{self, FrameEncoder};
 use crate::api::viewer_stream::protocol::{ClientMessage, ServerMessage, TabInfo, tab_id_str};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -17,7 +19,7 @@ use futures::{SinkExt, StreamExt};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 use uuid::Uuid;
 
 /// Axum handler for WebSocket upgrade on /ws/viewer.
@@ -86,12 +88,13 @@ async fn handle_viewer_socket(socket: WebSocket, state: AppState) {
         let (tab_update_tx, mut tab_update_rx) =
             tokio::sync::mpsc::unbounded_channel::<ServerMessage>();
 
-        // Frame sending task: poll frame buffer, send JPEG, and forward tab updates.
+        // Frame sending task: poll frame buffer, encode, and forward tab updates.
         let send_engine = engine.clone();
         let send_active = active_tab_id.clone();
         let send_task = tokio::spawn(async move {
             let mut last_version: u64 = 0;
             let mut last_tab_snapshot = build_tab_snapshot(&send_engine);
+            let mut frame_encoder: Option<Box<dyn FrameEncoder>> = None;
             let mut interval = tokio::time::interval(Duration::from_millis(33)); // ~30fps
             loop {
                 // Check for pending tab-update messages first (non-blocking).
@@ -120,19 +123,22 @@ async fn handle_viewer_socket(socket: WebSocket, state: AppState) {
                     last_tab_snapshot = current_snapshot;
                 }
 
-                // Encode and send frame from active tab.
+                // Read frame buffer from active tab.
                 let current_active = *send_active.lock();
-                match encode_frame_if_new(&send_engine, current_active, &mut last_version) {
-                    Some(jpeg_data) => {
-                        if ws_sender
-                            .send(Message::Binary(jpeg_data.into()))
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
+                let messages = encode_frame_if_new(
+                    &send_engine,
+                    current_active,
+                    &mut last_version,
+                    &mut frame_encoder,
+                );
+                for data in messages {
+                    if ws_sender
+                        .send(Message::Binary(data.into()))
+                        .await
+                        .is_err()
+                    {
+                        return;
                     }
-                    None => continue,
                 }
             }
         });
@@ -167,20 +173,28 @@ async fn handle_viewer_socket(socket: WebSocket, state: AppState) {
     }
 }
 
-/// Encode the current frame buffer as JPEG if the frame version changed.
-/// Uses the tracked active tab, falling back to first tab if none selected.
+/// Encode the current frame buffer if the frame version changed.
+/// Lazily initializes the encoder on first frame (needs dimensions).
+/// Returns zero or more binary messages (prefixed with codec byte).
 #[cfg(feature = "cef-browser")]
 fn encode_frame_if_new(
     engine: &Arc<CefBrowserEngine>,
     active_tab: Option<Uuid>,
     last_version: &mut u64,
-) -> Option<Vec<u8>> {
-    let tab_id = active_tab.or_else(|| engine.get_tabs_sync().first().map(|t| t.id))?;
-    let (fb_arc, size_arc, version_arc) = engine.get_tab_frame_buffer(tab_id)?;
+    frame_encoder: &mut Option<Box<dyn FrameEncoder>>,
+) -> Vec<Vec<u8>> {
+    let tab_id = match active_tab.or_else(|| engine.get_tabs_sync().first().map(|t| t.id)) {
+        Some(id) => id,
+        None => return Vec::new(),
+    };
+    let (fb_arc, size_arc, version_arc) = match engine.get_tab_frame_buffer(tab_id) {
+        Some(bufs) => bufs,
+        None => return Vec::new(),
+    };
 
     let current = version_arc.load(Ordering::Acquire);
     if current == *last_version {
-        return None;
+        return Vec::new();
     }
     *last_version = current;
 
@@ -188,32 +202,25 @@ fn encode_frame_if_new(
     let fb = fb_arc.read();
     let (w, h) = *size_arc.read();
     if w == 0 || h == 0 || fb.is_empty() {
-        return None;
+        return Vec::new();
     }
 
-    // Convert BGRA → RGB for JPEG encoding.
-    let expected = (w as usize) * (h as usize) * 4;
-    let len = fb.len().min(expected);
-    let mut rgb = Vec::with_capacity((w as usize) * (h as usize) * 3);
-    for chunk in fb[..len].chunks_exact(4) {
-        rgb.push(chunk[2]); // R
-        rgb.push(chunk[1]); // G
-        rgb.push(chunk[0]); // B
+    // Lazily create encoder with actual frame dimensions.
+    if frame_encoder.is_none() {
+        let enc = encoder::create_encoder(w, h);
+        // Send codec config if available (e.g., H.264 SPS/PPS).
+        let config = enc.codec_config();
+        *frame_encoder = Some(enc);
+        if let Some(config_data) = config {
+            // Config will be sent as first message before frames.
+            let mut messages = vec![config_data];
+            messages.extend(frame_encoder.as_mut().unwrap().encode(&fb, w, h));
+            return messages;
+        }
     }
-    drop(fb); // Release read lock.
 
-    // Encode as JPEG (quality 75 — good balance of size vs quality).
-    let img = image::ImageBuffer::<image::Rgb<u8>, _>::from_raw(w, h, rgb)?;
-    let mut buf = Vec::with_capacity(64 * 1024);
-    let mut cursor = std::io::Cursor::new(&mut buf);
-    if img
-        .write_to(&mut cursor, image::ImageOutputFormat::Jpeg(75))
-        .is_err()
-    {
-        warn!("Failed to encode JPEG frame");
-        return None;
-    }
-    Some(buf)
+    let enc = frame_encoder.as_mut().unwrap();
+    enc.encode(&fb, w, h)
 }
 
 /// Process a client input message and forward it to the CEF engine.

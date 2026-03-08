@@ -101,6 +101,7 @@ cc = "1"
 default = ["cef-browser"]
 cef-browser = ["dep:cef"]
 gui = ["cef-browser", "dep:eframe", "dep:egui"]
+h264 = ["cef-browser", "dep:ffmpeg-next"]
 ocr = ["dep:leptess"]
 mock-browser = []
 webp = []
@@ -120,6 +121,11 @@ features = ["default_fonts", "wgpu", "wayland", "x11"]
 
 [dependencies.egui]
 version = "0.31"
+optional = true
+
+# H.264 NVENC hardware encoding via FFmpeg (optional, behind 'h264' feature)
+[dependencies.ffmpeg-next]
+version = "8"
 optional = true
 
 # OCR — Tesseract C bindings via leptess (optional, behind 'ocr' feature)

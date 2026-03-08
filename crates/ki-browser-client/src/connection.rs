@@ -87,13 +87,43 @@ async fn run_connection(
         while let Some(msg_result) = ws_receiver.next().await {
             match msg_result {
                 Ok(Message::Binary(data)) => {
-                    // JPEG frame — decode to RGBA.
-                    match decode_jpeg(&data) {
-                        Some(frame) => {
-                            *recv_state.frame_rgba.lock() = Some(frame);
-                            recv_ctx.request_repaint();
+                    if data.is_empty() {
+                        continue;
+                    }
+                    match data[0] {
+                        // Prefixed JPEG frame (new protocol).
+                        0x00 => {
+                            match decode_jpeg(&data[1..]) {
+                                Some(frame) => {
+                                    *recv_state.frame_rgba.lock() = Some(frame);
+                                    recv_ctx.request_repaint();
+                                }
+                                None => warn!("Failed to decode JPEG frame"),
+                            }
                         }
-                        None => warn!("Failed to decode JPEG frame"),
+                        // H.264 codec config (SPS/PPS) — stored for future decoder init.
+                        0x01 => {
+                            debug!("Received H.264 codec config ({} bytes)", data.len() - 1);
+                            // TODO: Initialize H.264 decoder with config data.
+                        }
+                        // H.264 frame data (NAL units).
+                        0x02 => {
+                            debug!("Received H.264 frame ({} bytes)", data.len() - 1);
+                            // TODO: Decode H.264 frame via hardware decoder.
+                        }
+                        // Legacy: no prefix byte, raw JPEG (backwards compatibility).
+                        0xFF => {
+                            match decode_jpeg(&data) {
+                                Some(frame) => {
+                                    *recv_state.frame_rgba.lock() = Some(frame);
+                                    recv_ctx.request_repaint();
+                                }
+                                None => warn!("Failed to decode legacy JPEG frame"),
+                            }
+                        }
+                        prefix => {
+                            debug!("Unknown binary prefix: 0x{prefix:02X}");
+                        }
                     }
                 }
                 Ok(Message::Text(text)) => {
