@@ -6,6 +6,7 @@
 
 mod app;
 mod connection;
+mod decoder;
 mod protocol;
 
 use clap::Parser;

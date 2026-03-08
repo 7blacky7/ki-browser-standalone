@@ -39,3 +39,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Synchronization
 parking_lot = "0.12"
+
+# H.264 hardware decoding via FFmpeg (optional)
+ffmpeg-next = { version = "8", optional = true }
+
+[features]
+default = []
+h264 = ["dep:ffmpeg-next"]

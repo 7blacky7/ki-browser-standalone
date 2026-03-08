@@ -1,8 +1,9 @@
 //! WebSocket connection to the ki-browser server /ws/viewer endpoint.
 //!
-//! Manages the async WebSocket lifecycle: connecting, receiving JPEG frames
-//! and JSON control messages, sending input events back to the server.
+//! Manages the async WebSocket lifecycle: connecting, receiving encoded frames
+//! (JPEG or H.264) and JSON control messages, sending input events back.
 
+use crate::decoder::{self, FrameDecoder};
 use crate::protocol::{ClientMessage, ServerMessage, TabInfo};
 use futures::{SinkExt, StreamExt};
 use parking_lot::Mutex;
@@ -13,7 +14,7 @@ use tracing::{debug, error, info, warn};
 
 /// Shared state updated by the WebSocket receive loop, read by the GUI.
 pub struct ViewerState {
-    /// Latest decoded JPEG frame as RGBA pixels.
+    /// Latest decoded frame as RGBA pixels.
     pub frame_rgba: Mutex<Option<FrameData>>,
     /// Current tab list from the server.
     pub tabs: Mutex<Vec<TabInfo>>,
@@ -84,6 +85,9 @@ async fn run_connection(
     let recv_state = state.clone();
     let recv_ctx = ctx.clone();
     let recv_task = tokio::spawn(async move {
+        let mut jpeg_dec = decoder::JpegDecoder;
+        let mut h264_dec: Option<Box<dyn FrameDecoder>> = None;
+
         while let Some(msg_result) = ws_receiver.next().await {
             match msg_result {
                 Ok(Message::Binary(data)) => {
@@ -91,34 +95,44 @@ async fn run_connection(
                         continue;
                     }
                     match data[0] {
-                        // Prefixed JPEG frame (new protocol).
+                        // Prefixed JPEG frame.
                         0x00 => {
-                            match decode_jpeg(&data[1..]) {
-                                Some(frame) => {
-                                    *recv_state.frame_rgba.lock() = Some(frame);
-                                    recv_ctx.request_repaint();
-                                }
-                                None => warn!("Failed to decode JPEG frame"),
+                            if let Some(frame) = jpeg_dec.decode(&data[1..]) {
+                                *recv_state.frame_rgba.lock() = Some(FrameData {
+                                    rgba: frame.rgba,
+                                    width: frame.width,
+                                    height: frame.height,
+                                });
+                                recv_ctx.request_repaint();
                             }
                         }
-                        // H.264 codec config (SPS/PPS) — stored for future decoder init.
+                        // H.264 codec config (SPS/PPS).
                         0x01 => {
-                            debug!("Received H.264 codec config ({} bytes)", data.len() - 1);
-                            // TODO: Initialize H.264 decoder with config data.
+                            debug!("H.264 config: {} bytes", data.len() - 1);
+                            let dec = h264_dec.get_or_insert_with(decoder::create_decoder);
+                            dec.set_config(&data[1..]);
                         }
-                        // H.264 frame data (NAL units).
+                        // H.264 frame data.
                         0x02 => {
-                            debug!("Received H.264 frame ({} bytes)", data.len() - 1);
-                            // TODO: Decode H.264 frame via hardware decoder.
+                            let dec = h264_dec.get_or_insert_with(decoder::create_decoder);
+                            if let Some(frame) = dec.decode(&data[1..]) {
+                                *recv_state.frame_rgba.lock() = Some(FrameData {
+                                    rgba: frame.rgba,
+                                    width: frame.width,
+                                    height: frame.height,
+                                });
+                                recv_ctx.request_repaint();
+                            }
                         }
-                        // Legacy: no prefix byte, raw JPEG (backwards compatibility).
+                        // Legacy: no prefix, raw JPEG (0xFF = JPEG SOI marker).
                         0xFF => {
-                            match decode_jpeg(&data) {
-                                Some(frame) => {
-                                    *recv_state.frame_rgba.lock() = Some(frame);
-                                    recv_ctx.request_repaint();
-                                }
-                                None => warn!("Failed to decode legacy JPEG frame"),
+                            if let Some(frame) = jpeg_dec.decode(&data) {
+                                *recv_state.frame_rgba.lock() = Some(FrameData {
+                                    rgba: frame.rgba,
+                                    width: frame.width,
+                                    height: frame.height,
+                                });
+                                recv_ctx.request_repaint();
                             }
                         }
                         prefix => {
@@ -187,17 +201,4 @@ async fn run_connection(
     *state.connected.lock() = false;
     ctx.request_repaint();
     Ok(())
-}
-
-/// Decode JPEG bytes to RGBA pixel data.
-fn decode_jpeg(data: &[u8]) -> Option<FrameData> {
-    let img = image::load_from_memory_with_format(data, image::ImageFormat::Jpeg).ok()?;
-    let rgba = img.to_rgba8();
-    let width = rgba.width();
-    let height = rgba.height();
-    Some(FrameData {
-        rgba: rgba.into_raw(),
-        width,
-        height,
-    })
 }
