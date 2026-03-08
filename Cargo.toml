@@ -1,3 +1,6 @@
+[workspace]
+members = ["crates/ki-browser-client"]
+
 [package]
 name = "ki-browser-standalone"
 version = "0.1.0"
