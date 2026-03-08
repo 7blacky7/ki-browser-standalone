@@ -238,6 +238,11 @@ impl ApiServer {
         self.state.clone()
     }
 
+    /// Get a mutable reference to the application state
+    pub fn state_mut(&mut self) -> &mut AppState {
+        &mut self.state
+    }
+
     /// Configure CORS for localhost development
     fn configure_cors() -> CorsLayer {
         CorsLayer::new()
