@@ -18,6 +18,7 @@ pub mod routes;
 pub mod server;
 pub mod session;
 pub mod vision_routes;
+pub mod viewer_stream;
 pub mod websocket;
 
 pub use agent_registry::{AgentInfo, AgentRegistry};

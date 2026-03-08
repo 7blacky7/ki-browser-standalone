@@ -105,6 +105,10 @@ pub struct AppState {
     /// `None` when running in headless mode without GUI.
     #[cfg(feature = "gui")]
     pub gui_handle: Option<Arc<crate::gui::GuiHandle>>,
+    /// Direct reference to the CEF browser engine for frame-buffer access
+    /// and fire-and-forget input forwarding (used by /ws/viewer stream).
+    #[cfg(feature = "cef-browser")]
+    pub cef_engine: Option<Arc<crate::browser::cef_engine::CefBrowserEngine>>,
 }
 
 impl AppState {
@@ -120,6 +124,8 @@ impl AppState {
             cdp_mapping: Arc::new(CdpTabMapping::new(0)),
             #[cfg(feature = "gui")]
             gui_handle: None,
+            #[cfg(feature = "cef-browser")]
+            cef_engine: None,
         }
     }
 
@@ -136,6 +142,8 @@ impl AppState {
             cdp_mapping: Arc::new(CdpTabMapping::new(cdp_port.unwrap_or(0))),
             #[cfg(feature = "gui")]
             gui_handle: None,
+            #[cfg(feature = "cef-browser")]
+            cef_engine: None,
         }
     }
 
@@ -143,6 +151,12 @@ impl AppState {
     #[cfg(feature = "gui")]
     pub fn set_gui_handle(&mut self, handle: Arc<crate::gui::GuiHandle>) {
         self.gui_handle = Some(handle);
+    }
+
+    /// Attach the CEF browser engine for direct frame-buffer access and input forwarding.
+    #[cfg(feature = "cef-browser")]
+    pub fn set_cef_engine(&mut self, engine: Arc<crate::browser::cef_engine::CefBrowserEngine>) {
+        self.cef_engine = Some(engine);
     }
 
     /// Check if the API is currently enabled

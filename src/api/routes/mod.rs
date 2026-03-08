@@ -92,8 +92,9 @@ pub fn create_router(state: AppState) -> Router {
         // OCR endpoints
         .merge(crate::api::ocr_routes::ocr_routes())
 
-        // WebSocket endpoint
+        // WebSocket endpoints
         .route("/ws", get(websocket::ws_handler))
+        .route("/ws/viewer", get(crate::api::viewer_stream::viewer_ws_handler))
 
         .with_state(state)
 }

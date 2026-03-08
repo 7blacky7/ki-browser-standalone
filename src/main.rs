@@ -497,6 +497,8 @@ async fn main() -> Result<()> {
             let mut server = ApiServer::new_with_cdp(api_port, ipc_channel, settings.cdp_port);
             // Store GuiHandle in AppState so GUI toggle endpoints can use it.
             server.state().set_gui_handle(gui_handle.clone());
+            // Store CefEngine reference for /ws/viewer frame-buffer access.
+            server.state().set_cef_engine(engine.clone());
 
             server
                 .start()
@@ -595,6 +597,10 @@ async fn main() -> Result<()> {
         });
 
         let mut server = ApiServer::new_with_cdp(settings.api_port, ipc_channel, settings.cdp_port);
+
+        // Store CefEngine reference for /ws/viewer frame-buffer access.
+        #[cfg(feature = "cef-browser")]
+        server.state().set_cef_engine(_cef_engine.clone());
 
         server
             .start()
