@@ -7,7 +7,7 @@ use axum::{
     extract::{Query, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::{delete, get},
+    routing::{get, post},
     Json, Router,
 };
 use chrono::Utc;
@@ -160,10 +160,107 @@ pub struct ConsoleClearResponse {
 // Handlers
 // ============================================================================
 
+/// JS script that monkey-patches console methods to capture messages.
+const CONSOLE_CAPTURE_SCRIPT: &str = r#"(function(){
+  if(window.__ki_console_capturing) return 'already_active';
+  window.__ki_console_entries = [];
+  window.__ki_console_capturing = true;
+  var levels = ['log','warn','error','info','debug'];
+  levels.forEach(function(level){
+    var orig = console[level];
+    console['__ki_orig_'+level] = orig;
+    console[level] = function(){
+      var args = Array.prototype.slice.call(arguments);
+      var msg = args.map(function(a){
+        if(typeof a === 'object') try{return JSON.stringify(a)}catch(e){return String(a)}
+        return String(a);
+      }).join(' ');
+      window.__ki_console_entries.push({
+        level: level,
+        message: msg,
+        timestamp: new Date().toISOString()
+      });
+      orig.apply(console, arguments);
+    };
+  });
+  return 'started';
+})()"#;
+
+/// JS script that retrieves captured console entries.
+const CONSOLE_GET_SCRIPT: &str = r#"JSON.stringify({
+  entries: (window.__ki_console_entries || []),
+  capturing: !!window.__ki_console_capturing
+})"#;
+
+/// JS script that clears captured console entries.
+const CONSOLE_CLEAR_SCRIPT: &str =
+    r#"window.__ki_console_entries = []; JSON.stringify({cleared: true})"#;
+
+/// JS script that stops console capturing.
+const CONSOLE_STOP_SCRIPT: &str = r#"(function(){
+  if(!window.__ki_console_capturing) return JSON.stringify({stopped: false});
+  window.__ki_console_capturing = false;
+  var levels = ['log','warn','error','info','debug'];
+  levels.forEach(function(level){
+    if(console['__ki_orig_'+level]) console[level] = console['__ki_orig_'+level];
+  });
+  return JSON.stringify({stopped: true});
+})()"#;
+
+/// JS-based console log entries from the browser.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsConsoleEntry {
+    pub level: String,
+    pub message: String,
+    pub timestamp: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct JsConsoleData {
+    entries: Vec<JsConsoleEntry>,
+    capturing: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct JsConsoleResponse {
+    pub entries: Vec<JsConsoleEntry>,
+    pub count: usize,
+    pub capturing: bool,
+}
+
+// --- Buffer-based handlers (for future CEF callback integration) ---
+
 async fn get_console_logs(
     State(state): State<AppState>,
     Query(query): Query<ConsoleQuery>,
 ) -> impl IntoResponse {
+    // First try JS-based capture (works immediately)
+    let tab_id = super::types::resolve_tab_id(&state, query.tab_id.clone()).await;
+
+    if let Some(tid) = tab_id {
+        if let Ok(raw) = super::types::evaluate_in_tab(&state, &tid, CONSOLE_GET_SCRIPT).await {
+            if let Ok(data) = serde_json::from_str::<JsConsoleData>(&raw) {
+                let mut entries = data.entries;
+                // Apply level filter
+                if let Some(ref level) = query.level {
+                    entries.retain(|e| e.level == *level);
+                }
+                // Apply limit (take last N)
+                let total = entries.len();
+                if entries.len() > query.limit {
+                    entries = entries.split_off(entries.len() - query.limit);
+                }
+                return Json(ApiResponse::success(JsConsoleResponse {
+                    count: entries.len(),
+                    entries,
+                    capturing: data.capturing,
+                }))
+                .into_response();
+            }
+        }
+    }
+
+    // Fallback to ring-buffer
     let buffer = state.console_log_buffer.read().await;
     let entries = buffer.get_entries(
         query.tab_id.as_deref(),
@@ -171,19 +268,67 @@ async fn get_console_logs(
         query.limit,
     );
     let total = buffer.len();
-    let capacity = buffer.capacity();
 
     Json(ApiResponse::success(ConsoleLogsResponse {
         entries,
         total,
-        buffer_capacity: capacity,
+        buffer_capacity: buffer.capacity(),
     }))
+    .into_response()
+}
+
+async fn start_console_capture(
+    State(state): State<AppState>,
+    Json(request): Json<super::types::TabQuery>,
+) -> impl IntoResponse {
+    let tab_id = match super::types::resolve_tab_id(&state, request.tab_id).await {
+        Some(id) => id,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::<()>::error("No active tab")),
+            )
+                .into_response()
+        }
+    };
+
+    match super::types::evaluate_in_tab(&state, &tab_id, CONSOLE_CAPTURE_SCRIPT).await {
+        Ok(_) => Json(ApiResponse::success(serde_json::json!({"started": true}))).into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
+async fn stop_console_capture(
+    State(state): State<AppState>,
+    Json(request): Json<super::types::TabQuery>,
+) -> impl IntoResponse {
+    let tab_id = match super::types::resolve_tab_id(&state, request.tab_id).await {
+        Some(id) => id,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::<()>::error("No active tab")),
+            )
+                .into_response()
+        }
+    };
+
+    match super::types::evaluate_in_tab(&state, &tab_id, CONSOLE_STOP_SCRIPT).await {
+        Ok(_) => Json(ApiResponse::success(serde_json::json!({"stopped": true}))).into_response(),
+        Err(err) => err.into_response(),
+    }
 }
 
 async fn clear_console_logs(
     State(state): State<AppState>,
     Query(query): Query<super::types::TabQuery>,
 ) -> impl IntoResponse {
+    // Clear JS-side entries if tab available
+    if let Some(tid) = super::types::resolve_tab_id(&state, query.tab_id.clone()).await {
+        let _ = super::types::evaluate_in_tab(&state, &tid, CONSOLE_CLEAR_SCRIPT).await;
+    }
+
+    // Also clear ring-buffer
     let mut buffer = state.console_log_buffer.write().await;
     buffer.clear(query.tab_id.as_deref());
 
@@ -196,7 +341,12 @@ async fn clear_console_logs(
 
 pub fn console_routes() -> Router<AppState> {
     Router::new()
-        .route("/debug/console", get(get_console_logs).delete(clear_console_logs))
+        .route(
+            "/debug/console",
+            get(get_console_logs).delete(clear_console_logs),
+        )
+        .route("/debug/console/start", post(start_console_capture))
+        .route("/debug/console/stop", post(stop_console_capture))
 }
 
 // ============================================================================

@@ -69,7 +69,7 @@ pub fn create_router(state: AppState) -> Router {
 
         // CDP tab mapping
         .route("/cdp/targets", get(cdp_targets))
-        .route("/cdp/target/{tab_id}", get(cdp_target_by_tab))
+        .route("/cdp/target/:tab_id", get(cdp_target_by_tab))
 
         // API management
         .route("/api/toggle", post(toggle_api))

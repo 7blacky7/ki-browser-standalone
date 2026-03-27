@@ -270,8 +270,8 @@ pub fn agent_routes() -> Router<AppState> {
         .route("/session/register", post(register_agent))
         .route("/session/unregister", post(unregister_agent))
         .route("/session/agents", get(list_agents))
-        .route("/tabs/{tab_id}/claim", post(claim_tab))
-        .route("/tabs/{tab_id}/release", post(release_tab))
+        .route("/tabs/:tab_id/claim", post(claim_tab))
+        .route("/tabs/:tab_id/release", post(release_tab))
 }
 
 // ============================================================================

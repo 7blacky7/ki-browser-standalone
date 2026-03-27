@@ -333,12 +333,12 @@ fn js_encode_uri_component(s: &str) -> String {
 pub fn cookie_routes() -> Router<AppState> {
     Router::new()
         .route(
-            "/debug/cookies/{tab_id}",
+            "/debug/cookies/:tab_id",
             get(list_cookies).delete(clear_cookies),
         )
-        .route("/debug/cookies/{tab_id}/set", post(set_cookie))
+        .route("/debug/cookies/:tab_id/set", post(set_cookie))
         .route(
-            "/debug/cookies/{tab_id}/{name}",
+            "/debug/cookies/:tab_id/:name",
             get(get_cookie).delete(delete_cookie),
         )
 }

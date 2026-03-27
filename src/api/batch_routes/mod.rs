@@ -44,19 +44,19 @@ pub fn batch_session_routes() -> Router<AppState> {
         // Session lifecycle
         .route("/session/start", post(session_handlers::create_session))
         .route("/session/list", get(session_handlers::list_sessions))
-        .route("/session/{id}", get(session_handlers::get_session))
-        .route("/session/{id}", delete(session_handlers::delete_session))
+        .route("/session/:id", get(session_handlers::get_session))
+        .route("/session/:id", delete(session_handlers::delete_session))
         // Session key-value storage
-        .route("/session/{id}/storage", post(session_handlers::set_storage))
-        .route("/session/{id}/storage/{key}", get(session_handlers::get_storage))
+        .route("/session/:id/storage", post(session_handlers::set_storage))
+        .route("/session/:id/storage/:key", get(session_handlers::get_storage))
         // Cookie management via JS injection
-        .route("/tabs/{tab_id}/cookies", get(session_handlers::get_cookies))
-        .route("/tabs/{tab_id}/cookies", post(session_handlers::set_cookies))
+        .route("/tabs/:tab_id/cookies", get(session_handlers::get_cookies))
+        .route("/tabs/:tab_id/cookies", post(session_handlers::set_cookies))
         // LocalStorage via JS injection
-        .route("/tabs/{tab_id}/local-storage", get(session_handlers::get_local_storage))
+        .route("/tabs/:tab_id/local-storage", get(session_handlers::get_local_storage))
         // Session snapshots
-        .route("/session/{id}/snapshot", post(session_handlers::create_snapshot))
-        .route("/session/{id}/snapshots", get(session_handlers::list_snapshots))
+        .route("/session/:id/snapshot", post(session_handlers::create_snapshot))
+        .route("/session/:id/snapshots", get(session_handlers::list_snapshots))
 }
 
 #[cfg(test)]
