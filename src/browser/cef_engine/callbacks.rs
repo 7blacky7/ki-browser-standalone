@@ -177,12 +177,22 @@ cef::wrap_app! {
                 cmd.append_switch(Some(&CefString::from("no-default-browser-check")));
 
                 if self.headless {
-                    // Headless: disable GPU entirely (prevents GPU subprocess crash)
-                    cmd.append_switch(Some(&CefString::from("disable-gpu")));
+                    // Headless: use SwiftShader for software-based WebGL.
+                    // This matches Playwright's behavior: WebGL works via ANGLE+SwiftShader
+                    // without requiring a real GPU. Critical for bot-detection evasion
+                    // (Sannysoft checks WebGL vendor/renderer).
+                    cmd.append_switch_with_value(
+                        Some(&CefString::from("use-gl")),
+                        Some(&CefString::from("angle")),
+                    );
+                    cmd.append_switch_with_value(
+                        Some(&CefString::from("use-angle")),
+                        Some(&CefString::from("swiftshader")),
+                    );
+                    cmd.append_switch(Some(&CefString::from("enable-webgl")));
                     cmd.append_switch(Some(&CefString::from("disable-gpu-compositing")));
                     cmd.append_switch(Some(&CefString::from("in-process-gpu")));
-                    cmd.append_switch(Some(&CefString::from("disable-software-rasterizer")));
-                    debug!("CEF: GPU disabled (headless mode)");
+                    debug!("CEF: SwiftShader WebGL enabled (headless mode)");
                 } else {
                     // GUI: keep GPU enabled for hardware-accelerated rendering
                     cmd.append_switch(Some(&CefString::from("in-process-gpu")));

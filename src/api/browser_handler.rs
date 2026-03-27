@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::api::ipc::{IpcCommand, IpcProcessor, IpcResponse};
@@ -77,6 +77,8 @@ impl BrowserEngineWrapper {
 pub struct BrowserCommandHandler {
     /// The browser engine to use
     engine: Arc<RwLock<Option<BrowserEngineWrapper>>>,
+    /// CDP client for privileged operations (bypasses CSP/Trusted Types)
+    cdp_client: Option<Arc<crate::api::cdp_client::CdpClient>>,
 }
 
 impl BrowserCommandHandler {
@@ -84,7 +86,13 @@ impl BrowserCommandHandler {
     pub fn new() -> Self {
         Self {
             engine: Arc::new(RwLock::new(None)),
+            cdp_client: None,
         }
+    }
+
+    /// Set the CDP client for privileged JS evaluation.
+    pub fn set_cdp_client(&mut self, client: Arc<crate::api::cdp_client::CdpClient>) {
+        self.cdp_client = Some(client);
     }
 
     /// Create a handler with a mock browser engine
@@ -92,6 +100,7 @@ impl BrowserCommandHandler {
         let wrapper = BrowserEngineWrapper::mock().await?;
         Ok(Self {
             engine: Arc::new(RwLock::new(Some(wrapper))),
+            cdp_client: None,
         })
     }
 
@@ -101,6 +110,7 @@ impl BrowserCommandHandler {
         let wrapper = BrowserEngineWrapper::cef(engine);
         Self {
             engine: Arc::new(RwLock::new(Some(wrapper))),
+            cdp_client: None,
         }
     }
 
@@ -111,6 +121,7 @@ impl BrowserCommandHandler {
         let wrapper = BrowserEngineWrapper::cef_shared(engine);
         Self {
             engine: Arc::new(RwLock::new(Some(wrapper))),
+            cdp_client: None,
         }
     }
 
@@ -508,16 +519,54 @@ impl BrowserCommandHandler {
             Err(_) => return IpcResponse::error("Invalid tab ID"),
         };
 
+        // Strategy 1: Try CDP Runtime.evaluate (bypasses CSP/Trusted Types)
+        if frame_id.is_none() {
+            if let Some(ref cdp) = self.cdp_client {
+                // Get the tab's current URL for target discovery
+                let tab_url = match engine {
+                    #[cfg(feature = "cef-browser")]
+                    Some(BrowserEngineWrapper::Cef(e)) => {
+                        e.get_tabs_sync().into_iter()
+                            .find(|t| t.id == uuid)
+                            .map(|t| t.url.clone())
+                    }
+                    _ => None,
+                };
+
+                if let Some(url) = tab_url {
+                    match cdp.find_target_ws_url(&url).await {
+                        Ok(ws_url) => {
+                            match cdp.evaluate(&ws_url, script).await {
+                                Ok(result) => {
+                                    debug!("CDP evaluate succeeded for tab {}", tab_id);
+                                    let value: serde_json::Value = serde_json::from_str(&result)
+                                        .unwrap_or(serde_json::Value::String(result));
+                                    return IpcResponse::success_with_data(serde_json::json!({
+                                        "result": value
+                                    }));
+                                }
+                                Err(e) => {
+                                    debug!("CDP evaluate failed ({}), falling back to CEF", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            debug!("CDP target discovery failed ({}), falling back to CEF", e);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Strategy 2: Fallback to CEF execute_java_script (page context, subject to CSP)
         match engine {
             #[cfg(feature = "cef-browser")]
             Some(BrowserEngineWrapper::Cef(e)) => {
                 if frame_id.is_some() {
                     warn!("Frame-specific evaluate not implemented for CEF, using main frame");
                 }
-                // CEF JS execution with return values via console.log interception
                 match e.execute_js_with_result(uuid, script).await {
                     Ok(Some(result)) => {
-                        // Parse the JSON string back to a Value
                         let value: serde_json::Value = serde_json::from_str(&result)
                             .unwrap_or(serde_json::Value::String(result));
                         IpcResponse::success_with_data(serde_json::json!({

@@ -485,7 +485,14 @@ async fn main() -> Result<()> {
         // Start API server in background if enabled.
         let mut api_server = if settings.api_enabled {
             let ipc_channel = IpcChannel::new();
-            let handler = ki_browser_standalone::api::BrowserCommandHandler::with_cef_shared(engine.clone());
+            let mut handler = ki_browser_standalone::api::BrowserCommandHandler::with_cef_shared(engine.clone());
+
+            // Wire CDP client for privileged JS evaluation (bypasses CSP/Trusted Types)
+            if let Some(cdp_port) = settings.cdp_port {
+                let cdp_client = std::sync::Arc::new(ki_browser_standalone::api::cdp_client::CdpClient::new(cdp_port));
+                handler.set_cdp_client(cdp_client);
+                info!("CDP client enabled on port {} for CSP-bypass evaluation", cdp_port);
+            }
 
             let ipc_channel_clone = ipc_channel.clone();
             tokio::spawn(async move {
@@ -582,7 +589,14 @@ async fn main() -> Result<()> {
         #[cfg(feature = "cef-browser")]
         let handler = {
             info!("Browser handler configured with CEF engine");
-            ki_browser_standalone::api::BrowserCommandHandler::with_cef_shared(_cef_engine.clone())
+            let mut h = ki_browser_standalone::api::BrowserCommandHandler::with_cef_shared(_cef_engine.clone());
+            // Wire CDP client for privileged JS evaluation (bypasses CSP/Trusted Types)
+            if let Some(cdp_port) = settings.cdp_port {
+                let cdp_client = std::sync::Arc::new(ki_browser_standalone::api::cdp_client::CdpClient::new(cdp_port));
+                h.set_cdp_client(cdp_client);
+                info!("CDP client enabled on port {} for CSP-bypass evaluation", cdp_port);
+            }
+            h
         };
 
         #[cfg(not(feature = "cef-browser"))]

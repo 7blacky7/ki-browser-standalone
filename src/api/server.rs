@@ -111,6 +111,8 @@ pub struct AppState {
     pub cef_engine: Option<Arc<crate::browser::cef_engine::CefBrowserEngine>>,
     /// Ring-buffer for captured console log messages (debug feature).
     pub console_log_buffer: Arc<RwLock<crate::api::debug_routes::console::ConsoleLogBuffer>>,
+    /// CDP WebSocket client for privileged JS evaluation (bypasses CSP/Trusted Types).
+    pub cdp_client: Option<Arc<crate::api::cdp_client::CdpClient>>,
 }
 
 impl AppState {
@@ -129,11 +131,15 @@ impl AppState {
             #[cfg(feature = "cef-browser")]
             cef_engine: None,
             console_log_buffer: Arc::new(RwLock::new(crate::api::debug_routes::console::ConsoleLogBuffer::default())),
+            cdp_client: None,
         }
     }
 
     /// Create AppState with CDP remote debugging port for external tool connections
     pub fn new_with_cdp(ipc_channel: IpcChannel, cdp_port: Option<u16>) -> Self {
+        let cdp_client = cdp_port.map(|port| {
+            Arc::new(crate::api::cdp_client::CdpClient::new(port))
+        });
         Self {
             browser_state: Arc::new(RwLock::new(BrowserState::new())),
             ws_handler: Arc::new(WebSocketHandler::new()),
@@ -148,6 +154,7 @@ impl AppState {
             #[cfg(feature = "cef-browser")]
             cef_engine: None,
             console_log_buffer: Arc::new(RwLock::new(crate::api::debug_routes::console::ConsoleLogBuffer::default())),
+            cdp_client,
         }
     }
 
