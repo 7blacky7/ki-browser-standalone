@@ -229,6 +229,30 @@ impl BrowserCommandHandler {
                         if let Some(bid) = e.get_browser_id(&tab.id) {
                             resp.data = Some(serde_json::json!({ "browser_id": bid }));
                         }
+
+                        // Phase 3: Inject stealth scripts via CDP before any page JS runs.
+                        // This uses Page.addScriptToEvaluateOnNewDocument which persists
+                        // across navigations and bypasses CSP/Trusted Types.
+                        if let Some(ref cdp) = self.cdp_client {
+                            let tab_url = tab.url.clone();
+                            let cdp = cdp.clone();
+                            tokio::spawn(async move {
+                                // Wait for CDP target to become available
+                                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                                if let Ok(ws_url) = cdp.find_target_ws_url(&tab_url).await {
+                                    // Inject webdriver override via CDP (definitive fix)
+                                    let stealth_js = r#"
+                                        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                                        Object.defineProperty(Navigator.prototype, 'webdriver', {get: () => undefined});
+                                    "#;
+                                    match cdp.add_init_script(&ws_url, stealth_js).await {
+                                        Ok(_) => debug!("CDP stealth init-script injected for new tab"),
+                                        Err(e) => debug!("CDP stealth injection failed: {}", e),
+                                    }
+                                }
+                            });
+                        }
+
                         resp
                     }
                     Err(e) => IpcResponse::error(e.to_string()),
@@ -278,6 +302,52 @@ impl BrowserCommandHandler {
             Ok(u) => u,
             Err(_) => return IpcResponse::error("Invalid tab ID"),
         };
+
+        // Before navigating: inject stealth init-script via CDP so it runs
+        // before any page JS on the new document.
+        if let Some(ref cdp) = self.cdp_client {
+            if let Some(tab_url) = match engine {
+                #[cfg(feature = "cef-browser")]
+                Some(BrowserEngineWrapper::Cef(e)) => {
+                    e.get_tabs_sync().into_iter()
+                        .find(|t| t.id == uuid)
+                        .map(|t| t.url.clone())
+                }
+                _ => None,
+            } {
+                if let Ok(ws_url) = cdp.find_target_ws_url(&tab_url).await {
+                    // Aggressive webdriver removal: delete from prototype, then
+                    // redefine as non-enumerable with value false.
+                    // Also patch getOwnPropertyDescriptor to hide the override.
+                    let stealth_js = r#"
+                        (() => {
+                            // Delete webdriver from Navigator.prototype
+                            const proto = Navigator.prototype;
+                            if ('webdriver' in proto) {
+                                delete proto.webdriver;
+                            }
+                            // Redefine as a data property with value false (not undefined)
+                            // so 'webdriver' in navigator returns false
+                            Object.defineProperty(proto, 'webdriver', {
+                                get: () => false,
+                                configurable: true,
+                                enumerable: true
+                            });
+                            // Patch hasOwnProperty/in operator detection
+                            const origGetOPD = Object.getOwnPropertyDescriptor;
+                            Object.getOwnPropertyDescriptor = function(obj, prop) {
+                                if (prop === 'webdriver' && (obj === navigator || obj === proto)) {
+                                    return undefined;
+                                }
+                                return origGetOPD.call(this, obj, prop);
+                            };
+                        })();
+                    "#;
+                    let _ = cdp.add_init_script(&ws_url, stealth_js).await;
+                    debug!("CDP stealth init-script set before navigation to {}", url);
+                }
+            }
+        }
 
         match engine {
             #[cfg(feature = "cef-browser")]
@@ -403,7 +473,7 @@ impl BrowserCommandHandler {
         engine: &Option<BrowserEngineWrapper>,
         tab_id: &str,
         text: &str,
-        _selector: Option<&str>,
+        selector: Option<&str>,
         frame_id: Option<&str>,
     ) -> IpcResponse {
         let uuid = match Uuid::parse_str(tab_id) {
@@ -411,6 +481,50 @@ impl BrowserCommandHandler {
             Err(_) => return IpcResponse::error("Invalid tab ID"),
         };
 
+        // Strategy 1: Try CDP Input.insertText (works with contenteditable)
+        if frame_id.is_none() {
+            if let Some(ref cdp) = self.cdp_client {
+                let tab_url = match engine {
+                    #[cfg(feature = "cef-browser")]
+                    Some(BrowserEngineWrapper::Cef(e)) => {
+                        e.get_tabs_sync().into_iter()
+                            .find(|t| t.id == uuid)
+                            .map(|t| t.url.clone())
+                    }
+                    _ => None,
+                };
+
+                if let Some(url) = tab_url {
+                    if let Ok(ws_url) = cdp.find_target_ws_url(&url).await {
+                        // If selector provided, focus the element first via CDP
+                        if let Some(sel) = selector {
+                            match cdp.focus_and_type(&ws_url, sel, text).await {
+                                Ok(_) => {
+                                    debug!("CDP focus_and_type succeeded for selector '{}'", sel);
+                                    return IpcResponse::success();
+                                }
+                                Err(e) => {
+                                    debug!("CDP focus_and_type failed ({}), trying insertText", e);
+                                }
+                            }
+                        }
+
+                        // No selector or selector-focus failed: try plain insertText
+                        match cdp.insert_text(&ws_url, text).await {
+                            Ok(_) => {
+                                debug!("CDP insert_text succeeded");
+                                return IpcResponse::success();
+                            }
+                            Err(e) => {
+                                debug!("CDP insert_text failed ({}), falling back to CEF", e);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Strategy 2: Fallback to CEF key events
         match engine {
             #[cfg(feature = "cef-browser")]
             Some(BrowserEngineWrapper::Cef(e)) => {
