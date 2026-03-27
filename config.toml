@@ -1,0 +1,10 @@
+# Ki-Browser Configuration für MitMario Scraping
+
+window_width = 1920
+window_height = 1080
+headless = false
+api_enabled = true
+api_port = 3000
+max_tabs = 10
+default_timeout_ms = 60000
+stealth_mode = false

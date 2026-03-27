@@ -9,6 +9,7 @@
 
 pub mod types;
 pub mod console;
+pub mod consent;
 pub mod cookies;
 pub mod css_inspector;
 pub mod network;
@@ -23,6 +24,7 @@ pub use console::{ConsoleLogBuffer, ConsoleLogEntry, create_log_entry};
 pub fn debug_routes() -> Router<AppState> {
     Router::new()
         .merge(console::console_routes())
+        .merge(consent::consent_routes())
         .merge(cookies::cookie_routes())
         .merge(css_inspector::css_routes())
         .merge(network::network_routes())
