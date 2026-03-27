@@ -8,6 +8,7 @@
 //! - **Performance**: Navigation timing, resource timing, Web Vitals, memory
 
 pub mod types;
+pub mod captcha;
 pub mod console;
 pub mod consent;
 pub mod cookies;
@@ -23,6 +24,7 @@ pub use console::{ConsoleLogBuffer, ConsoleLogEntry, create_log_entry};
 /// Combined router for all debug endpoints under /debug/*.
 pub fn debug_routes() -> Router<AppState> {
     Router::new()
+        .merge(captcha::captcha_routes())
         .merge(console::console_routes())
         .merge(consent::consent_routes())
         .merge(cookies::cookie_routes())
