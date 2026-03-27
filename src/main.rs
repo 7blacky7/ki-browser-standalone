@@ -463,7 +463,10 @@ async fn main() -> Result<()> {
             .window_size(settings.window_width, settings.window_height)
             .cdp_port(settings.cdp_port);
 
-        if let Some(ref ua) = settings.user_agent {
+        // Set CEF HTTP User-Agent: stealth UA takes priority over CLI --user-agent.
+        if let Some(ref stealth) = _stealth_config {
+            browser_config = browser_config.user_agent(&stealth.fingerprint.user_agent);
+        } else if let Some(ref ua) = settings.user_agent {
             browser_config = browser_config.user_agent(ua);
         }
 
@@ -557,7 +560,12 @@ async fn main() -> Result<()> {
             .window_size(settings.window_width, settings.window_height)
             .cdp_port(settings.cdp_port);
 
-        if let Some(ref ua) = settings.user_agent {
+        // Set CEF HTTP User-Agent: stealth UA takes priority over CLI --user-agent.
+        // This ensures HTTP headers match the JS navigator.userAgent override.
+        if let Some(ref stealth) = _stealth_config {
+            info!("Setting CEF UA to stealth: {}", stealth.fingerprint.user_agent);
+            browser_config = browser_config.user_agent(&stealth.fingerprint.user_agent);
+        } else if let Some(ref ua) = settings.user_agent {
             browser_config = browser_config.user_agent(ua);
         }
 
