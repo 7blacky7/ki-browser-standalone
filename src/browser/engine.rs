@@ -66,6 +66,10 @@ pub struct BrowserConfig {
 
     /// CDP remote debugging port. None disables CDP.
     pub cdp_port: Option<u16>,
+
+    /// External stealth configuration. If set, the CEF engine will use this
+    /// instead of generating its own. Ensures HTTP UA and JS UA are identical.
+    pub stealth_config: Option<crate::stealth::StealthConfig>,
 }
 
 impl Default for BrowserConfig {
@@ -82,6 +86,7 @@ impl Default for BrowserConfig {
             ignore_certificate_errors: false,
             download_path: None,
             cdp_port: None,
+            stealth_config: None,
         }
     }
 }
