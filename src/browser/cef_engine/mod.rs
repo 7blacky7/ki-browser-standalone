@@ -83,6 +83,14 @@ pub type TabFrameBuffer = (Arc<RwLock<Vec<u8>>>, Arc<RwLock<(u32, u32)>>, Arc<st
 static JS_RESULT_STORE: once_cell::sync::Lazy<JsResultStore> =
     once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
 
+/// Global store for popup URLs intercepted by on_before_popup.
+/// Stores (source_tab_id, target_url, timestamp) tuples.
+/// Agents can query this via API to handle popups that were blocked.
+#[cfg(feature = "cef-browser")]
+pub static POPUP_URL_STORE: once_cell::sync::Lazy<
+    parking_lot::Mutex<std::collections::VecDeque<(Uuid, String, std::time::Instant)>>,
+> = once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(std::collections::VecDeque::with_capacity(32)));
+
 /// Global BrowserSideRouter (initialized once on first use on the CEF thread).
 #[cfg(feature = "cef-browser")]
 static BROWSER_ROUTER: once_cell::sync::Lazy<std::sync::Arc<cef::wrapper::message_router::BrowserSideRouter>> =

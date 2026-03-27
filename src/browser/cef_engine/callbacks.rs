@@ -395,11 +395,22 @@ cef::wrap_life_span_handler! {
             _extra_info: Option<&mut Option<DictionaryValue>>,
             _no_javascript_access: Option<&mut ::std::os::raw::c_int>,
         ) -> ::std::os::raw::c_int {
-            // Intercept popup: create new tab instead of new window
+            // Intercept popup: store URL for API access + create new tab
             if let Some(url) = target_url {
                 let url_str = url.to_string();
-                info!("Popup intercepted for tab {}: {} -> creating new tab", self.tab_id, url_str);
+                info!("Popup intercepted for tab {}: {} -> stored + creating new tab", self.tab_id, url_str);
 
+                // Store in global POPUP_URL_STORE so agents can query it
+                {
+                    let mut store = super::POPUP_URL_STORE.lock();
+                    store.push_back((self.tab_id, url_str.clone(), std::time::Instant::now()));
+                    // Keep max 32 entries
+                    while store.len() > 32 {
+                        store.pop_front();
+                    }
+                }
+
+                // Also create a new internal tab with this URL
                 if let Some(ref tx) = self.popup_tx {
                     let new_tab_id = Uuid::new_v4();
                     let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
@@ -408,11 +419,10 @@ cef::wrap_life_span_handler! {
                         tab_id: new_tab_id,
                         response: response_tx,
                     };
-                    // Fire and forget - don't block the CEF callback
                     let _ = tx.send(cmd);
                 }
             }
-            // Return 1 = block the popup (we handle it ourselves)
+            // Return 1 = block the native popup (we handle it ourselves)
             1
         }
 

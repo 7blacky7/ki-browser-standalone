@@ -15,6 +15,7 @@ pub mod cookies;
 pub mod css_inspector;
 pub mod network;
 pub mod performance;
+pub mod popups;
 
 use axum::Router;
 use crate::api::server::AppState;
@@ -31,4 +32,5 @@ pub fn debug_routes() -> Router<AppState> {
         .merge(css_inspector::css_routes())
         .merge(network::network_routes())
         .merge(performance::performance_routes())
+        .merge(popups::popup_routes())
 }
