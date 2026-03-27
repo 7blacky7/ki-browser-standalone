@@ -36,6 +36,7 @@ use crate::api::gui_routes::gui_routes;
 use crate::api::vision_routes::vision_routes;
 use crate::api::extraction_routes::extraction_routes;
 use crate::api::batch_routes::batch_session_routes;
+use crate::api::debug_routes::debug_routes;
 
 /// Create the API router with all routes configured
 pub fn create_router(state: AppState) -> Router {
@@ -91,6 +92,9 @@ pub fn create_router(state: AppState) -> Router {
 
         // OCR endpoints
         .merge(crate::api::ocr_routes::ocr_routes())
+
+        // Debug/DevTools endpoints (console, cookies, CSS, network, performance)
+        .merge(debug_routes())
 
         // WebSocket endpoints
         .route("/ws", get(websocket::ws_handler))

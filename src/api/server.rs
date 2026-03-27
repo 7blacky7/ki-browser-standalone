@@ -109,6 +109,8 @@ pub struct AppState {
     /// and fire-and-forget input forwarding (used by /ws/viewer stream).
     #[cfg(feature = "cef-browser")]
     pub cef_engine: Option<Arc<crate::browser::cef_engine::CefBrowserEngine>>,
+    /// Ring-buffer for captured console log messages (debug feature).
+    pub console_log_buffer: Arc<RwLock<crate::api::debug_routes::console::ConsoleLogBuffer>>,
 }
 
 impl AppState {
@@ -126,6 +128,7 @@ impl AppState {
             gui_handle: None,
             #[cfg(feature = "cef-browser")]
             cef_engine: None,
+            console_log_buffer: Arc::new(RwLock::new(crate::api::debug_routes::console::ConsoleLogBuffer::default())),
         }
     }
 
@@ -144,6 +147,7 @@ impl AppState {
             gui_handle: None,
             #[cfg(feature = "cef-browser")]
             cef_engine: None,
+            console_log_buffer: Arc::new(RwLock::new(crate::api::debug_routes::console::ConsoleLogBuffer::default())),
         }
     }
 

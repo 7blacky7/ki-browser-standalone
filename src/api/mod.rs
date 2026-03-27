@@ -20,6 +20,7 @@ pub mod session;
 pub mod vision_routes;
 pub mod viewer_stream;
 pub mod websocket;
+pub mod debug_routes;
 
 pub use agent_registry::{AgentInfo, AgentRegistry};
 pub use agent_routes::agent_routes;
@@ -41,3 +42,4 @@ pub use session::{
 pub use gui_routes::gui_routes;
 pub use vision_routes::vision_routes;
 pub use websocket::{BrowserEvent, WebSocketHandler};
+pub use debug_routes::debug_routes;
