@@ -189,8 +189,32 @@ pub struct NavigatorOverrides {
 }
 
 impl NavigatorOverrides {
-    /// Create navigator overrides from a browser fingerprint
+    /// Create navigator overrides from a browser fingerprint.
+    ///
+    /// Uses the fingerprint's profile to set profile-specific values:
+    /// - Plugins: Chrome/Edge get Chrome plugins, Firefox gets none, Safari gets WebKit PDF only
+    /// - product_sub: Chrome/Safari use "20030107", Firefox uses "20100101"
+    /// - pdf_viewer_enabled: true for Chrome/Edge/Safari, false for Firefox
     pub fn from_fingerprint(fingerprint: &BrowserFingerprint) -> Self {
+        use crate::stealth::fingerprint::FingerprintProfile;
+
+        let is_firefox = matches!(
+            fingerprint.profile,
+            FingerprintProfile::WindowsFirefox
+                | FingerprintProfile::MacFirefox
+                | FingerprintProfile::LinuxFirefox
+        );
+
+        // Convert fingerprint plugins (PluginEntry) to navigator plugins (PluginInfo)
+        let plugins: Vec<PluginInfo> = fingerprint
+            .plugins
+            .iter()
+            .map(|p| {
+                PluginInfo::new(&p.name, &p.description, &p.filename)
+                    .with_mime_type(MimeTypeInfo::pdf())
+            })
+            .collect();
+
         Self {
             webdriver: false, // CRITICAL: Always false
             languages: fingerprint.languages.clone(),
@@ -201,7 +225,11 @@ impl NavigatorOverrides {
             vendor: fingerprint.vendor.clone(),
             vendor_sub: String::new(),
             product: "Gecko".to_string(),
-            product_sub: "20030107".to_string(),
+            product_sub: if is_firefox {
+                "20100101".to_string()
+            } else {
+                "20030107".to_string()
+            },
             user_agent: fingerprint.user_agent.clone(),
             app_version: extract_app_version(&fingerprint.user_agent),
             app_name: "Netscape".to_string(),
@@ -209,8 +237,8 @@ impl NavigatorOverrides {
             cookie_enabled: fingerprint.cookie_enabled,
             on_line: true,
             do_not_track: fingerprint.do_not_track.clone(),
-            pdf_viewer_enabled: true,
-            plugins: default_chrome_plugins(),
+            pdf_viewer_enabled: !is_firefox,
+            plugins,
             spoof_permissions: true,
             remove_automation_signals: true,
         }
@@ -291,6 +319,46 @@ mod tests {
         assert!(!overrides.webdriver);
         assert_eq!(overrides.user_agent, fingerprint.user_agent);
         assert_eq!(overrides.platform, fingerprint.platform);
+    }
+
+    #[test]
+    fn test_from_fingerprint_safari_has_one_plugin() {
+        use crate::stealth::fingerprint::{FingerprintGenerator, FingerprintProfile};
+
+        let generator = FingerprintGenerator::new();
+        let fingerprint = generator.generate_from_profile(FingerprintProfile::MacSafari);
+        let overrides = NavigatorOverrides::from_fingerprint(&fingerprint);
+
+        assert_eq!(overrides.plugins.len(), 1, "Safari should have exactly 1 plugin (WebKit built-in PDF)");
+        assert_eq!(overrides.plugins[0].name, "WebKit built-in PDF");
+        assert_eq!(overrides.product_sub, "20030107");
+        assert!(overrides.pdf_viewer_enabled);
+    }
+
+    #[test]
+    fn test_from_fingerprint_firefox_has_no_plugins() {
+        use crate::stealth::fingerprint::{FingerprintGenerator, FingerprintProfile};
+
+        let generator = FingerprintGenerator::new();
+        let fingerprint = generator.generate_from_profile(FingerprintProfile::WindowsFirefox);
+        let overrides = NavigatorOverrides::from_fingerprint(&fingerprint);
+
+        assert!(overrides.plugins.is_empty(), "Firefox should have 0 plugins");
+        assert_eq!(overrides.product_sub, "20100101", "Firefox product_sub must be 20100101");
+        assert!(!overrides.pdf_viewer_enabled, "Firefox pdf_viewer_enabled must be false");
+    }
+
+    #[test]
+    fn test_from_fingerprint_chrome_has_five_plugins() {
+        use crate::stealth::fingerprint::{FingerprintGenerator, FingerprintProfile};
+
+        let generator = FingerprintGenerator::new();
+        let fingerprint = generator.generate_from_profile(FingerprintProfile::WindowsChrome);
+        let overrides = NavigatorOverrides::from_fingerprint(&fingerprint);
+
+        assert_eq!(overrides.plugins.len(), 5, "Chrome should have 5 plugins");
+        assert_eq!(overrides.product_sub, "20030107");
+        assert!(overrides.pdf_viewer_enabled);
     }
 
     #[test]
