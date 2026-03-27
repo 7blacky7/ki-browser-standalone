@@ -7,7 +7,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use ki_browser::browser::{BrowserEngine, BrowserConfig, MockBrowserEngine};
+//! use ki_browser_standalone::browser::{BrowserEngine, BrowserConfig, MockBrowserEngine};
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
@@ -22,6 +22,7 @@
 //! }
 //! ```
 
+use crate::browser::dom::FrameInfo;
 use crate::browser::tab::Tab;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -62,6 +63,9 @@ pub struct BrowserConfig {
 
     /// Custom download directory path.
     pub download_path: Option<String>,
+
+    /// CDP remote debugging port. None disables CDP.
+    pub cdp_port: Option<u16>,
 }
 
 impl Default for BrowserConfig {
@@ -77,6 +81,7 @@ impl Default for BrowserConfig {
             devtools: false,
             ignore_certificate_errors: false,
             download_path: None,
+            cdp_port: None,
         }
     }
 }
@@ -128,12 +133,27 @@ impl BrowserConfig {
         self.devtools = true;
         self
     }
+
+    /// Sets the CDP remote debugging port for Playwright/DevTools integration.
+    pub fn cdp_port(mut self, port: Option<u16>) -> Self {
+        self.cdp_port = port;
+        self
+    }
 }
 
 /// Trait defining the browser engine interface.
 ///
 /// This trait provides an abstraction layer for browser automation,
 /// allowing different browser implementations to be used interchangeably.
+///
+/// # Tab-Level Locking
+///
+/// Implementations should use [`TabLockManager`](crate::browser::tab_lock::TabLockManager)
+/// for serializing concurrent operations on the same tab. The lock manager ensures that
+/// parallel requests targeting different tabs proceed concurrently, while operations on
+/// the same tab are serialized to prevent race conditions. The API layer wraps all
+/// tab-targeted operations with `TabLockManager::with_tab_lock()` before dispatching
+/// to the engine.
 #[async_trait]
 pub trait BrowserEngine: Send + Sync {
     /// Creates a new browser engine instance with the given configuration.
@@ -200,6 +220,73 @@ pub trait BrowserEngine: Send + Sync {
 
     /// Checks if the browser engine is running.
     async fn is_running(&self) -> bool;
+
+    /// Gets the frame tree for a tab.
+    ///
+    /// Returns information about all frames (main frame and iframes) in the page.
+    /// This is useful for interacting with cross-origin iframes.
+    ///
+    /// # Arguments
+    ///
+    /// * `tab_id` - The UUID of the tab to get frames from
+    ///
+    /// # Returns
+    ///
+    /// A Result containing a vector of FrameInfo structs.
+    async fn get_frame_tree(&self, tab_id: Uuid) -> Result<Vec<FrameInfo>> {
+        // Default implementation returns empty vec for engines that don't support frames
+        let _ = tab_id;
+        Ok(Vec::new())
+    }
+
+    /// Evaluates JavaScript in a specific frame.
+    ///
+    /// This allows executing JavaScript in cross-origin iframes by targeting
+    /// a specific frame ID obtained from get_frame_tree().
+    ///
+    /// # Arguments
+    ///
+    /// * `tab_id` - The UUID of the tab
+    /// * `frame_id` - The frame ID to evaluate in (from get_frame_tree)
+    /// * `script` - JavaScript code to execute
+    ///
+    /// # Returns
+    ///
+    /// A Result containing the evaluation result as a JSON value.
+    async fn evaluate_in_frame(
+        &self,
+        tab_id: Uuid,
+        frame_id: &str,
+        script: &str,
+    ) -> Result<serde_json::Value> {
+        // Default implementation returns an error
+        let _ = (tab_id, frame_id, script);
+        Err(anyhow!("Frame evaluation not supported by this engine"))
+    }
+
+    /// Captures a DOM snapshot with bounding-box information for all visible elements.
+    ///
+    /// Executes JavaScript in the tab to traverse the DOM tree, collecting element
+    /// metadata, bounding rectangles, ARIA roles, and interactivity flags. The result
+    /// is used by the vision overlay system to map screen regions to DOM elements.
+    ///
+    /// # Arguments
+    ///
+    /// * `tab_id` - The UUID of the tab to snapshot
+    /// * `config` - Snapshot configuration (max nodes, include text)
+    ///
+    /// # Returns
+    ///
+    /// A Result containing the [`DomSnapshot`] or an error.
+    async fn dom_snapshot(
+        &self,
+        tab_id: Uuid,
+        config: &crate::browser::dom_snapshot::SnapshotConfig,
+    ) -> Result<crate::browser::dom_snapshot::DomSnapshot> {
+        // Default implementation returns an error for engines that don't support snapshots
+        let _ = (tab_id, config);
+        Err(anyhow!("DOM snapshot not supported by this engine"))
+    }
 }
 
 /// Mock browser engine implementation for testing purposes.
@@ -294,6 +381,30 @@ impl BrowserEngine for MockBrowserEngine {
 
     async fn is_running(&self) -> bool {
         *self.is_running.read().await
+    }
+
+    async fn get_frame_tree(&self, _tab_id: Uuid) -> Result<Vec<FrameInfo>> {
+        // Mock implementation returns a dummy main frame
+        Ok(vec![FrameInfo {
+            frame_id: "main-frame".to_string(),
+            parent_frame_id: None,
+            url: "about:blank".to_string(),
+            name: String::new(),
+            security_origin: "about:blank".to_string(),
+        }])
+    }
+
+    async fn evaluate_in_frame(
+        &self,
+        _tab_id: Uuid,
+        frame_id: &str,
+        _script: &str,
+    ) -> Result<serde_json::Value> {
+        // Mock implementation returns a simple result indicating frame evaluation
+        Ok(serde_json::json!({
+            "frame_id": frame_id,
+            "result": "mock frame evaluation"
+        }))
     }
 }
 

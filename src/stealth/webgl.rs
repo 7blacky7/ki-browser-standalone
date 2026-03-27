@@ -129,6 +129,63 @@ impl WebGLProfile {
         }
     }
 
+    /// Get the short vendor name for WebGPU adapter info
+    pub fn vendor_short(&self) -> &'static str {
+        match self {
+            WebGLProfile::NvidiaGtx1080
+            | WebGLProfile::NvidiaGtx1660
+            | WebGLProfile::NvidiaRtx3060
+            | WebGLProfile::NvidiaRtx3080
+            | WebGLProfile::NvidiaRtx4070
+            | WebGLProfile::NvidiaRtx4090 => "nvidia",
+
+            WebGLProfile::AmdRx580 | WebGLProfile::AmdRx6700Xt | WebGLProfile::AmdRx7900Xt => {
+                "amd"
+            }
+
+            WebGLProfile::IntelUhd620
+            | WebGLProfile::IntelUhd630
+            | WebGLProfile::IntelUhd770
+            | WebGLProfile::IntelIrisXe
+            | WebGLProfile::IntelArcA770 => "intel",
+
+            WebGLProfile::AppleM1 | WebGLProfile::AppleM2 | WebGLProfile::AppleM3 => "apple",
+
+            WebGLProfile::SwiftShader => "google",
+            WebGLProfile::AngleDirect3D11 => "nvidia",
+        }
+    }
+
+    /// Get the GPU architecture string for WebGPU adapter info
+    pub fn architecture(&self) -> &'static str {
+        match self {
+            // NVIDIA architectures
+            WebGLProfile::NvidiaGtx1080 | WebGLProfile::NvidiaGtx1660 => "turing",
+            WebGLProfile::NvidiaRtx3060 | WebGLProfile::NvidiaRtx3080 => "ampere",
+            WebGLProfile::NvidiaRtx4070 | WebGLProfile::NvidiaRtx4090 => "ada-lovelace",
+
+            // AMD architectures
+            WebGLProfile::AmdRx580 => "polaris",
+            WebGLProfile::AmdRx6700Xt => "rdna-2",
+            WebGLProfile::AmdRx7900Xt => "rdna-3",
+
+            // Intel architectures
+            WebGLProfile::IntelUhd620 | WebGLProfile::IntelUhd630 => "gen-9.5",
+            WebGLProfile::IntelUhd770 => "gen-12",
+            WebGLProfile::IntelIrisXe => "gen-12",
+            WebGLProfile::IntelArcA770 => "alchemist",
+
+            // Apple architectures
+            WebGLProfile::AppleM1 => "apple-7",
+            WebGLProfile::AppleM2 => "apple-8",
+            WebGLProfile::AppleM3 => "apple-9",
+
+            // Software/Generic
+            WebGLProfile::SwiftShader => "swiftshader",
+            WebGLProfile::AngleDirect3D11 => "turing",
+        }
+    }
+
     /// Get the renderer string for this profile
     pub fn renderer(&self) -> &'static str {
         match self {
@@ -198,6 +255,10 @@ pub struct WebGLConfig {
     pub vendor: String,
     /// WebGL renderer string (WEBGL_debug_renderer_info extension)
     pub renderer: String,
+    /// Short vendor name for WebGPU adapter info (e.g. "nvidia", "amd", "intel")
+    pub vendor_short: String,
+    /// GPU architecture for WebGPU adapter info (e.g. "ampere", "rdna-3", "gen-12")
+    pub architecture: String,
     /// WebGL version string
     pub version: String,
     /// Shading language version
@@ -256,6 +317,8 @@ impl WebGLConfig {
         Self {
             vendor: profile.vendor().to_string(),
             renderer: profile.renderer().to_string(),
+            vendor_short: profile.vendor_short().to_string(),
+            architecture: profile.architecture().to_string(),
             version: "WebGL 1.0 (OpenGL ES 2.0 Chromium)".to_string(),
             shading_language_version: "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)"
                 .to_string(),
@@ -380,6 +443,8 @@ impl WebGLConfig {
     /// Generate JavaScript code to override WebGL properties
     ///
     /// This script must be injected before any page scripts run.
+    /// Covers: WebGLRenderingContext, WebGL2RenderingContext, OffscreenCanvas WebGL,
+    /// WEBGL_debug_renderer_info extension, and WebGPU adapter info.
     pub fn get_js_override_script(&self) -> String {
         let canvas_noise_script = if self.enable_canvas_noise {
             generate_canvas_noise_script(self.canvas_noise_intensity)
@@ -389,12 +454,14 @@ impl WebGLConfig {
 
         format!(
             r#"
-// WebGL Fingerprint Spoofing
+// WebGL Fingerprint Spoofing (comprehensive)
 (function() {{
     'use strict';
 
     const VENDOR = "{vendor}";
     const RENDERER = "{renderer}";
+    const VENDOR_SHORT = "{vendor_short}";
+    const ARCHITECTURE = "{architecture}";
     const VERSION = "{version}";
     const SHADING_LANG_VERSION = "{shading_lang_version}";
     const MAX_TEXTURE_SIZE = {max_texture_size};
@@ -404,75 +471,59 @@ impl WebGLConfig {
     const MAX_VERTEX_UNIFORM_VECTORS = {max_vertex_uniform_vectors};
     const MAX_FRAGMENT_UNIFORM_VECTORS = {max_fragment_uniform_vectors};
 
-    // Override getParameter for WebGL contexts
+    // === WebGL parameter constants (hex for clarity) ===
+    const GL_VENDOR = 0x1F00;
+    const GL_RENDERER = 0x1F01;
+    const GL_VERSION = 0x1F02;
+    const UNMASKED_VENDOR_WEBGL = 0x9245;
+    const UNMASKED_RENDERER_WEBGL = 0x9246;
+    const GL_SHADING_LANGUAGE_VERSION = 0x8B8C;
+    const GL_MAX_TEXTURE_SIZE = 0x0D33;
+    const GL_MAX_VIEWPORT_DIMS = 0x0D3A;
+    const GL_MAX_VERTEX_ATTRIBS = 0x8869;
+    const GL_MAX_VARYING_VECTORS = 0x8DFC;
+    const GL_MAX_VERTEX_UNIFORM_VECTORS = 0x8DFB;
+    const GL_MAX_FRAGMENT_UNIFORM_VECTORS = 0x8DFD;
+
+    // === Helper: Patch getParameter on a WebGL context prototype ===
     const overrideGetParameter = function(target) {{
         const originalGetParameter = target.prototype.getParameter;
         target.prototype.getParameter = function(parameter) {{
-            // UNMASKED_VENDOR_WEBGL
-            if (parameter === 37445) {{
-                return VENDOR;
-            }}
-            // UNMASKED_RENDERER_WEBGL
-            if (parameter === 37446) {{
-                return RENDERER;
-            }}
-            // VERSION
-            if (parameter === 7938) {{
-                return VERSION;
-            }}
-            // SHADING_LANGUAGE_VERSION
-            if (parameter === 35724) {{
-                return SHADING_LANG_VERSION;
-            }}
-            // MAX_TEXTURE_SIZE
-            if (parameter === 3379) {{
-                return MAX_TEXTURE_SIZE;
-            }}
-            // MAX_VIEWPORT_DIMS
-            if (parameter === 3386) {{
-                return new Int32Array(MAX_VIEWPORT_DIMS);
-            }}
-            // MAX_VERTEX_ATTRIBS
-            if (parameter === 34921) {{
-                return MAX_VERTEX_ATTRIBS;
-            }}
-            // MAX_VARYING_VECTORS
-            if (parameter === 36348) {{
-                return MAX_VARYING_VECTORS;
-            }}
-            // MAX_VERTEX_UNIFORM_VECTORS
-            if (parameter === 36347) {{
-                return MAX_VERTEX_UNIFORM_VECTORS;
-            }}
-            // MAX_FRAGMENT_UNIFORM_VECTORS
-            if (parameter === 36349) {{
-                return MAX_FRAGMENT_UNIFORM_VECTORS;
-            }}
+            if (parameter === UNMASKED_VENDOR_WEBGL) return VENDOR;
+            if (parameter === UNMASKED_RENDERER_WEBGL) return RENDERER;
+            if (parameter === GL_VENDOR) return 'WebKit';
+            if (parameter === GL_RENDERER) return 'WebKit WebGL';
+            if (parameter === GL_VERSION) return VERSION;
+            if (parameter === GL_SHADING_LANGUAGE_VERSION) return SHADING_LANG_VERSION;
+            if (parameter === GL_MAX_TEXTURE_SIZE) return MAX_TEXTURE_SIZE;
+            if (parameter === GL_MAX_VIEWPORT_DIMS) return new Int32Array(MAX_VIEWPORT_DIMS);
+            if (parameter === GL_MAX_VERTEX_ATTRIBS) return MAX_VERTEX_ATTRIBS;
+            if (parameter === GL_MAX_VARYING_VECTORS) return MAX_VARYING_VECTORS;
+            if (parameter === GL_MAX_VERTEX_UNIFORM_VECTORS) return MAX_VERTEX_UNIFORM_VECTORS;
+            if (parameter === GL_MAX_FRAGMENT_UNIFORM_VECTORS) return MAX_FRAGMENT_UNIFORM_VECTORS;
             return originalGetParameter.call(this, parameter);
         }};
     }};
 
-    // Override getExtension to control WEBGL_debug_renderer_info
+    // === Helper: Patch getExtension for WEBGL_debug_renderer_info ===
     const overrideGetExtension = function(target) {{
         const originalGetExtension = target.prototype.getExtension;
         target.prototype.getExtension = function(name) {{
             if (name === 'WEBGL_debug_renderer_info') {{
-                // Return a fake extension object
                 return {{
-                    UNMASKED_VENDOR_WEBGL: 37445,
-                    UNMASKED_RENDERER_WEBGL: 37446
+                    UNMASKED_VENDOR_WEBGL: 0x9245,
+                    UNMASKED_RENDERER_WEBGL: 0x9246
                 }};
             }}
             return originalGetExtension.call(this, name);
         }};
     }};
 
-    // Override getSupportedExtensions
+    // === Helper: Patch getSupportedExtensions ===
     const overrideGetSupportedExtensions = function(target) {{
         const originalGetSupportedExtensions = target.prototype.getSupportedExtensions;
         target.prototype.getSupportedExtensions = function() {{
             const extensions = originalGetSupportedExtensions.call(this) || [];
-            // Ensure WEBGL_debug_renderer_info is in the list
             if (!extensions.includes('WEBGL_debug_renderer_info')) {{
                 extensions.push('WEBGL_debug_renderer_info');
             }}
@@ -480,34 +531,144 @@ impl WebGLConfig {
         }};
     }};
 
-    // Apply overrides to WebGLRenderingContext
+    // === 1. Apply overrides to WebGLRenderingContext ===
     if (typeof WebGLRenderingContext !== 'undefined') {{
         overrideGetParameter(WebGLRenderingContext);
         overrideGetExtension(WebGLRenderingContext);
         overrideGetSupportedExtensions(WebGLRenderingContext);
     }}
 
-    // Apply overrides to WebGL2RenderingContext
+    // === 2. Apply overrides to WebGL2RenderingContext ===
     if (typeof WebGL2RenderingContext !== 'undefined') {{
         overrideGetParameter(WebGL2RenderingContext);
         overrideGetExtension(WebGL2RenderingContext);
         overrideGetSupportedExtensions(WebGL2RenderingContext);
     }}
 
-    // Override getContext to intercept context creation
-    const originalGetContext = HTMLCanvasElement.prototype.getContext;
-    HTMLCanvasElement.prototype.getContext = function(type, attributes) {{
-        const context = originalGetContext.call(this, type, attributes);
-        // Context is already patched via prototype
-        return context;
-    }};
-
-    // Also override OffscreenCanvas if available
-    if (typeof OffscreenCanvas !== 'undefined') {{
-        const originalOffscreenGetContext = OffscreenCanvas.prototype.getContext;
-        OffscreenCanvas.prototype.getContext = function(type, attributes) {{
-            const context = originalOffscreenGetContext.call(this, type, attributes);
+    // === 3. Override HTMLCanvasElement.getContext ===
+    // Guard: HTMLCanvasElement may not exist at document-creation time
+    // (evaluate_on_new_document). Also patch each context INSTANCE to be
+    // resilient against Chrome re-initialising prototype methods after our
+    // script has run.
+    if (typeof HTMLCanvasElement !== 'undefined') {{
+        const originalGetContext = HTMLCanvasElement.prototype.getContext;
+        HTMLCanvasElement.prototype.getContext = function(type, attributes) {{
+            const context = originalGetContext.call(this, type, attributes);
+            if (context && (type === 'webgl' || type === 'webgl2' || type === 'experimental-webgl')) {{
+                const origParam = context.getParameter.bind(context);
+                context.getParameter = function(p) {{
+                    if (p === UNMASKED_VENDOR_WEBGL) return VENDOR;
+                    if (p === UNMASKED_RENDERER_WEBGL) return RENDERER;
+                    if (p === GL_VENDOR) return 'WebKit';
+                    if (p === GL_RENDERER) return 'WebKit WebGL';
+                    if (p === GL_VERSION) return VERSION;
+                    if (p === GL_SHADING_LANGUAGE_VERSION) return SHADING_LANG_VERSION;
+                    if (p === GL_MAX_TEXTURE_SIZE) return MAX_TEXTURE_SIZE;
+                    if (p === GL_MAX_VIEWPORT_DIMS) return new Int32Array(MAX_VIEWPORT_DIMS);
+                    if (p === GL_MAX_VERTEX_ATTRIBS) return MAX_VERTEX_ATTRIBS;
+                    if (p === GL_MAX_VARYING_VECTORS) return MAX_VARYING_VECTORS;
+                    if (p === GL_MAX_VERTEX_UNIFORM_VECTORS) return MAX_VERTEX_UNIFORM_VECTORS;
+                    if (p === GL_MAX_FRAGMENT_UNIFORM_VECTORS) return MAX_FRAGMENT_UNIFORM_VECTORS;
+                    return origParam(p);
+                }};
+                const origExt = context.getExtension.bind(context);
+                context.getExtension = function(name) {{
+                    if (name === 'WEBGL_debug_renderer_info') {{
+                        return {{
+                            UNMASKED_VENDOR_WEBGL: 0x9245,
+                            UNMASKED_RENDERER_WEBGL: 0x9246
+                        }};
+                    }}
+                    return origExt(name);
+                }};
+            }}
             return context;
+        }};
+    }}
+
+    // === 4. OffscreenCanvas WebGL override ===
+    // OffscreenCanvas creates independent contexts that may bypass prototype patches,
+    // so we must patch getParameter on each returned context instance.
+    if (typeof OffscreenCanvas !== 'undefined') {{
+        const origOffscreenGetContext = OffscreenCanvas.prototype.getContext;
+        OffscreenCanvas.prototype.getContext = function(type, attrs) {{
+            const ctx = origOffscreenGetContext.call(this, type, attrs);
+            if (ctx && (type === 'webgl' || type === 'webgl2' || type === 'experimental-webgl')) {{
+                const origParam = ctx.getParameter.bind(ctx);
+                ctx.getParameter = function(p) {{
+                    if (p === UNMASKED_VENDOR_WEBGL) return VENDOR;
+                    if (p === UNMASKED_RENDERER_WEBGL) return RENDERER;
+                    if (p === GL_VENDOR) return 'WebKit';
+                    if (p === GL_RENDERER) return 'WebKit WebGL';
+                    if (p === GL_VERSION) return VERSION;
+                    if (p === GL_SHADING_LANGUAGE_VERSION) return SHADING_LANG_VERSION;
+                    if (p === GL_MAX_TEXTURE_SIZE) return MAX_TEXTURE_SIZE;
+                    if (p === GL_MAX_VIEWPORT_DIMS) return new Int32Array(MAX_VIEWPORT_DIMS);
+                    if (p === GL_MAX_VERTEX_ATTRIBS) return MAX_VERTEX_ATTRIBS;
+                    if (p === GL_MAX_VARYING_VECTORS) return MAX_VARYING_VECTORS;
+                    if (p === GL_MAX_VERTEX_UNIFORM_VECTORS) return MAX_VERTEX_UNIFORM_VECTORS;
+                    if (p === GL_MAX_FRAGMENT_UNIFORM_VECTORS) return MAX_FRAGMENT_UNIFORM_VECTORS;
+                    return origParam(p);
+                }};
+                // Also patch getExtension on the instance
+                const origExt = ctx.getExtension.bind(ctx);
+                ctx.getExtension = function(name) {{
+                    if (name === 'WEBGL_debug_renderer_info') {{
+                        return {{
+                            UNMASKED_VENDOR_WEBGL: 0x9245,
+                            UNMASKED_RENDERER_WEBGL: 0x9246
+                        }};
+                    }}
+                    return origExt(name);
+                }};
+                // Patch getSupportedExtensions on the instance
+                const origSupported = ctx.getSupportedExtensions.bind(ctx);
+                ctx.getSupportedExtensions = function() {{
+                    const extensions = origSupported() || [];
+                    if (!extensions.includes('WEBGL_debug_renderer_info')) {{
+                        extensions.push('WEBGL_debug_renderer_info');
+                    }}
+                    return extensions;
+                }};
+            }}
+            return ctx;
+        }};
+    }}
+
+    // === 5. WebGPU adapter info spoofing ===
+    if (typeof navigator !== 'undefined' && navigator.gpu) {{
+        const origRequestAdapter = navigator.gpu.requestAdapter.bind(navigator.gpu);
+        navigator.gpu.requestAdapter = async function(options) {{
+            const adapter = await origRequestAdapter(options);
+            if (adapter) {{
+                // Override requestAdapterInfo if available
+                const origRequestAdapterInfo = adapter.requestAdapterInfo?.bind(adapter);
+                if (origRequestAdapterInfo) {{
+                    adapter.requestAdapterInfo = async function() {{
+                        return {{
+                            vendor: VENDOR_SHORT,
+                            architecture: ARCHITECTURE,
+                            device: '',
+                            description: RENDERER
+                        }};
+                    }};
+                }}
+                // Override adapterInfo property (direct access without method call)
+                try {{
+                    Object.defineProperty(adapter, 'info', {{
+                        get: function() {{
+                            return {{
+                                vendor: VENDOR_SHORT,
+                                architecture: ARCHITECTURE,
+                                device: '',
+                                description: RENDERER
+                            }};
+                        }},
+                        configurable: true
+                    }});
+                }} catch(e) {{}}
+            }}
+            return adapter;
         }};
     }}
 
@@ -517,6 +678,8 @@ impl WebGLConfig {
 "#,
             vendor = escape_js_string(&self.vendor),
             renderer = escape_js_string(&self.renderer),
+            vendor_short = escape_js_string(&self.vendor_short),
+            architecture = escape_js_string(&self.architecture),
             version = escape_js_string(&self.version),
             shading_lang_version = escape_js_string(&self.shading_language_version),
             max_texture_size = self.max_texture_size,
@@ -698,6 +861,18 @@ impl WebGLConfigBuilder {
         self
     }
 
+    /// Set short vendor name for WebGPU adapter info
+    pub fn vendor_short(mut self, vendor_short: impl Into<String>) -> Self {
+        self.config.vendor_short = vendor_short.into();
+        self
+    }
+
+    /// Set GPU architecture for WebGPU adapter info
+    pub fn architecture(mut self, architecture: impl Into<String>) -> Self {
+        self.config.architecture = architecture.into();
+        self
+    }
+
     /// Set WebGL version string
     pub fn version(mut self, version: impl Into<String>) -> Self {
         self.config.version = version.into();
@@ -748,11 +923,31 @@ mod tests {
     #[test]
     fn test_webgl_profiles() {
         for profile in WebGLProfile::all() {
-            let config = WebGLConfig::from_profile(profile);
-            assert!(!config.vendor.is_empty());
-            assert!(!config.renderer.is_empty());
+            let config = WebGLConfig::from_profile(profile.clone());
+            assert!(!config.vendor.is_empty(), "vendor empty for {:?}", profile);
+            assert!(!config.renderer.is_empty(), "renderer empty for {:?}", profile);
+            assert!(!config.vendor_short.is_empty(), "vendor_short empty for {:?}", profile);
+            assert!(!config.architecture.is_empty(), "architecture empty for {:?}", profile);
             assert!(config.max_texture_size >= 4096);
         }
+    }
+
+    #[test]
+    fn test_webgl_profile_vendor_short() {
+        assert_eq!(WebGLProfile::NvidiaRtx3060.vendor_short(), "nvidia");
+        assert_eq!(WebGLProfile::AmdRx6700Xt.vendor_short(), "amd");
+        assert_eq!(WebGLProfile::IntelIrisXe.vendor_short(), "intel");
+        assert_eq!(WebGLProfile::AppleM1.vendor_short(), "apple");
+        assert_eq!(WebGLProfile::SwiftShader.vendor_short(), "google");
+    }
+
+    #[test]
+    fn test_webgl_profile_architecture() {
+        assert_eq!(WebGLProfile::NvidiaRtx3060.architecture(), "ampere");
+        assert_eq!(WebGLProfile::NvidiaRtx4070.architecture(), "ada-lovelace");
+        assert_eq!(WebGLProfile::AmdRx7900Xt.architecture(), "rdna-3");
+        assert_eq!(WebGLProfile::IntelIrisXe.architecture(), "gen-12");
+        assert_eq!(WebGLProfile::AppleM2.architecture(), "apple-8");
     }
 
     #[test]
@@ -763,6 +958,8 @@ mod tests {
         // Both should be valid
         assert!(!config1.vendor.is_empty());
         assert!(!config2.vendor.is_empty());
+        assert!(!config1.vendor_short.is_empty());
+        assert!(!config2.architecture.is_empty());
     }
 
     #[test]
@@ -773,6 +970,8 @@ mod tests {
 
         assert_eq!(config1.vendor, config2.vendor);
         assert_eq!(config1.renderer, config2.renderer);
+        assert_eq!(config1.vendor_short, config2.vendor_short);
+        assert_eq!(config1.architecture, config2.architecture);
     }
 
     #[test]
@@ -784,6 +983,61 @@ mod tests {
         assert!(js.contains("RTX 3060"));
         assert!(js.contains("getParameter"));
         assert!(js.contains("WEBGL_debug_renderer_info"));
+    }
+
+    #[test]
+    fn test_js_override_has_hex_constants() {
+        let config = WebGLConfig::nvidia_rtx_3060();
+        let js = config.get_js_override_script();
+
+        // Verify hex constants are used
+        assert!(js.contains("0x9245"), "Missing UNMASKED_VENDOR_WEBGL hex constant");
+        assert!(js.contains("0x9246"), "Missing UNMASKED_RENDERER_WEBGL hex constant");
+        assert!(js.contains("0x1F00"), "Missing GL_VENDOR hex constant");
+        assert!(js.contains("0x1F01"), "Missing GL_RENDERER hex constant");
+    }
+
+    #[test]
+    fn test_js_override_has_gl_vendor_renderer() {
+        let config = WebGLConfig::nvidia_rtx_3060();
+        let js = config.get_js_override_script();
+
+        // GL_VENDOR and GL_RENDERER should return generic WebKit values
+        assert!(js.contains("'WebKit'"), "Missing GL_VENDOR 'WebKit' override");
+        assert!(js.contains("'WebKit WebGL'"), "Missing GL_RENDERER 'WebKit WebGL' override");
+    }
+
+    #[test]
+    fn test_js_override_has_offscreen_canvas_patching() {
+        let config = WebGLConfig::nvidia_rtx_3060();
+        let js = config.get_js_override_script();
+
+        // OffscreenCanvas must have per-instance getParameter patching
+        assert!(js.contains("OffscreenCanvas"), "Missing OffscreenCanvas override");
+        assert!(js.contains("origOffscreenGetContext"), "Missing OffscreenCanvas getContext intercept");
+        assert!(js.contains("origParam"), "Missing OffscreenCanvas per-instance getParameter patch");
+    }
+
+    #[test]
+    fn test_js_override_has_webgpu_spoofing() {
+        let config = WebGLConfig::nvidia_rtx_3060();
+        let js = config.get_js_override_script();
+
+        // WebGPU adapter info must be spoofed
+        assert!(js.contains("navigator.gpu"), "Missing WebGPU check");
+        assert!(js.contains("requestAdapter"), "Missing WebGPU requestAdapter override");
+        assert!(js.contains("requestAdapterInfo"), "Missing WebGPU requestAdapterInfo override");
+        assert!(js.contains("VENDOR_SHORT"), "Missing VENDOR_SHORT constant for WebGPU");
+        assert!(js.contains("ARCHITECTURE"), "Missing ARCHITECTURE constant for WebGPU");
+    }
+
+    #[test]
+    fn test_js_override_webgpu_values() {
+        let config = WebGLConfig::nvidia_rtx_3060();
+        let js = config.get_js_override_script();
+
+        assert!(js.contains(r#"VENDOR_SHORT = "nvidia""#), "WebGPU vendor_short should be 'nvidia' for RTX 3060");
+        assert!(js.contains(r#"ARCHITECTURE = "ampere""#), "WebGPU architecture should be 'ampere' for RTX 3060");
     }
 
     #[test]
@@ -799,12 +1053,16 @@ mod tests {
         let config = WebGLConfigBuilder::new()
             .vendor("Custom Vendor")
             .renderer("Custom Renderer")
+            .vendor_short("custom")
+            .architecture("custom-arch")
             .max_texture_size(8192)
             .canvas_noise(true, 0.0005)
             .build();
 
         assert_eq!(config.vendor, "Custom Vendor");
         assert_eq!(config.renderer, "Custom Renderer");
+        assert_eq!(config.vendor_short, "custom");
+        assert_eq!(config.architecture, "custom-arch");
         assert_eq!(config.max_texture_size, 8192);
         assert!(config.enable_canvas_noise);
     }

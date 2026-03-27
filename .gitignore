@@ -17,7 +17,7 @@
 .env.local
 .env.*.local
 *.env
-
+CLAUDE.md
 # Credentials and secrets
 credentials.json
 secrets.toml

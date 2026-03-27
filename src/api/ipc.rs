@@ -13,6 +13,9 @@ use tracing::{debug, error, warn};
 /// Command ID counter for correlation
 static NEXT_COMMAND_ID: AtomicU64 = AtomicU64::new(1);
 
+/// IPC command message: (command_id, command, response_sender)
+type IpcCommandMessage = (u64, IpcCommand, oneshot::Sender<IpcResponse>);
+
 /// IPC commands for browser control
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -64,12 +67,25 @@ pub enum IpcCommand {
         modifiers: Option<Vec<String>>,
     },
 
+    /// Drag from one position to another
+    Drag {
+        tab_id: String,
+        from_x: i32,
+        from_y: i32,
+        to_x: i32,
+        to_y: i32,
+        steps: Option<u32>,
+        duration_ms: Option<u64>,
+    },
+
     /// Click on element by selector
     ClickElement {
         tab_id: String,
         selector: String,
         button: String,
         modifiers: Option<Vec<String>>,
+        #[serde(default)]
+        frame_id: Option<String>,
     },
 
     /// Type text
@@ -78,6 +94,8 @@ pub enum IpcCommand {
         text: String,
         selector: Option<String>,
         clear_first: bool,
+        #[serde(default)]
+        frame_id: Option<String>,
     },
 
     /// Press key
@@ -92,6 +110,8 @@ pub enum IpcCommand {
         tab_id: String,
         script: String,
         await_promise: bool,
+        #[serde(default)]
+        frame_id: Option<String>,
     },
 
     /// Capture screenshot
@@ -101,6 +121,11 @@ pub enum IpcCommand {
         quality: Option<u8>,
         full_page: bool,
         selector: Option<String>,
+        clip_x: Option<f64>,
+        clip_y: Option<f64>,
+        clip_width: Option<f64>,
+        clip_height: Option<f64>,
+        clip_scale: Option<f64>,
     },
 
     /// Scroll page
@@ -295,6 +320,39 @@ pub enum IpcCommand {
         enabled: bool,
     },
 
+    /// Get frame tree for a tab
+    GetFrameTree {
+        tab_id: String,
+    },
+
+    /// Evaluate JavaScript in a specific frame
+    EvaluateInFrame {
+        tab_id: String,
+        frame_id: String,
+        script: String,
+        await_promise: bool,
+    },
+
+    /// Capture DOM snapshot with bounding-box information for all visible elements
+    DomSnapshot {
+        tab_id: String,
+        #[serde(default = "default_max_nodes")]
+        max_nodes: u32,
+        #[serde(default = "default_include_text")]
+        include_text: bool,
+    },
+
+    /// Capture annotated screenshot with numbered vision labels for KI agent interaction
+    VisionAnnotated {
+        tab_id: String,
+        format: String,
+    },
+
+    /// Get vision labels (bounding boxes + metadata) without screenshot
+    VisionLabels {
+        tab_id: String,
+    },
+
     /// Annotate screenshot with element overlays and optional OCR
     AnnotateElements {
         tab_id: String,
@@ -314,6 +372,14 @@ pub enum IpcCommand {
 
 fn default_ocr_lang() -> String {
     "deu+eng".to_string()
+}
+
+fn default_max_nodes() -> u32 {
+    1000
+}
+
+fn default_include_text() -> bool {
+    true
 }
 
 /// Response to an IPC command
@@ -391,6 +457,7 @@ pub enum IpcMessage {
 }
 
 /// Pending command awaiting response
+#[allow(dead_code)]
 struct PendingCommand {
     response_tx: oneshot::Sender<IpcResponse>,
 }
@@ -398,10 +465,10 @@ struct PendingCommand {
 /// IPC channel for bidirectional communication
 pub struct IpcChannel {
     /// Channel for sending commands
-    command_tx: mpsc::Sender<(u64, IpcCommand, oneshot::Sender<IpcResponse>)>,
+    command_tx: mpsc::Sender<IpcCommandMessage>,
 
     /// Channel for receiving commands (browser side)
-    command_rx: std::sync::Arc<RwLock<Option<mpsc::Receiver<(u64, IpcCommand, oneshot::Sender<IpcResponse>)>>>>,
+    command_rx: std::sync::Arc<RwLock<Option<mpsc::Receiver<IpcCommandMessage>>>>,
 
     /// Default timeout for commands
     default_timeout: Duration,
@@ -460,7 +527,7 @@ impl IpcChannel {
             IpcMessage::Command(cmd) => cmd,
             IpcMessage::Shutdown => {
                 // Special handling for shutdown
-                let (response_tx, response_rx) = oneshot::channel();
+                let (response_tx, _response_rx) = oneshot::channel();
                 let command_id = NEXT_COMMAND_ID.fetch_add(1, Ordering::SeqCst);
 
                 self.command_tx
@@ -503,7 +570,7 @@ impl IpcChannel {
     }
 
     /// Take the command receiver (for the browser side)
-    pub async fn take_receiver(&self) -> Option<mpsc::Receiver<(u64, IpcCommand, oneshot::Sender<IpcResponse>)>> {
+    pub async fn take_receiver(&self) -> Option<mpsc::Receiver<IpcCommandMessage>> {
         self.command_rx.write().await.take()
     }
 
@@ -538,7 +605,7 @@ pub enum IpcError {
 /// Helper to process IPC commands on the browser side
 pub struct IpcProcessor {
     /// Receiver for commands
-    receiver: mpsc::Receiver<(u64, IpcCommand, oneshot::Sender<IpcResponse>)>,
+    receiver: mpsc::Receiver<IpcCommandMessage>,
 }
 
 impl IpcProcessor {
@@ -548,7 +615,7 @@ impl IpcProcessor {
     }
 
     /// Receive the next command
-    pub async fn recv(&mut self) -> Option<(u64, IpcCommand, oneshot::Sender<IpcResponse>)> {
+    pub async fn recv(&mut self) -> Option<IpcCommandMessage> {
         self.receiver.recv().await
     }
 
@@ -631,7 +698,7 @@ mod tests {
 
         // Spawn a task to handle commands
         let handler = tokio::spawn(async move {
-            if let Some((id, cmd, tx)) = receiver.recv().await {
+            if let Some((_id, cmd, tx)) = receiver.recv().await {
                 match cmd {
                     IpcCommand::GetTabs => {
                         let _ = tx.send(IpcResponse::success_with_data(

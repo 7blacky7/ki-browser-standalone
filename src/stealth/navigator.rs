@@ -28,6 +28,8 @@
 //! let js = overrides.get_override_script();
 //! ```
 
+use tracing::error;
+
 use crate::stealth::fingerprint::BrowserFingerprint;
 
 /// Information about a browser plugin
@@ -205,11 +207,27 @@ pub struct NavigatorOverrides {
 
     /// Additional properties to inject as automation signals removal
     pub remove_automation_signals: bool,
+
+    /// Chrome major version extracted from user_agent (e.g., "131")
+    pub chrome_version: String,
+
+    /// Platform name for userAgentData (e.g., "Windows", "macOS", "Linux")
+    pub platform_name: String,
+
+    /// CPU architecture for userAgentData (e.g., "x86")
+    pub architecture: String,
+
+    /// Platform version for userAgentData (e.g., "15.0.0" for Windows, "14.0.0" for macOS)
+    pub platform_version: String,
 }
 
 impl NavigatorOverrides {
     /// Create navigator overrides from a browser fingerprint
     pub fn from_fingerprint(fingerprint: &BrowserFingerprint) -> Self {
+        let chrome_version = extract_chrome_version(&fingerprint.user_agent);
+        let platform_name = map_platform_name(&fingerprint.platform);
+        let platform_version = default_platform_version(&platform_name);
+
         Self {
             webdriver: false, // CRITICAL: Always false
             languages: fingerprint.languages.clone(),
@@ -232,17 +250,32 @@ impl NavigatorOverrides {
             plugins: default_chrome_plugins(),
             spoof_permissions: true,
             remove_automation_signals: true,
+            chrome_version,
+            platform_name,
+            architecture: "x86".to_string(),
+            platform_version,
         }
     }
 
-    /// CRITICAL FUNCTION: Ensure webdriver is never true
+    /// Ensure webdriver is never true.
     ///
     /// This function MUST be called before using the configuration.
-    /// It is a safety check that will panic if webdriver is true.
-    pub fn ensure_no_webdriver(&self) {
+    /// If webdriver is somehow set to `true`, it logs a critical error and
+    /// returns `false` so callers can take corrective action.  The JavaScript
+    /// override script always forces `webdriver = false` on the browser side
+    /// regardless, so this is a defence-in-depth check rather than a reason
+    /// to crash the whole process.
+    pub fn ensure_no_webdriver(&self) -> bool {
         if self.webdriver {
-            panic!("CRITICAL SECURITY ERROR: navigator.webdriver MUST be false! Current value is true, which will expose automation detection.");
+            error!(
+                "CRITICAL SECURITY: navigator.webdriver is true! \
+                 The JS override will still force it to false on the page, \
+                 but the Rust-side config is misconfigured. \
+                 Callers should set webdriver = false explicitly."
+            );
+            return false;
         }
+        true
     }
 
     /// Generate JavaScript override script
@@ -252,8 +285,9 @@ impl NavigatorOverrides {
     ///
     /// CRITICAL: This script MUST be injected before any page scripts run.
     pub fn get_override_script(&self) -> String {
-        // Safety check
-        self.ensure_no_webdriver();
+        // Safety check -- logs an error but never crashes.  The JS output
+        // always forces `navigator.webdriver = false` regardless.
+        let _ = self.ensure_no_webdriver();
 
         let languages_json = self.languages_to_json();
         let plugins_json = self.plugins_to_json();
@@ -274,54 +308,32 @@ impl NavigatorOverrides {
 
     // ========================================================================
     // CRITICAL: WebDriver Detection Prevention
-    // This is THE MOST IMPORTANT anti-detection measure
+    // This is THE MOST IMPORTANT anti-detection measure.
+    //
+    // Chrome sets navigator.webdriver=true when controlled via CDP.
+    // We must make it look like a normal (non-automated) browser where
+    // webdriver is a getter on Navigator.prototype returning false, and
+    // there is NO own-property on the navigator instance.
+    //
+    // Detection methods we must defeat:
+    //   1. navigator.webdriver  (value check)
+    //   2. _.has(navigator, 'webdriver')  (own-property check / lodash)
+    //   3. Object.getOwnPropertyDescriptor(navigator, 'webdriver')
+    //   4. 'webdriver' in navigator  (prototype chain check - should be true)
     // ========================================================================
 
-    // Method 1: Direct property override
-    Object.defineProperty(navigator, 'webdriver', {{
+    // Step 1: Delete the own-property that Chrome/CDP sets on the instance.
+    // This is critical so that _.has(navigator, 'webdriver') returns false
+    // (matching real Chrome where webdriver lives on the prototype only).
+    try {{ delete navigator.__proto__.webdriver; }} catch(e) {{}}
+    try {{ delete navigator.webdriver; }} catch(e) {{}}
+
+    // Step 2: Define the getter ONLY on Navigator.prototype (like real Chrome).
+    Object.defineProperty(Navigator.prototype, 'webdriver', {{
         get: function() {{ return false; }},
         configurable: true,
         enumerable: true
     }});
-
-    // Method 2: Delete the property first, then redefine
-    try {{
-        delete navigator.webdriver;
-        Object.defineProperty(navigator, 'webdriver', {{
-            get: function() {{ return false; }},
-            configurable: true,
-            enumerable: true
-        }});
-    }} catch (e) {{}}
-
-    // Method 3: Override on the Navigator prototype
-    try {{
-        Object.defineProperty(Navigator.prototype, 'webdriver', {{
-            get: function() {{ return false; }},
-            configurable: true,
-            enumerable: true
-        }});
-    }} catch (e) {{}}
-
-    // Method 4: Spoof Object.getOwnPropertyDescriptor
-    const originalGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
-    Object.getOwnPropertyDescriptor = function(obj, prop) {{
-        if (prop === 'webdriver' && (obj === navigator || obj === Navigator.prototype)) {{
-            return {{
-                value: false,
-                writable: false,
-                enumerable: true,
-                configurable: true
-            }};
-        }}
-        return originalGetOwnPropertyDescriptor.call(this, obj, prop);
-    }};
-
-    // Method 5: Override toString to hide our modifications
-    const originalNavigatorToString = navigator.toString;
-    navigator.toString = function() {{
-        return '[object Navigator]';
-    }};
 
     // ========================================================================
     // User Agent and Related Properties
@@ -390,6 +402,65 @@ impl NavigatorOverrides {
         get: function() {{ return {max_touch_points}; }},
         configurable: true
     }});
+
+    // ========================================================================
+    // UserAgentData Override
+    // Prevents Chrome version mismatch between UA string and Client Hints API
+    // ========================================================================
+
+    if (navigator.userAgentData) {{
+        const CHROME_VERSION = "{chrome_version}";
+        const PLATFORM = "{platform_name}";
+        const ARCHITECTURE = "{architecture}";
+        const PLATFORM_VERSION = "{platform_version}";
+        const HW_CONCURRENCY = {hardware_concurrency};
+
+        const uaDataObj = {{
+            get brands() {{
+                return [
+                    {{brand: "Not_A Brand", version: "8"}},
+                    {{brand: "Chromium", version: CHROME_VERSION}},
+                    {{brand: "Google Chrome", version: CHROME_VERSION}}
+                ];
+            }},
+            get mobile() {{ return false; }},
+            get platform() {{ return PLATFORM; }},
+            getHighEntropyValues: function(hints) {{
+                return Promise.resolve({{
+                    brands: [
+                        {{brand: "Not_A Brand", version: "8"}},
+                        {{brand: "Chromium", version: CHROME_VERSION}},
+                        {{brand: "Google Chrome", version: CHROME_VERSION}}
+                    ],
+                    mobile: false,
+                    platform: PLATFORM,
+                    architecture: ARCHITECTURE,
+                    bitness: "64",
+                    fullVersionList: [
+                        {{brand: "Not_A Brand", version: "8.0.0.0"}},
+                        {{brand: "Chromium", version: CHROME_VERSION + ".0.0.0"}},
+                        {{brand: "Google Chrome", version: CHROME_VERSION + ".0.0.0"}}
+                    ],
+                    model: "",
+                    platformVersion: PLATFORM_VERSION,
+                    uaFullVersion: CHROME_VERSION + ".0.0.0",
+                    wow64: false
+                }});
+            }},
+            toJSON: function() {{
+                return {{
+                    brands: this.brands,
+                    mobile: false,
+                    platform: PLATFORM
+                }};
+            }}
+        }};
+
+        Object.defineProperty(navigator, 'userAgentData', {{
+            get: function() {{ return uaDataObj; }},
+            configurable: true
+        }});
+    }}
 
     // ========================================================================
     // Language Properties
@@ -552,13 +623,13 @@ impl NavigatorOverrides {
     // Final Verification
     // ========================================================================
 
-    // Double-check webdriver is false
+    // Double-check webdriver is false (prototype-only, no own-property)
     if (navigator.webdriver !== false) {{
         console.error('CRITICAL: navigator.webdriver override failed!');
-        // Force it again
-        Object.defineProperty(navigator, 'webdriver', {{
+        try {{ delete navigator.webdriver; }} catch(e) {{}}
+        Object.defineProperty(Navigator.prototype, 'webdriver', {{
             get: function() {{ return false; }},
-            configurable: false,
+            configurable: true,
             enumerable: true
         }});
     }}
@@ -577,6 +648,10 @@ impl NavigatorOverrides {
             hardware_concurrency = self.hardware_concurrency,
             device_memory = self.device_memory,
             max_touch_points = self.max_touch_points,
+            chrome_version = escape_js_string(&self.chrome_version),
+            platform_name = escape_js_string(&self.platform_name),
+            architecture = escape_js_string(&self.architecture),
+            platform_version = escape_js_string(&self.platform_version),
             languages_json = languages_json,
             on_line = self.on_line,
             cookie_enabled = self.cookie_enabled,
@@ -638,10 +713,16 @@ impl NavigatorOverrides {
 
 impl Default for NavigatorOverrides {
     fn default() -> Self {
+        let default_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+        let default_platform = "Win32";
+        let chrome_version = extract_chrome_version(default_ua);
+        let platform_name = map_platform_name(default_platform);
+        let platform_version = default_platform_version(&platform_name);
+
         Self {
             webdriver: false, // CRITICAL: Always false
             languages: vec!["en-US".to_string(), "en".to_string()],
-            platform: "Win32".to_string(),
+            platform: default_platform.to_string(),
             hardware_concurrency: 8,
             device_memory: 8,
             max_touch_points: 0,
@@ -649,7 +730,7 @@ impl Default for NavigatorOverrides {
             vendor_sub: String::new(),
             product: "Gecko".to_string(),
             product_sub: "20030107".to_string(),
-            user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".to_string(),
+            user_agent: default_ua.to_string(),
             app_version: "5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".to_string(),
             app_name: "Netscape".to_string(),
             app_code_name: "Mozilla".to_string(),
@@ -660,6 +741,10 @@ impl Default for NavigatorOverrides {
             plugins: default_chrome_plugins(),
             spoof_permissions: true,
             remove_automation_signals: true,
+            chrome_version,
+            platform_name,
+            architecture: "x86".to_string(),
+            platform_version,
         }
     }
 }
@@ -684,6 +769,50 @@ fn default_chrome_plugins() -> Vec<PluginInfo> {
         )
         .with_mime_type(MimeTypeInfo::pdf()),
     ]
+}
+
+/// Extract Chrome major version from user agent string
+///
+/// Parses strings like "Chrome/131.0.0.0" and returns "131".
+/// Falls back to "120" if no Chrome version is found.
+fn extract_chrome_version(user_agent: &str) -> String {
+    // Regex-like manual parsing for Chrome/(\d+)
+    if let Some(pos) = user_agent.find("Chrome/") {
+        let after = &user_agent[pos + 7..];
+        let version: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !version.is_empty() {
+            return version;
+        }
+    }
+    "120".to_string() // Safe default
+}
+
+/// Map navigator.platform to userAgentData platform name
+///
+/// - "Win32" -> "Windows"
+/// - "MacIntel" -> "macOS"
+/// - "Linux x86_64" or other Linux variants -> "Linux"
+fn map_platform_name(platform: &str) -> String {
+    if platform.starts_with("Win") {
+        "Windows".to_string()
+    } else if platform.starts_with("Mac") {
+        "macOS".to_string()
+    } else {
+        "Linux".to_string()
+    }
+}
+
+/// Get a plausible platform version for userAgentData.getHighEntropyValues()
+///
+/// - Windows: "15.0.0" (Windows 11) or "10.0.0" (Windows 10)
+/// - macOS: "14.0.0" (Sonoma-era)
+/// - Linux: "6.5.0" (kernel-like version)
+fn default_platform_version(platform_name: &str) -> String {
+    match platform_name {
+        "Windows" => "15.0.0".to_string(),
+        "macOS" => "14.0.0".to_string(),
+        _ => "6.5.0".to_string(),
+    }
 }
 
 /// Extract app version from user agent
@@ -837,8 +966,13 @@ impl NavigatorOverridesBuilder {
     }
 
     /// Set platform
+    ///
+    /// Also automatically derives platform_name and platform_version from the platform string.
     pub fn platform(mut self, platform: impl Into<String>) -> Self {
-        self.overrides.platform = platform.into();
+        let p: String = platform.into();
+        self.overrides.platform_name = map_platform_name(&p);
+        self.overrides.platform_version = default_platform_version(&self.overrides.platform_name);
+        self.overrides.platform = p;
         self
     }
 
@@ -867,9 +1001,12 @@ impl NavigatorOverridesBuilder {
     }
 
     /// Set user agent
+    ///
+    /// Also automatically extracts and updates the chrome_version field.
     pub fn user_agent(mut self, user_agent: impl Into<String>) -> Self {
         let ua: String = user_agent.into();
         self.overrides.app_version = extract_app_version(&ua);
+        self.overrides.chrome_version = extract_chrome_version(&ua);
         self.overrides.user_agent = ua;
         self
     }
@@ -895,6 +1032,30 @@ impl NavigatorOverridesBuilder {
     /// Enable or disable automation signal removal
     pub fn remove_automation_signals(mut self, enabled: bool) -> Self {
         self.overrides.remove_automation_signals = enabled;
+        self
+    }
+
+    /// Set the Chrome version explicitly (overrides auto-extraction from user_agent)
+    pub fn chrome_version(mut self, version: impl Into<String>) -> Self {
+        self.overrides.chrome_version = version.into();
+        self
+    }
+
+    /// Set the platform name for userAgentData (e.g., "Windows", "macOS", "Linux")
+    pub fn platform_name(mut self, name: impl Into<String>) -> Self {
+        self.overrides.platform_name = name.into();
+        self
+    }
+
+    /// Set the CPU architecture for userAgentData (e.g., "x86", "arm")
+    pub fn architecture(mut self, arch: impl Into<String>) -> Self {
+        self.overrides.architecture = arch.into();
+        self
+    }
+
+    /// Set the platform version for userAgentData (e.g., "15.0.0", "14.0.0")
+    pub fn platform_version(mut self, version: impl Into<String>) -> Self {
+        self.overrides.platform_version = version.into();
         self
     }
 
@@ -934,16 +1095,15 @@ mod tests {
     #[test]
     fn test_ensure_no_webdriver() {
         let overrides = NavigatorOverrides::default();
-        // This should not panic
-        overrides.ensure_no_webdriver();
+        assert!(overrides.ensure_no_webdriver(), "should return true when webdriver is false");
     }
 
     #[test]
-    #[should_panic(expected = "CRITICAL SECURITY ERROR")]
-    fn test_ensure_no_webdriver_panics_on_true() {
+    fn test_ensure_no_webdriver_returns_false_on_true() {
         let mut overrides = NavigatorOverrides::default();
         overrides.webdriver = true; // This should never happen in real code
-        overrides.ensure_no_webdriver(); // Should panic
+        // No longer panics -- returns false and logs an error instead
+        assert!(!overrides.ensure_no_webdriver());
     }
 
     #[test]
@@ -981,6 +1141,35 @@ mod tests {
         assert!(!overrides.webdriver);
         assert_eq!(overrides.user_agent, fingerprint.user_agent);
         assert_eq!(overrides.platform, fingerprint.platform);
+        // Verify new userAgentData fields are derived correctly
+        assert!(!overrides.chrome_version.is_empty(), "chrome_version must be extracted");
+        assert_eq!(overrides.platform_name, "Windows");
+        assert_eq!(overrides.architecture, "x86");
+        assert_eq!(overrides.platform_version, "15.0.0");
+    }
+
+    #[test]
+    fn test_from_fingerprint_mac() {
+        use crate::stealth::fingerprint::{FingerprintGenerator, FingerprintProfile};
+
+        let generator = FingerprintGenerator::new();
+        let fingerprint = generator.generate_from_profile(FingerprintProfile::MacChrome);
+        let overrides = NavigatorOverrides::from_fingerprint(&fingerprint);
+
+        assert_eq!(overrides.platform_name, "macOS");
+        assert_eq!(overrides.platform_version, "14.0.0");
+    }
+
+    #[test]
+    fn test_from_fingerprint_linux() {
+        use crate::stealth::fingerprint::{FingerprintGenerator, FingerprintProfile};
+
+        let generator = FingerprintGenerator::new();
+        let fingerprint = generator.generate_from_profile(FingerprintProfile::LinuxChrome);
+        let overrides = NavigatorOverrides::from_fingerprint(&fingerprint);
+
+        assert_eq!(overrides.platform_name, "Linux");
+        assert_eq!(overrides.platform_version, "6.5.0");
     }
 
     #[test]
@@ -1002,5 +1191,149 @@ mod tests {
             .device_memory(16) // Valid
             .build();
         assert_eq!(overrides.device_memory, 16);
+    }
+
+    // ========================================================================
+    // UserAgentData Override Tests
+    // ========================================================================
+
+    #[test]
+    fn test_extract_chrome_version_standard() {
+        assert_eq!(extract_chrome_version("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"), "131");
+    }
+
+    #[test]
+    fn test_extract_chrome_version_different_versions() {
+        assert_eq!(extract_chrome_version("Chrome/120.0.0.0"), "120");
+        assert_eq!(extract_chrome_version("Chrome/99.0.4844.51"), "99");
+        assert_eq!(extract_chrome_version("Chrome/144.0.6367.60"), "144");
+    }
+
+    #[test]
+    fn test_extract_chrome_version_no_chrome() {
+        // Firefox UA - should fall back to default
+        assert_eq!(extract_chrome_version("Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/115.0"), "120");
+    }
+
+    #[test]
+    fn test_extract_chrome_version_empty() {
+        assert_eq!(extract_chrome_version(""), "120");
+    }
+
+    #[test]
+    fn test_map_platform_name_windows() {
+        assert_eq!(map_platform_name("Win32"), "Windows");
+        assert_eq!(map_platform_name("Win64"), "Windows");
+    }
+
+    #[test]
+    fn test_map_platform_name_mac() {
+        assert_eq!(map_platform_name("MacIntel"), "macOS");
+        assert_eq!(map_platform_name("MacPPC"), "macOS");
+    }
+
+    #[test]
+    fn test_map_platform_name_linux() {
+        assert_eq!(map_platform_name("Linux x86_64"), "Linux");
+        assert_eq!(map_platform_name("Linux armv7l"), "Linux");
+    }
+
+    #[test]
+    fn test_default_platform_version() {
+        assert_eq!(default_platform_version("Windows"), "15.0.0");
+        assert_eq!(default_platform_version("macOS"), "14.0.0");
+        assert_eq!(default_platform_version("Linux"), "6.5.0");
+    }
+
+    #[test]
+    fn test_default_overrides_have_useragentdata_fields() {
+        let overrides = NavigatorOverrides::default();
+        assert_eq!(overrides.chrome_version, "120");
+        assert_eq!(overrides.platform_name, "Windows");
+        assert_eq!(overrides.architecture, "x86");
+        assert_eq!(overrides.platform_version, "15.0.0");
+    }
+
+    #[test]
+    fn test_js_override_contains_useragentdata() {
+        let overrides = NavigatorOverrides::default();
+        let js = overrides.get_override_script();
+
+        // Verify the userAgentData override section is present
+        assert!(js.contains("UserAgentData Override"), "JS must contain UserAgentData section");
+        assert!(js.contains("userAgentData"), "JS must override navigator.userAgentData");
+        assert!(js.contains("getHighEntropyValues"), "JS must override getHighEntropyValues");
+        assert!(js.contains("fullVersionList"), "JS must include fullVersionList");
+        assert!(js.contains("Not_A Brand"), "JS must include Not_A Brand");
+    }
+
+    #[test]
+    fn test_js_override_uses_correct_chrome_version() {
+        let overrides = NavigatorOverridesBuilder::new()
+            .user_agent("Mozilla/5.0 Chrome/131.0.0.0 Safari/537.36")
+            .build();
+
+        let js = overrides.get_override_script();
+        assert!(js.contains(r#"const CHROME_VERSION = "131";"#), "JS must use extracted Chrome version 131");
+    }
+
+    #[test]
+    fn test_js_override_uses_correct_platform_name() {
+        let overrides = NavigatorOverridesBuilder::new()
+            .platform("MacIntel")
+            .build();
+
+        let js = overrides.get_override_script();
+        assert!(js.contains(r#"const PLATFORM = "macOS";"#), "JS must map MacIntel to macOS");
+    }
+
+    #[test]
+    fn test_builder_user_agent_updates_chrome_version() {
+        let overrides = NavigatorOverridesBuilder::new()
+            .user_agent("Mozilla/5.0 Chrome/131.0.0.0 Safari/537.36")
+            .build();
+        assert_eq!(overrides.chrome_version, "131");
+    }
+
+    #[test]
+    fn test_builder_platform_updates_derived_fields() {
+        let overrides = NavigatorOverridesBuilder::new()
+            .platform("MacIntel")
+            .build();
+        assert_eq!(overrides.platform, "MacIntel");
+        assert_eq!(overrides.platform_name, "macOS");
+        assert_eq!(overrides.platform_version, "14.0.0");
+    }
+
+    #[test]
+    fn test_builder_explicit_overrides() {
+        let overrides = NavigatorOverridesBuilder::new()
+            .chrome_version("999")
+            .platform_name("CustomOS")
+            .architecture("arm")
+            .platform_version("1.2.3")
+            .build();
+
+        assert_eq!(overrides.chrome_version, "999");
+        assert_eq!(overrides.platform_name, "CustomOS");
+        assert_eq!(overrides.architecture, "arm");
+        assert_eq!(overrides.platform_version, "1.2.3");
+    }
+
+    #[test]
+    fn test_chrome_version_consistency_in_js() {
+        // Verify that when UA says Chrome/131, the JS script uses 131 for userAgentData
+        let overrides = NavigatorOverridesBuilder::new()
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+            .platform("Win32")
+            .build();
+
+        let js = overrides.get_override_script();
+
+        // The Chrome version in userAgentData MUST match the UA string
+        assert!(js.contains(r#"const CHROME_VERSION = "131";"#),
+            "userAgentData Chrome version must match UA string version");
+        assert!(js.contains(r#"Chrome/131.0.0.0"#),
+            "UA string must contain Chrome/131");
     }
 }

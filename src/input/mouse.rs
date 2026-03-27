@@ -6,7 +6,7 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use ki_browser::input::mouse::{MouseSimulator, MouseButton};
+//! use ki_browser_standalone::input::mouse::{MouseSimulator, MouseButton};
 //!
 //! async fn example() {
 //!     let mut mouse = MouseSimulator::new();
@@ -130,7 +130,7 @@ impl MouseSimulator {
     /// # Example
     ///
     /// ```rust
-    /// use ki_browser::input::mouse::MouseSimulator;
+    /// use ki_browser_standalone::input::mouse::MouseSimulator;
     ///
     /// let mouse = MouseSimulator::new();
     /// ```
@@ -154,8 +154,8 @@ impl MouseSimulator {
     /// # Example
     ///
     /// ```rust
-    /// use ki_browser::input::mouse::{MouseSimulator, MouseConfig};
-    /// use ki_browser::input::timing::HumanTiming;
+    /// use ki_browser_standalone::input::mouse::{MouseSimulator, MouseConfig};
+    /// use ki_browser_standalone::input::timing::HumanTiming;
     ///
     /// let config = MouseConfig {
     ///     add_jitter: false,
@@ -221,7 +221,7 @@ impl MouseSimulator {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use ki_browser::input::mouse::MouseSimulator;
+    /// use ki_browser_standalone::input::mouse::MouseSimulator;
     ///
     /// async fn example() {
     ///     let mut mouse = MouseSimulator::new();
@@ -277,7 +277,7 @@ impl MouseSimulator {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use ki_browser::input::mouse::{MouseSimulator, MouseButton};
+    /// use ki_browser_standalone::input::mouse::{MouseSimulator, MouseButton};
     ///
     /// async fn example() {
     ///     let mut mouse = MouseSimulator::new();
@@ -313,7 +313,7 @@ impl MouseSimulator {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use ki_browser::input::mouse::{MouseSimulator, MouseButton};
+    /// use ki_browser_standalone::input::mouse::{MouseSimulator, MouseButton};
     ///
     /// async fn example() {
     ///     let mut mouse = MouseSimulator::new();
@@ -378,7 +378,7 @@ impl MouseSimulator {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use ki_browser::input::mouse::MouseSimulator;
+    /// use ki_browser_standalone::input::mouse::MouseSimulator;
     ///
     /// async fn example() {
     ///     let mut mouse = MouseSimulator::new();
@@ -424,7 +424,7 @@ impl MouseSimulator {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use ki_browser::input::mouse::{MouseSimulator, MouseButton};
+    /// use ki_browser_standalone::input::mouse::{MouseSimulator, MouseButton};
     ///
     /// async fn example() {
     ///     let mut mouse = MouseSimulator::new();

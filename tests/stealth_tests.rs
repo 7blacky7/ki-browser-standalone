@@ -25,7 +25,7 @@ mod mock {
     }
 
     /// Screen resolution info
-    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[derive(Debug, Clone, PartialEq)]
     pub struct ScreenInfo {
         pub width: u32,
         pub height: u32,
@@ -1023,11 +1023,12 @@ fn test_special_characters_in_user_agent_escaped() {
 
     let js = overrides.get_override_script();
 
-    // Should not contain unescaped special characters
-    assert!(!js.contains("\n"));
-    assert!(!js.contains("\t"));
-    // The escaped versions should be present
-    assert!(js.contains("\\n") || js.contains("Test"));
+    // The user agent value should have special characters escaped
+    // (the JS template itself contains newlines, so we check the UA value)
+    assert!(js.contains("Test"));
+    assert!(!js.contains("Test \"Agent\"\nWith\tSpecial\\Chars"));
+    // The escaped versions should be present in the output
+    assert!(js.contains("\\n") || js.contains("\\t"));
 }
 
 #[test]

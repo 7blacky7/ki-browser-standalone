@@ -6,7 +6,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use ki_browser::browser::tab::{TabManager, TabStatus};
+//! use ki_browser_standalone::browser::tab::{TabManager, TabStatus};
 //!
 //! let manager = TabManager::new();
 //! let tab = manager.new_tab("https://example.com".to_string());
@@ -18,10 +18,14 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::stealth::StealthConfig;
+
 /// Represents the current status of a browser tab.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default)]
 pub enum TabStatus {
     /// Tab is currently loading content.
+    #[default]
     Loading,
     /// Tab has finished loading and is ready for interaction.
     Ready,
@@ -31,11 +35,6 @@ pub enum TabStatus {
     Closed,
 }
 
-impl Default for TabStatus {
-    fn default() -> Self {
-        Self::Loading
-    }
-}
 
 impl std::fmt::Display for TabStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -74,6 +73,14 @@ pub struct Tab {
 
     /// Optional error message if the tab encountered an error.
     pub error_message: Option<String>,
+
+    /// Agent UUID that currently owns this tab for exclusive access.
+    /// When set, only the owning agent may perform operations on the tab.
+    pub owner_agent_id: Option<Uuid>,
+
+    /// Per-tab stealth fingerprint configuration for anti-detection isolation.
+    /// Each tab can have its own fingerprint to avoid cross-tab correlation.
+    pub stealth_config: Option<StealthConfig>,
 }
 
 impl Tab {
@@ -95,6 +102,8 @@ impl Tab {
             last_updated: now,
             is_active: false,
             error_message: None,
+            owner_agent_id: None,
+            stealth_config: None,
         }
     }
 
@@ -110,6 +119,8 @@ impl Tab {
             last_updated: now,
             is_active: false,
             error_message: None,
+            owner_agent_id: None,
+            stealth_config: None,
         }
     }
 
@@ -362,6 +373,83 @@ impl TabManager {
         tabs.sort_by_key(|t| t.created_at);
         tabs
     }
+
+    /// Claim exclusive ownership of a tab for an agent.
+    ///
+    /// Fails if the tab does not exist or is already owned by a different agent.
+    /// Re-claiming a tab the agent already owns is a no-op success.
+    pub fn claim_tab(&self, tab_id: Uuid, agent_id: Uuid) -> Result<(), TabManagerError> {
+        let mut tabs = self.tabs.write();
+        let tab = tabs
+            .get_mut(&tab_id)
+            .ok_or(TabManagerError::TabNotFound(tab_id))?;
+
+        match tab.owner_agent_id {
+            Some(owner) if owner == agent_id => Ok(()),
+            Some(owner) => Err(TabManagerError::OperationFailed(format!(
+                "Tab {} is already owned by agent {}",
+                tab_id, owner
+            ))),
+            None => {
+                tab.owner_agent_id = Some(agent_id);
+                tab.last_updated = Utc::now();
+                Ok(())
+            }
+        }
+    }
+
+    /// Release ownership of a tab so other agents can claim it.
+    ///
+    /// Fails if the tab does not exist or the releasing agent is not the owner.
+    pub fn release_tab(&self, tab_id: Uuid, agent_id: Uuid) -> Result<(), TabManagerError> {
+        let mut tabs = self.tabs.write();
+        let tab = tabs
+            .get_mut(&tab_id)
+            .ok_or(TabManagerError::TabNotFound(tab_id))?;
+
+        match tab.owner_agent_id {
+            Some(owner) if owner == agent_id => {
+                tab.owner_agent_id = None;
+                tab.last_updated = Utc::now();
+                Ok(())
+            }
+            Some(owner) => Err(TabManagerError::OperationFailed(format!(
+                "Tab {} is owned by agent {}, not {}",
+                tab_id, owner, agent_id
+            ))),
+            None => Err(TabManagerError::OperationFailed(format!(
+                "Tab {} is not owned by any agent",
+                tab_id
+            ))),
+        }
+    }
+
+    /// Check whether an agent is allowed to operate on a tab.
+    ///
+    /// Returns `Ok(())` if the tab is unowned or owned by the given agent.
+    /// Returns an error if the tab is owned by a different agent.
+    pub fn check_ownership(
+        &self,
+        tab_id: Uuid,
+        agent_id: Option<Uuid>,
+    ) -> Result<(), TabManagerError> {
+        let tabs = self.tabs.read();
+        let tab = tabs
+            .get(&tab_id)
+            .ok_or(TabManagerError::TabNotFound(tab_id))?;
+
+        if let Some(owner) = tab.owner_agent_id {
+            match agent_id {
+                Some(id) if id == owner => Ok(()),
+                _ => Err(TabManagerError::OperationFailed(format!(
+                    "Tab {} is owned by agent {} — access denied",
+                    tab_id, owner
+                ))),
+            }
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// Errors that can occur during tab management operations.
@@ -491,5 +579,132 @@ mod tests {
             "Error: Test error"
         );
         assert_eq!(TabStatus::Closed.to_string(), "Closed");
+    }
+
+    #[test]
+    fn test_tab_new_has_no_owner() {
+        let tab = Tab::new("https://example.com".to_string());
+        assert!(tab.owner_agent_id.is_none());
+        assert!(tab.stealth_config.is_none());
+    }
+
+    #[test]
+    fn test_claim_tab_succeeds_on_unowned() {
+        let manager = TabManager::new();
+        let tab = manager.new_tab("https://example.com".to_string()).unwrap();
+        let agent_id = Uuid::new_v4();
+
+        manager.claim_tab(tab.id, agent_id).unwrap();
+
+        let updated = manager.get_tab(tab.id).unwrap();
+        assert_eq!(updated.owner_agent_id, Some(agent_id));
+    }
+
+    #[test]
+    fn test_claim_tab_idempotent_for_same_agent() {
+        let manager = TabManager::new();
+        let tab = manager.new_tab("https://example.com".to_string()).unwrap();
+        let agent_id = Uuid::new_v4();
+
+        manager.claim_tab(tab.id, agent_id).unwrap();
+        manager.claim_tab(tab.id, agent_id).unwrap();
+
+        let updated = manager.get_tab(tab.id).unwrap();
+        assert_eq!(updated.owner_agent_id, Some(agent_id));
+    }
+
+    #[test]
+    fn test_claim_tab_fails_if_owned_by_other() {
+        let manager = TabManager::new();
+        let tab = manager.new_tab("https://example.com".to_string()).unwrap();
+        let agent_a = Uuid::new_v4();
+        let agent_b = Uuid::new_v4();
+
+        manager.claim_tab(tab.id, agent_a).unwrap();
+        let result = manager.claim_tab(tab.id, agent_b);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_claim_tab_not_found() {
+        let manager = TabManager::new();
+        let result = manager.claim_tab(Uuid::new_v4(), Uuid::new_v4());
+        assert!(matches!(result, Err(TabManagerError::TabNotFound(_))));
+    }
+
+    #[test]
+    fn test_release_tab_succeeds() {
+        let manager = TabManager::new();
+        let tab = manager.new_tab("https://example.com".to_string()).unwrap();
+        let agent_id = Uuid::new_v4();
+
+        manager.claim_tab(tab.id, agent_id).unwrap();
+        manager.release_tab(tab.id, agent_id).unwrap();
+
+        let updated = manager.get_tab(tab.id).unwrap();
+        assert!(updated.owner_agent_id.is_none());
+    }
+
+    #[test]
+    fn test_release_tab_fails_if_not_owner() {
+        let manager = TabManager::new();
+        let tab = manager.new_tab("https://example.com".to_string()).unwrap();
+        let agent_a = Uuid::new_v4();
+        let agent_b = Uuid::new_v4();
+
+        manager.claim_tab(tab.id, agent_a).unwrap();
+        let result = manager.release_tab(tab.id, agent_b);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_release_tab_fails_if_unowned() {
+        let manager = TabManager::new();
+        let tab = manager.new_tab("https://example.com".to_string()).unwrap();
+
+        let result = manager.release_tab(tab.id, Uuid::new_v4());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_check_ownership_unowned_allows_anyone() {
+        let manager = TabManager::new();
+        let tab = manager.new_tab("https://example.com".to_string()).unwrap();
+
+        manager.check_ownership(tab.id, None).unwrap();
+        manager.check_ownership(tab.id, Some(Uuid::new_v4())).unwrap();
+    }
+
+    #[test]
+    fn test_check_ownership_owned_allows_owner() {
+        let manager = TabManager::new();
+        let tab = manager.new_tab("https://example.com".to_string()).unwrap();
+        let agent_id = Uuid::new_v4();
+
+        manager.claim_tab(tab.id, agent_id).unwrap();
+        manager.check_ownership(tab.id, Some(agent_id)).unwrap();
+    }
+
+    #[test]
+    fn test_check_ownership_owned_denies_others() {
+        let manager = TabManager::new();
+        let tab = manager.new_tab("https://example.com".to_string()).unwrap();
+        let agent_a = Uuid::new_v4();
+        let agent_b = Uuid::new_v4();
+
+        manager.claim_tab(tab.id, agent_a).unwrap();
+        let result = manager.check_ownership(tab.id, Some(agent_b));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_check_ownership_owned_denies_none() {
+        let manager = TabManager::new();
+        let tab = manager.new_tab("https://example.com".to_string()).unwrap();
+        let agent_id = Uuid::new_v4();
+
+        manager.claim_tab(tab.id, agent_id).unwrap();
+        let result = manager.check_ownership(tab.id, None);
+        assert!(result.is_err());
     }
 }

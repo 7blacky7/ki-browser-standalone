@@ -16,9 +16,13 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::{error, info, warn};
 
+use crate::api::agent_registry::AgentRegistry;
+use crate::api::cdp_mapping::CdpTabMapping;
+use crate::api::openapi::ApiDoc;
 use crate::api::routes::create_router;
 use crate::api::websocket::WebSocketHandler;
 use crate::api::ipc::IpcChannel;
+use crate::browser::TabLockManager;
 
 /// Represents a browser tab's state
 #[derive(Debug, Clone)]
@@ -89,6 +93,18 @@ pub struct AppState {
     pub ipc_channel: Arc<IpcChannel>,
     /// Flag indicating if the API is enabled
     pub api_enabled: Arc<RwLock<bool>>,
+    /// CDP remote debugging port for Playwright/DevTools connections
+    pub cdp_port: Option<u16>,
+    /// Registry for multi-agent session management and tab ownership
+    pub agent_registry: Arc<AgentRegistry>,
+    /// Per-tab async operation locks for serializing concurrent operations on the same tab
+    pub tab_locks: Arc<TabLockManager>,
+    /// CDP tab mapping service for UUID <-> TargetId bidirectional lookup
+    pub cdp_mapping: Arc<CdpTabMapping>,
+    /// Shared GUI handle for window visibility control and shutdown signaling.
+    /// `None` when running in headless mode without GUI.
+    #[cfg(feature = "gui")]
+    pub gui_handle: Option<Arc<crate::gui::GuiHandle>>,
 }
 
 impl AppState {
@@ -98,7 +114,35 @@ impl AppState {
             ws_handler: Arc::new(WebSocketHandler::new()),
             ipc_channel: Arc::new(ipc_channel),
             api_enabled: Arc::new(RwLock::new(true)),
+            cdp_port: None,
+            agent_registry: Arc::new(AgentRegistry::new()),
+            tab_locks: Arc::new(TabLockManager::new()),
+            cdp_mapping: Arc::new(CdpTabMapping::new(0)),
+            #[cfg(feature = "gui")]
+            gui_handle: None,
         }
+    }
+
+    /// Create AppState with CDP remote debugging port for external tool connections
+    pub fn new_with_cdp(ipc_channel: IpcChannel, cdp_port: Option<u16>) -> Self {
+        Self {
+            browser_state: Arc::new(RwLock::new(BrowserState::new())),
+            ws_handler: Arc::new(WebSocketHandler::new()),
+            ipc_channel: Arc::new(ipc_channel),
+            api_enabled: Arc::new(RwLock::new(true)),
+            cdp_port,
+            agent_registry: Arc::new(AgentRegistry::new()),
+            tab_locks: Arc::new(TabLockManager::new()),
+            cdp_mapping: Arc::new(CdpTabMapping::new(cdp_port.unwrap_or(0))),
+            #[cfg(feature = "gui")]
+            gui_handle: None,
+        }
+    }
+
+    /// Attach a GUI handle for window visibility control from REST endpoints.
+    #[cfg(feature = "gui")]
+    pub fn set_gui_handle(&mut self, handle: Arc<crate::gui::GuiHandle>) {
+        self.gui_handle = Some(handle);
     }
 
     /// Check if the API is currently enabled
@@ -134,6 +178,21 @@ impl ApiServer {
             port,
             enabled: false,
             state: AppState::new(ipc_channel),
+            shutdown_tx: None,
+            server_handle: None,
+        }
+    }
+
+    /// Create a new API server with CDP remote debugging port forwarded to AppState.
+    ///
+    /// The `cdp_port` is the port CEF listens on for Chrome DevTools Protocol
+    /// connections (--remote-debugging-port). External tools like Playwright,
+    /// Puppeteer, or Chrome DevTools use this to connect.
+    pub fn new_with_cdp(port: u16, ipc_channel: IpcChannel, cdp_port: Option<u16>) -> Self {
+        Self {
+            port,
+            enabled: false,
+            state: AppState::new_with_cdp(ipc_channel, cdp_port),
             shutdown_tx: None,
             server_handle: None,
         }
@@ -186,9 +245,16 @@ impl ApiServer {
             .max_age(Duration::from_secs(3600))
     }
 
-    /// Build the router with all middleware
+    /// Build the router with all middleware, Swagger UI, and OpenAPI JSON endpoint
     fn build_router(&self) -> Router {
+        use utoipa::OpenApi;
+        use utoipa_swagger_ui::SwaggerUi;
+
         create_router(self.state.clone())
+            .merge(
+                SwaggerUi::new("/swagger-ui")
+                    .url("/api-doc/openapi.json", ApiDoc::openapi()),
+            )
             .layer(Self::configure_cors())
             .layer(TraceLayer::new_for_http())
     }

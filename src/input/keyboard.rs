@@ -6,7 +6,7 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use ki_browser::input::keyboard::{KeyboardSimulator, Modifier};
+//! use ki_browser_standalone::input::keyboard::{KeyboardSimulator, Modifier};
 //!
 //! async fn example() {
 //!     let keyboard = KeyboardSimulator::new();
@@ -154,7 +154,7 @@ impl SpecialKey {
     }
 
     /// Parses a string into a SpecialKey if it matches
-    pub fn from_str(s: &str) -> Option<SpecialKey> {
+    pub fn parse_from_str(s: &str) -> Option<SpecialKey> {
         match s.to_lowercase().as_str() {
             "enter" | "return" => Some(SpecialKey::Enter),
             "tab" => Some(SpecialKey::Tab),
@@ -227,7 +227,7 @@ impl Default for KeyboardConfig {
 #[derive(Debug)]
 pub struct KeyboardSimulator {
     /// Configuration for keyboard behavior
-    config: KeyboardConfig,
+    _config: KeyboardConfig,
     /// Timing utility for realistic delays
     timing: HumanTiming,
     /// Currently pressed modifier keys
@@ -250,13 +250,13 @@ impl KeyboardSimulator {
     /// # Example
     ///
     /// ```rust
-    /// use ki_browser::input::keyboard::KeyboardSimulator;
+    /// use ki_browser_standalone::input::keyboard::KeyboardSimulator;
     ///
     /// let keyboard = KeyboardSimulator::new();
     /// ```
     pub fn new() -> Self {
         Self {
-            config: KeyboardConfig::default(),
+            _config: KeyboardConfig::default(),
             timing: HumanTiming::default(),
             active_modifiers: HashSet::new(),
             event_history: Vec::new(),
@@ -272,7 +272,7 @@ impl KeyboardSimulator {
     /// * `timing` - Custom timing settings
     pub fn with_config(config: KeyboardConfig, timing: HumanTiming) -> Self {
         Self {
-            config,
+            _config: config,
             timing,
             active_modifiers: HashSet::new(),
             event_history: Vec::new(),
@@ -302,7 +302,7 @@ impl KeyboardSimulator {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use ki_browser::input::keyboard::KeyboardSimulator;
+    /// use ki_browser_standalone::input::keyboard::KeyboardSimulator;
     ///
     /// async fn example() {
     ///     let mut keyboard = KeyboardSimulator::new();
@@ -340,7 +340,7 @@ impl KeyboardSimulator {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use ki_browser::input::keyboard::KeyboardSimulator;
+    /// use ki_browser_standalone::input::keyboard::KeyboardSimulator;
     ///
     /// async fn example() {
     ///     let mut keyboard = KeyboardSimulator::new();
@@ -374,7 +374,7 @@ impl KeyboardSimulator {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use ki_browser::input::keyboard::KeyboardSimulator;
+    /// use ki_browser_standalone::input::keyboard::KeyboardSimulator;
     ///
     /// async fn example() {
     ///     let keyboard = KeyboardSimulator::new();
@@ -407,7 +407,7 @@ impl KeyboardSimulator {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use ki_browser::input::keyboard::{KeyboardSimulator, Modifier};
+    /// use ki_browser_standalone::input::keyboard::{KeyboardSimulator, Modifier};
     ///
     /// async fn example() {
     ///     let keyboard = KeyboardSimulator::new();
@@ -423,7 +423,7 @@ impl KeyboardSimulator {
         self.validate_key(key)?;
 
         // Press modifiers
-        for modifier in modifiers {
+        for _modifier in modifiers {
             let delay = Duration::from_millis(rand::random::<u64>() % 20 + 10);
             tokio::time::sleep(delay).await;
             // Simulate modifier key down
@@ -451,7 +451,7 @@ impl KeyboardSimulator {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use ki_browser::input::keyboard::KeyboardSimulator;
+    /// use ki_browser_standalone::input::keyboard::KeyboardSimulator;
     ///
     /// async fn example() {
     ///     let keyboard = KeyboardSimulator::new();
@@ -487,7 +487,7 @@ impl KeyboardSimulator {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use ki_browser::input::keyboard::KeyboardSimulator;
+    /// use ki_browser_standalone::input::keyboard::KeyboardSimulator;
     /// use std::time::Duration;
     ///
     /// async fn example() {
@@ -515,7 +515,7 @@ impl KeyboardSimulator {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use ki_browser::input::keyboard::{KeyboardSimulator, SpecialKey};
+    /// use ki_browser_standalone::input::keyboard::{KeyboardSimulator, SpecialKey};
     ///
     /// async fn example() {
     ///     let keyboard = KeyboardSimulator::new();
@@ -540,7 +540,7 @@ impl KeyboardSimulator {
         }
 
         // Check if it's a valid special key or modifier
-        if SpecialKey::from_str(key).is_some() || self.parse_modifier(key).is_some() {
+        if SpecialKey::parse_from_str(key).is_some() || self.parse_modifier(key).is_some() {
             return Ok(());
         }
 
@@ -632,11 +632,11 @@ mod tests {
 
     #[test]
     fn test_special_key_from_str() {
-        assert_eq!(SpecialKey::from_str("enter"), Some(SpecialKey::Enter));
-        assert_eq!(SpecialKey::from_str("ENTER"), Some(SpecialKey::Enter));
-        assert_eq!(SpecialKey::from_str("return"), Some(SpecialKey::Enter));
-        assert_eq!(SpecialKey::from_str("tab"), Some(SpecialKey::Tab));
-        assert_eq!(SpecialKey::from_str("invalid"), None);
+        assert_eq!(SpecialKey::parse_from_str("enter"), Some(SpecialKey::Enter));
+        assert_eq!(SpecialKey::parse_from_str("ENTER"), Some(SpecialKey::Enter));
+        assert_eq!(SpecialKey::parse_from_str("return"), Some(SpecialKey::Enter));
+        assert_eq!(SpecialKey::parse_from_str("tab"), Some(SpecialKey::Tab));
+        assert_eq!(SpecialKey::parse_from_str("invalid"), None);
     }
 
     #[test]

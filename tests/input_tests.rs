@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 /// Mock implementations for input simulation testing
 mod mock {
-    use std::f64::consts::PI;
+    use std::time::Duration;
 
     /// A 2D point for coordinates
     #[derive(Debug, Clone, Copy, PartialEq)]

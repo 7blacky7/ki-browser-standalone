@@ -7,7 +7,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use ki_browser::browser::dom::{DomAccessor, MockDomAccessor, DomElement};
+//! use ki_browser_standalone::browser::dom::{DomAccessor, MockDomAccessor, DomElement};
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
@@ -26,6 +26,28 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+/// Information about a frame in the page's frame tree.
+///
+/// Frames represent iframes or the main document in a page hierarchy.
+/// This struct contains metadata about a frame's identity, location, and security context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FrameInfo {
+    /// Unique frame identifier assigned by the browser engine.
+    pub frame_id: String,
+
+    /// Parent frame ID if this is a child frame, None if this is the main frame.
+    pub parent_frame_id: Option<String>,
+
+    /// Current URL of the frame.
+    pub url: String,
+
+    /// Frame name attribute (from <iframe name="...">).
+    pub name: String,
+
+    /// Security origin of the frame (scheme + host + port).
+    pub security_origin: String,
+}
 
 /// Represents the bounding box of a DOM element.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

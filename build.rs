@@ -8,12 +8,12 @@
 
 use std::env;
 use std::fs;
-use std::io::{self, BufReader, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// CEF version to download (should match the cef crate version)
-const CEF_VERSION: &str = "131.3.5+g97e26f6+chromium-131.0.6778.205";
+const CEF_VERSION: &str = "144.0.13+g9f739aa+chromium-144.0.7559.133";
 
 /// CEF download base URL
 const CEF_DOWNLOAD_BASE: &str = "https://cef-builds.spotifycdn.com";
@@ -63,12 +63,15 @@ fn main() {
     // Set up linking
     setup_linking(&cef_path, os, &profile);
 
-    // Copy resources to output directory
+    // Copy resources to output directory (where the binary lives)
+    // OUT_DIR is typically: target/debug/build/<crate>-<hash>/out
+    // ancestors().nth(3) goes up to: target/debug/
+    // Do NOT append profile again - we're already at target/<profile>/
     let target_dir = PathBuf::from(&out_dir)
         .ancestors()
         .nth(3)
         .expect("Could not find target directory")
-        .join(&profile);
+        .to_path_buf();
 
     if let Err(e) = copy_cef_resources(&cef_path, &target_dir, os) {
         println!("cargo:warning=Failed to copy CEF resources: {}", e);
@@ -429,8 +432,12 @@ fn copy_cef_resources(
         }
     }
 
-    // Resource files to copy
+    // Resource files to copy (CEF v144 uses chrome_*.pak and resources.pak)
     let resource_files = [
+        "chrome_100_percent.pak",
+        "chrome_200_percent.pak",
+        "resources.pak",
+        // Legacy names (older CEF versions)
         "cef.pak",
         "cef_100_percent.pak",
         "cef_200_percent.pak",

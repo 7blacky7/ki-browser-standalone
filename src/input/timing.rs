@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```rust
-//! use ki_browser::input::timing::HumanTiming;
+//! use ki_browser_standalone::input::timing::HumanTiming;
 //!
 //! let timing = HumanTiming::default();
 //! let click_delay = timing.get_click_delay();
@@ -73,7 +73,7 @@ impl HumanTiming {
     /// # Example
     ///
     /// ```rust
-    /// use ki_browser::input::timing::HumanTiming;
+    /// use ki_browser_standalone::input::timing::HumanTiming;
     ///
     /// let timing = HumanTiming::new(50, 150, 0.3);
     /// ```

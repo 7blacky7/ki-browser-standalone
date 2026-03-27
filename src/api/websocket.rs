@@ -358,10 +358,17 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         server_version: env!("CARGO_PKG_VERSION").to_string(),
     };
 
-    let connected_msg = serde_json::to_string(&WebSocketMessage {
+    let connected_msg = match serde_json::to_string(&WebSocketMessage {
         id: None,
         payload: WebSocketPayload::Event(connected_event),
-    }).unwrap();
+    }) {
+        Ok(msg) => msg,
+        Err(e) => {
+            warn!("Failed to serialize connected event: {}", e);
+            state.ws_handler.remove_client(client_id).await;
+            return;
+        }
+    };
 
     if sender.send(Message::Text(connected_msg)).await.is_err() {
         state.ws_handler.remove_client(client_id).await;
@@ -379,10 +386,16 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             tokio::select! {
                 // Send events from channel
                 Some(event) = rx.recv() => {
-                    let msg = serde_json::to_string(&WebSocketMessage {
+                    let msg = match serde_json::to_string(&WebSocketMessage {
                         id: None,
                         payload: WebSocketPayload::Event(event),
-                    }).unwrap();
+                    }) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            warn!("Failed to serialize WebSocket event: {}", e);
+                            continue;
+                        }
+                    };
 
                     if sender.send(Message::Text(msg)).await.is_err() {
                         break;
@@ -393,14 +406,20 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 _ = ping_timer.tick() => {
                     let timestamp = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
+                        .unwrap_or_default()
                         .as_millis() as u64;
 
                     let ping_event = BrowserEvent::Ping { timestamp };
-                    let msg = serde_json::to_string(&WebSocketMessage {
+                    let msg = match serde_json::to_string(&WebSocketMessage {
                         id: None,
                         payload: WebSocketPayload::Event(ping_event),
-                    }).unwrap();
+                    }) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            warn!("Failed to serialize WebSocket ping: {}", e);
+                            continue;
+                        }
+                    };
 
                     if sender.send(Message::Text(msg)).await.is_err() {
                         break;
@@ -444,7 +463,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     // Binary messages not supported
                     debug!("Received unsupported binary message");
                 }
-                Message::Ping(data) => {
+                Message::Ping(_data) => {
                     // WebSocket protocol ping - handled automatically by axum
                     debug!("Received WebSocket ping");
                 }
@@ -494,13 +513,11 @@ mod tests {
         let json = r#"{"type":"Subscribe","data":{"events":["TabCreated","TabClosed"]}}"#;
         let cmd: WebSocketCommand = serde_json::from_str(json).unwrap();
 
-        match cmd {
-            WebSocketCommand::Subscribe { events } => {
-                assert_eq!(events.len(), 2);
-                assert!(events.contains(&"TabCreated".to_string()));
-            }
-            _ => panic!("Expected Subscribe command"),
-        }
+        let WebSocketCommand::Subscribe { events } = cmd else {
+            unreachable!("Expected Subscribe command, got {:?}", cmd);
+        };
+        assert_eq!(events.len(), 2);
+        assert!(events.contains(&"TabCreated".to_string()));
     }
 
     #[tokio::test]

@@ -42,8 +42,10 @@ pub enum ConfigError {
 /// Defines the type of proxy connection to use.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum ProxyType {
     /// HTTP proxy.
+    #[default]
     Http,
     /// HTTPS proxy.
     Https,
@@ -51,11 +53,6 @@ pub enum ProxyType {
     Socks5,
 }
 
-impl Default for ProxyType {
-    fn default() -> Self {
-        Self::Http
-    }
-}
 
 impl std::fmt::Display for ProxyType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -261,6 +258,11 @@ pub struct BrowserSettings {
     /// Default timeout for operations in milliseconds.
     #[serde(default = "default_timeout_ms")]
     pub default_timeout_ms: u64,
+
+    /// CDP remote debugging port for Playwright/DevTools compatibility.
+    /// Set to None to disable CDP. Default: Some(9222).
+    #[serde(default = "default_cdp_port")]
+    pub cdp_port: Option<u16>,
 }
 
 // Default value functions for serde
@@ -288,6 +290,10 @@ fn default_timeout_ms() -> u64 {
     30000
 }
 
+fn default_cdp_port() -> Option<u16> {
+    Some(9222)
+}
+
 impl Default for BrowserSettings {
     fn default() -> Self {
         Self {
@@ -302,6 +308,7 @@ impl Default for BrowserSettings {
             profile_path: None,
             max_tabs: default_max_tabs(),
             default_timeout_ms: default_timeout_ms(),
+            cdp_port: default_cdp_port(),
         }
     }
 }
@@ -460,6 +467,12 @@ impl BrowserSettings {
             }
         }
 
+        if let Ok(val) = env::var("KI_BROWSER_CDP_PORT") {
+            if let Ok(port) = val.parse::<u16>() {
+                self.cdp_port = if port == 0 { None } else { Some(port) };
+            }
+        }
+
         // Proxy configuration from environment
         if let Ok(host) = env::var("KI_BROWSER_PROXY_HOST") {
             let port = env::var("KI_BROWSER_PROXY_PORT")
@@ -546,6 +559,9 @@ impl BrowserSettings {
         }
         if let Some(timeout) = args.timeout_ms {
             self.default_timeout_ms = timeout;
+        }
+        if let Some(cdp_port) = args.cdp_port {
+            self.cdp_port = Some(cdp_port);
         }
 
         // Handle proxy from CLI
@@ -716,6 +732,12 @@ impl BrowserSettings {
         self.default_timeout_ms = timeout_ms;
         self
     }
+
+    /// Sets the CDP remote debugging port.
+    pub fn with_cdp_port(mut self, port: Option<u16>) -> Self {
+        self.cdp_port = port;
+        self
+    }
 }
 
 /// CLI argument structure for parsing command line options.
@@ -744,6 +766,8 @@ pub struct CliArgs {
     pub max_tabs: Option<usize>,
     /// Default operation timeout in milliseconds.
     pub timeout_ms: Option<u64>,
+    /// CDP remote debugging port.
+    pub cdp_port: Option<u16>,
     /// Proxy host.
     pub proxy_host: Option<String>,
     /// Proxy port.
@@ -920,5 +944,23 @@ mod tests {
         assert_eq!(settings.window_width, parsed.window_width);
         assert_eq!(settings.headless, parsed.headless);
         assert_eq!(settings.api_port, parsed.api_port);
+    }
+
+    #[test]
+    fn test_default_cdp_port() {
+        let settings = BrowserSettings::default();
+        assert_eq!(settings.cdp_port, Some(9222));
+    }
+
+    #[test]
+    fn test_cdp_port_builder() {
+        let settings = BrowserSettings::default().with_cdp_port(Some(9333));
+        assert_eq!(settings.cdp_port, Some(9333));
+    }
+
+    #[test]
+    fn test_cdp_port_disabled() {
+        let settings = BrowserSettings::default().with_cdp_port(None);
+        assert_eq!(settings.cdp_port, None);
     }
 }

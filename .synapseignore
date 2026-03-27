@@ -1,0 +1,53 @@
+# Build output
+/target/
+
+# CEF binaries (large)
+/cef/
+cef_binary_*/
+
+# Lock file (large, auto-generated)
+Cargo.lock
+
+# Docker
+docker-compose.yml
+Dockerfile
+Dockerfile.cef
+
+# Profiles & browser data
+/profiles/
+profile/
+browser_data/
+
+# Logs & debug
+*.log
+logs/
+screenshots/
+debug/
+debug_output/
+
+# Temp & backup
+*.tmp
+*.temp
+*.bak
+*.orig
+tmp/
+temp/
+
+# Coverage & profiling
+coverage/
+*.gcno
+*.gcda
+*.profraw
+*.profdata
+
+# Archives
+*.tar.gz
+*.zip
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

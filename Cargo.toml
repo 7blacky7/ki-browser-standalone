@@ -70,6 +70,13 @@ futures = "0.3"
 # Error handling
 thiserror = "1"
 
+# OpenAPI documentation
+utoipa = { version = "4.2.3", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "7.1.0", features = ["axum"] }
+
+# Temporary files (used by OCR Python subprocess engines)
+tempfile = "3"
+
 # Platform-specific dependencies
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
@@ -88,17 +95,12 @@ windows = { version = "0.58", features = [
 cc = "1"
 
 [features]
-default = ["mock-browser"]
-chromium-browser = ["dep:chromiumoxide"]
+default = ["cef-browser"]
 cef-browser = ["dep:cef"]
+gui = ["cef-browser", "dep:eframe", "dep:egui"]
 ocr = ["dep:leptess"]
 mock-browser = []
-
-[dependencies.chromiumoxide]
-version = "0.7"
-optional = true
-default-features = false
-features = ["tokio-runtime"]
+webp = []
 
 [dependencies.cef]
 version = "144"
@@ -107,9 +109,21 @@ default-features = false
 # Enable sandbox and linux-x11 for full Linux support
 features = ["sandbox", "linux-x11"]
 
+[dependencies.eframe]
+version = "0.31"
+optional = true
+
+[dependencies.egui]
+version = "0.31"
+optional = true
+
+# OCR — Tesseract C bindings via leptess (optional, behind 'ocr' feature)
 [dependencies.leptess]
 version = "0.14"
 optional = true
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
 
 # Pin home crate to version compatible with Rust 1.84
 [dependencies.home]

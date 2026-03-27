@@ -109,16 +109,36 @@ pub struct ScreenResolution {
     pub height: u32,
     pub avail_width: u32,
     pub avail_height: u32,
+    /// window.outerWidth (viewport + browser chrome ~16px)
+    pub outer_width: u32,
+    /// window.outerHeight (viewport + browser chrome ~85px for toolbar/tabs)
+    pub outer_height: u32,
+    /// screen.orientation.type (e.g., "landscape-primary", "portrait-primary")
+    pub orientation_type: String,
+    /// screen.orientation.angle (0 for landscape-primary, 90 for portrait-primary)
+    pub orientation_angle: u32,
 }
 
 impl ScreenResolution {
     pub fn new(width: u32, height: u32) -> Self {
+        let orientation_type = if width >= height {
+            "landscape-primary".to_string()
+        } else {
+            "portrait-primary".to_string()
+        };
+        let orientation_angle = if width >= height { 0 } else { 90 };
+
         Self {
             width,
             height,
             // Account for taskbar (Windows ~40px, macOS ~25px)
             avail_width: width,
             avail_height: height.saturating_sub(40),
+            // Default outer dimensions (will be synced via sync_to_viewport)
+            outer_width: width,
+            outer_height: height,
+            orientation_type,
+            orientation_angle,
         }
     }
 
@@ -188,6 +208,72 @@ pub struct BrowserFingerprint {
 }
 
 impl BrowserFingerprint {
+    /// Synchronize screen resolution to match the actual viewport dimensions.
+    ///
+    /// This ensures consistency between screen, outerWidth/Height, and innerWidth/Height:
+    /// - screen.width >= outerWidth >= innerWidth (viewport)
+    /// - screen.height >= outerHeight >= innerHeight (viewport)
+    /// - orientation matches the screen dimensions
+    ///
+    /// The screen resolution is chosen from common resolutions that are >= the viewport.
+    /// outerWidth/Height are calculated as viewport + typical browser chrome offsets.
+    pub fn sync_screen_to_viewport(&mut self, viewport_width: u32, viewport_height: u32) {
+        // Browser chrome offsets (typical values):
+        // outerWidth = viewport + scrollbar + window border (~16px)
+        // outerHeight = viewport + toolbar + tabs + borders (~85px)
+        let outer_width = viewport_width + 16;
+        let outer_height = viewport_height + 85;
+
+        // Find a common resolution where width >= outer_width AND height >= outer_height
+        let resolutions = ScreenResolution::common_resolutions();
+        let suitable: Vec<&ScreenResolution> = resolutions
+            .iter()
+            .filter(|r| r.width >= outer_width && r.height >= outer_height)
+            .collect();
+
+        let screen_res = if let Some(res) = suitable.first() {
+            // Pick the smallest suitable resolution (most common/realistic)
+            let mut best = *res;
+            for r in &suitable {
+                if r.width * r.height < best.width * best.height {
+                    best = r;
+                }
+            }
+            ScreenResolution::new(best.width, best.height)
+        } else {
+            // Fallback: no common resolution fits, use the largest available
+            // or create one that just fits
+            resolutions
+                .iter()
+                .max_by_key(|r| r.width * r.height)
+                .cloned()
+                .unwrap_or_else(|| ScreenResolution::new(1920, 1080))
+        };
+
+        // Determine orientation from the SCREEN dimensions
+        let orientation_type = if screen_res.width >= screen_res.height {
+            "landscape-primary".to_string()
+        } else {
+            "portrait-primary".to_string()
+        };
+        let orientation_angle = if screen_res.width >= screen_res.height {
+            0
+        } else {
+            90
+        };
+
+        self.screen_resolution = ScreenResolution {
+            width: screen_res.width,
+            height: screen_res.height,
+            avail_width: screen_res.width,
+            avail_height: screen_res.height.saturating_sub(40),
+            outer_width,
+            outer_height,
+            orientation_type,
+            orientation_angle,
+        };
+    }
+
     /// Convert fingerprint to JavaScript override code
     ///
     /// This generates JavaScript that overrides browser properties to match
@@ -195,7 +281,7 @@ impl BrowserFingerprint {
     pub fn to_js_overrides(&self) -> String {
         let plugins_json = self.plugins_to_json();
         let fonts_json = self.fonts_to_json();
-        let languages_json: Vec<String> =
+        let _languages_json: Vec<String> =
             self.languages.iter().map(|l| format!("\"{}\"", l)).collect();
         let dnt_value = match &self.do_not_track {
             Some(v) => format!("\"{}\"", v),
@@ -229,6 +315,31 @@ Object.defineProperty(screen, 'pixelDepth', {{
     get: function() {{ return {pixel_depth}; }},
     configurable: true
 }});
+
+// Screen orientation override
+if (screen.orientation) {{
+    Object.defineProperty(screen.orientation, 'type', {{
+        get: function() {{ return '{orientation_type}'; }},
+        configurable: true
+    }});
+    Object.defineProperty(screen.orientation, 'angle', {{
+        get: function() {{ return {orientation_angle}; }},
+        configurable: true
+    }});
+}}
+
+// outerWidth/Height consistent with screen (viewport + browser chrome)
+Object.defineProperty(window, 'outerWidth', {{
+    get: function() {{ return {outer_width}; }},
+    configurable: true
+}});
+Object.defineProperty(window, 'outerHeight', {{
+    get: function() {{ return {outer_height}; }},
+    configurable: true
+}});
+// Mark that fingerprint script has applied outerWidth/Height
+// so the chromium_engine fallback does not overwrite these values.
+window.__fp_outer_applied = true;
 
 // Timezone override
 const originalDateGetTimezoneOffset = Date.prototype.getTimezoneOffset;
@@ -324,6 +435,10 @@ Object.defineProperty(navigator, 'doNotTrack', {{
             avail_height = self.screen_resolution.avail_height,
             color_depth = self.color_depth,
             pixel_depth = self.pixel_depth,
+            orientation_type = self.screen_resolution.orientation_type,
+            orientation_angle = self.screen_resolution.orientation_angle,
+            outer_width = self.screen_resolution.outer_width,
+            outer_height = self.screen_resolution.outer_height,
             timezone_offset = self.timezone_offset,
             timezone = self.timezone,
             cookie_enabled = self.cookie_enabled,
@@ -448,7 +563,7 @@ impl FingerprintGenerator {
             timezone,
             plugins: self.get_plugins(&profile),
             fonts: self.get_fonts(&profile),
-            do_not_track: if seed % 3 == 0 {
+            do_not_track: if seed.is_multiple_of(3) {
                 Some("1".to_string())
             } else {
                 None
@@ -576,14 +691,12 @@ impl FingerprintGenerator {
             | FingerprintProfile::WindowsFirefox
             | FingerprintProfile::WindowsEdge => {
                 fonts.extend(
-                    vec![
-                        "Calibri",
+                    ["Calibri",
                         "Cambria",
                         "Consolas",
                         "Segoe UI",
                         "Tahoma",
-                        "Microsoft Sans Serif",
-                    ]
+                        "Microsoft Sans Serif"]
                     .iter()
                     .map(|name| FontEntry {
                         name: name.to_string(),
@@ -594,14 +707,12 @@ impl FingerprintGenerator {
             | FingerprintProfile::MacSafari
             | FingerprintProfile::MacFirefox => {
                 fonts.extend(
-                    vec![
-                        "Helvetica",
+                    ["Helvetica",
                         "Helvetica Neue",
                         "Lucida Grande",
                         "Monaco",
                         "Menlo",
-                        "SF Pro",
-                    ]
+                        "SF Pro"]
                     .iter()
                     .map(|name| FontEntry {
                         name: name.to_string(),
@@ -610,14 +721,12 @@ impl FingerprintGenerator {
             }
             FingerprintProfile::LinuxChrome | FingerprintProfile::LinuxFirefox => {
                 fonts.extend(
-                    vec![
-                        "DejaVu Sans",
+                    ["DejaVu Sans",
                         "DejaVu Serif",
                         "Liberation Sans",
                         "Liberation Serif",
                         "Ubuntu",
-                        "Noto Sans",
-                    ]
+                        "Noto Sans"]
                     .iter()
                     .map(|name| FontEntry {
                         name: name.to_string(),
@@ -876,5 +985,222 @@ mod tests {
         assert!(js.contains("colorDepth"));
         assert!(js.contains("getTimezoneOffset"));
         assert!(js.contains("navigator"));
+    }
+
+    #[test]
+    fn test_screen_resolution_has_orientation_fields() {
+        let res = ScreenResolution::new(1920, 1080);
+        assert_eq!(res.outer_width, 1920);
+        assert_eq!(res.outer_height, 1080);
+        assert_eq!(res.orientation_type, "landscape-primary");
+        assert_eq!(res.orientation_angle, 0);
+
+        let portrait = ScreenResolution::new(1080, 1920);
+        assert_eq!(portrait.orientation_type, "portrait-primary");
+        assert_eq!(portrait.orientation_angle, 90);
+    }
+
+    #[test]
+    fn test_sync_screen_to_viewport_basic() {
+        let generator = FingerprintGenerator::new();
+        let mut fp = generator.generate_from_profile(FingerprintProfile::WindowsChrome);
+
+        // Viewport 1280x720 (default window size)
+        fp.sync_screen_to_viewport(1280, 720);
+
+        let screen = &fp.screen_resolution;
+
+        // screen.width >= outerWidth >= viewport (1280)
+        assert!(
+            screen.width >= screen.outer_width,
+            "screen.width ({}) must be >= outer_width ({})",
+            screen.width,
+            screen.outer_width
+        );
+        assert!(
+            screen.outer_width >= 1280,
+            "outer_width ({}) must be >= viewport width (1280)",
+            screen.outer_width
+        );
+
+        // screen.height >= outerHeight >= viewport (720)
+        assert!(
+            screen.height >= screen.outer_height,
+            "screen.height ({}) must be >= outer_height ({})",
+            screen.height,
+            screen.outer_height
+        );
+        assert!(
+            screen.outer_height >= 720,
+            "outer_height ({}) must be >= viewport height (720)",
+            screen.outer_height
+        );
+
+        // outerWidth = viewport + 16 (browser chrome)
+        assert_eq!(screen.outer_width, 1296);
+        // outerHeight = viewport + 85 (toolbar/tabs)
+        assert_eq!(screen.outer_height, 805);
+
+        // availWidth = screen.width, availHeight = screen.height - 40 (taskbar)
+        assert_eq!(screen.avail_width, screen.width);
+        assert_eq!(screen.avail_height, screen.height.saturating_sub(40));
+    }
+
+    #[test]
+    fn test_sync_screen_to_viewport_orientation_landscape() {
+        let generator = FingerprintGenerator::new();
+        let mut fp = generator.generate_from_profile(FingerprintProfile::WindowsChrome);
+
+        fp.sync_screen_to_viewport(1280, 720);
+
+        // Screen should be landscape (width > height for all common resolutions)
+        assert_eq!(fp.screen_resolution.orientation_type, "landscape-primary");
+        assert_eq!(fp.screen_resolution.orientation_angle, 0);
+    }
+
+    #[test]
+    fn test_sync_screen_to_viewport_picks_suitable_resolution() {
+        let generator = FingerprintGenerator::new();
+        let mut fp = generator.generate_from_profile(FingerprintProfile::WindowsChrome);
+
+        // Viewport 1280x720 -> outer 1296x805 -> needs screen >= 1296x805
+        // The smallest common resolution that fits is 1366x768
+        fp.sync_screen_to_viewport(1280, 720);
+        assert!(
+            fp.screen_resolution.width >= 1296,
+            "screen.width ({}) must be >= outer_width (1296)",
+            fp.screen_resolution.width
+        );
+        assert!(
+            fp.screen_resolution.height >= 805,
+            "screen.height ({}) must be >= outer_height (805)",
+            fp.screen_resolution.height
+        );
+    }
+
+    #[test]
+    fn test_sync_screen_to_viewport_large_viewport() {
+        let generator = FingerprintGenerator::new();
+        let mut fp = generator.generate_from_profile(FingerprintProfile::WindowsChrome);
+
+        // Large viewport: 1920x1080 -> outer 1936x1165 -> needs screen >= 1936x1165
+        fp.sync_screen_to_viewport(1920, 1080);
+
+        assert!(
+            fp.screen_resolution.width >= 1936,
+            "screen.width ({}) must be >= 1936 for 1920 viewport",
+            fp.screen_resolution.width
+        );
+        assert!(
+            fp.screen_resolution.height >= 1165,
+            "screen.height ({}) must be >= 1165 for 1080 viewport",
+            fp.screen_resolution.height
+        );
+    }
+
+    #[test]
+    fn test_sync_screen_to_viewport_small_viewport() {
+        let generator = FingerprintGenerator::new();
+        let mut fp = generator.generate_from_profile(FingerprintProfile::WindowsChrome);
+
+        // Small viewport: 800x600 -> outer 816x685 -> needs screen >= 816x685
+        fp.sync_screen_to_viewport(800, 600);
+
+        assert!(
+            fp.screen_resolution.width >= 816,
+            "screen.width ({}) must be >= 816 for 800 viewport",
+            fp.screen_resolution.width
+        );
+        assert!(
+            fp.screen_resolution.height >= 685,
+            "screen.height ({}) must be >= 685 for 600 viewport",
+            fp.screen_resolution.height
+        );
+        assert_eq!(fp.screen_resolution.outer_width, 816);
+        assert_eq!(fp.screen_resolution.outer_height, 685);
+    }
+
+    #[test]
+    fn test_js_overrides_contain_orientation_and_outer() {
+        let generator = FingerprintGenerator::new();
+        let mut fp = generator.generate_from_profile(FingerprintProfile::WindowsChrome);
+        fp.sync_screen_to_viewport(1280, 720);
+
+        let js = fp.to_js_overrides();
+
+        // Orientation overrides
+        assert!(
+            js.contains("screen.orientation"),
+            "JS should contain screen.orientation override"
+        );
+        assert!(
+            js.contains("landscape-primary"),
+            "JS should contain landscape-primary for landscape viewport"
+        );
+
+        // outerWidth/Height overrides
+        assert!(
+            js.contains("outerWidth"),
+            "JS should contain outerWidth override"
+        );
+        assert!(
+            js.contains("outerHeight"),
+            "JS should contain outerHeight override"
+        );
+
+        // Flag to prevent chromium_engine fallback from overwriting
+        assert!(
+            js.contains("__fp_outer_applied"),
+            "JS should set __fp_outer_applied flag"
+        );
+    }
+
+    #[test]
+    fn test_screen_resolution_invariants_after_sync() {
+        // Test the invariants for multiple viewport sizes
+        let viewports = vec![
+            (800, 600),
+            (1024, 768),
+            (1280, 720),
+            (1366, 768),
+            (1920, 1080),
+            (2560, 1440),
+        ];
+
+        let generator = FingerprintGenerator::new();
+
+        for (vw, vh) in viewports {
+            let mut fp = generator.generate_from_profile(FingerprintProfile::WindowsChrome);
+            fp.sync_screen_to_viewport(vw, vh);
+
+            let s = &fp.screen_resolution;
+
+            // Invariant 1: screen.width >= outerWidth >= viewport
+            assert!(
+                s.width >= s.outer_width && s.outer_width >= vw,
+                "Viewport {}x{}: screen.width({}) >= outer_width({}) >= viewport({})",
+                vw, vh, s.width, s.outer_width, vw
+            );
+
+            // Invariant 2: screen.height >= outerHeight >= viewport
+            assert!(
+                s.height >= s.outer_height && s.outer_height >= vh,
+                "Viewport {}x{}: screen.height({}) >= outer_height({}) >= viewport({})",
+                vw, vh, s.height, s.outer_height, vh
+            );
+
+            // Invariant 3: orientation matches screen dimensions
+            if s.width >= s.height {
+                assert_eq!(s.orientation_type, "landscape-primary");
+                assert_eq!(s.orientation_angle, 0);
+            } else {
+                assert_eq!(s.orientation_type, "portrait-primary");
+                assert_eq!(s.orientation_angle, 90);
+            }
+
+            // Invariant 4: availWidth = width, availHeight = height - 40
+            assert_eq!(s.avail_width, s.width);
+            assert_eq!(s.avail_height, s.height.saturating_sub(40));
+        }
     }
 }

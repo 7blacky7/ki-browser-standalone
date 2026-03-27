@@ -6,7 +6,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use ki_browser::browser::screenshot::{ScreenshotOptions, ScreenshotFormat, capture_screenshot};
+//! use ki_browser_standalone::browser::screenshot::{ScreenshotOptions, ScreenshotFormat, capture_screenshot};
 //!
 //! let options = ScreenshotOptions::new()
 //!     .format(ScreenshotFormat::Png)

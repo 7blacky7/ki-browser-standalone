@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use ki_browser::browser::cef_render::{OffScreenRenderHandler, ScreenInfo};
+//! use ki_browser_standalone::browser::cef_render::{OffScreenRenderHandler, ScreenInfo};
 //!
 //! let screen_info = ScreenInfo::default();
 //! let handler = OffScreenRenderHandler::new(1920, 1080, screen_info);
@@ -28,7 +28,7 @@ use anyhow::{anyhow, Result};
 #[cfg(feature = "cef-browser")]
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 #[cfg(feature = "cef-browser")]
-use image::{ImageBuffer, ImageEncoder, Rgba, RgbaImage};
+use image::{ImageBuffer, ImageEncoder, RgbaImage};
 #[cfg(feature = "cef-browser")]
 use parking_lot::RwLock;
 #[cfg(feature = "cef-browser")]

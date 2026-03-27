@@ -413,7 +413,7 @@ async fn make_request(
         .body(body)
         .unwrap();
 
-    let response = app.oneshot(request).await.unwrap();
+    let response: axum::http::Response<Body> = app.oneshot(request).await.unwrap();
 
     let status = response.status();
     let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
