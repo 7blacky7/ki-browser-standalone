@@ -188,4 +188,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
 
 # Run with entrypoint (starts Xvfb + ki-browser)
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
-CMD ["--port", "9222", "--headless", "--stealth"]
+CMD ["--config", "/app/config/config.toml"]
