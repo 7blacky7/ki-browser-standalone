@@ -57,13 +57,15 @@ COPY crates/ ./crates/
 
 # Build with ALL features: cef-browser + h264 (NVENC) + ocr (Tesseract)
 # The cef-dll-sys crate will download CEF binaries automatically
-RUN cargo build --release --no-default-features --features "cef-browser,h264,ocr" 2>&1 && \
-    # Find and collect CEF files from OUT_DIR
-    mkdir -p /cef && \
-    find /build/target -name "cef_binary*" -type d | head -1 | xargs -I{} cp -r {} /cef/ 2>/dev/null || \
-    find /build/target -path "*cef*Release*" -name "*.so*" | xargs -I{} cp {} /cef/ 2>/dev/null || \
-    (echo "======== CEF build failed, falling back to mock-browser ========" && \
-     cargo build --release --no-default-features --features mock-browser)
+RUN cargo build --release --no-default-features --features "cef-browser,h264,ocr" 2>&1
+
+# Collect CEF runtime files from build output
+RUN mkdir -p /cef && \
+    CEF_DIR=$(find /build/target -path "*/cef-dll-sys-*/out/cef_linux_x86_64" -type d | head -1) && \
+    echo "CEF found at: $CEF_DIR" && \
+    cp -r "$CEF_DIR"/*.so "$CEF_DIR"/*.pak "$CEF_DIR"/*.dat "$CEF_DIR"/*.bin /cef/ && \
+    cp "$CEF_DIR"/chrome-sandbox /cef/ && \
+    cp -r "$CEF_DIR"/locales /cef/locales
 
 # =============================================================================
 # Stage 2: Runtime with CEF + Xvfb + NVIDIA GPU
@@ -146,8 +148,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility
 
-# Copy CEF runtime libraries (if available)
-COPY --from=builder /cef/ /opt/cef/ 2>/dev/null || true
+# Copy CEF runtime libraries
+COPY --from=builder /cef/ /opt/cef/
 
 # Copy binary from builder
 COPY --from=builder /build/target/release/ki-browser /app/ki-browser
@@ -160,7 +162,7 @@ RUN chmod +x /app/docker-entrypoint.sh
 RUN mkdir -p /app/config /app/profiles /app/data /tmp/cef-data /tmp/.X11-unix
 
 # Set CEF library path
-ENV LD_LIBRARY_PATH=/opt/cef:/opt/cef/Release:${LD_LIBRARY_PATH:-}
+ENV LD_LIBRARY_PATH=/opt/cef:/opt/cef/Release
 ENV CEF_RESOURCES_DIR=/opt/cef/Resources
 ENV CEF_FRAMEWORK_DIR=/opt/cef/Release
 
