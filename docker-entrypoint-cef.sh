@@ -46,6 +46,14 @@ if [ ! -d /dev/shm ]; then
     echo "WARNING: /dev/shm not available. Run with --shm-size=2gb"
 fi
 
+# Detect GPU
+if nvidia-smi &>/dev/null; then
+    echo "NVIDIA GPU detected: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'unknown')"
+    echo "GPU rendering enabled"
+else
+    echo "No NVIDIA GPU detected, using software rendering"
+fi
+
 # Start Xvfb virtual framebuffer
 echo "Starting Xvfb on display ${DISPLAY}..."
 Xvfb ${DISPLAY} -screen 0 ${XVFB_RESOLUTION} -ac +extension GLX +render -noreset &

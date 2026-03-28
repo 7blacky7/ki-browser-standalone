@@ -55,17 +55,17 @@ RUN cargo build --release --no-default-features --features cef-browser 2>&1 && \
      cargo build --release --no-default-features --features mock-browser)
 
 # =============================================================================
-# Stage 2: Runtime with CEF + Xvfb
+# Stage 2: Runtime with CEF + Xvfb + NVIDIA GPU
 # =============================================================================
 FROM debian:bookworm-slim
 
 LABEL maintainer="KI-Browser Team"
-LABEL description="High-performance browser automation with CEF and stealth capabilities"
-LABEL version="0.1.0"
+LABEL description="High-performance browser automation with CEF, GPU acceleration and stealth capabilities"
+LABEL version="0.2.0"
 
 WORKDIR /app
 
-# Install CEF runtime dependencies + Xvfb for headless display
+# Install CEF runtime dependencies + Xvfb for headless display + NVIDIA EGL
 RUN apt-get update && apt-get install -y --no-install-recommends \
     # Virtual framebuffer for headless rendering
     xvfb \
@@ -96,11 +96,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libatspi2.0-0 \
     # Printing
     libcups2 \
-    # Graphics
+    # Graphics — GPU-accelerated via NVIDIA + Mesa fallback
     libdrm2 \
     libgbm1 \
     libgl1-mesa-glx \
     libgl1-mesa-dri \
+    libegl1-mesa \
+    libgles2-mesa \
+    libvulkan1 \
     # Text rendering
     libpango-1.0-0 \
     libcairo2 \
@@ -117,6 +120,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     procps \
     curl \
     && rm -rf /var/lib/apt/lists/*
+
+# NVIDIA Container Runtime — GPU wird vom Host durchgereicht
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility
 
 # Copy CEF runtime libraries (if available)
 COPY --from=builder /cef/ /opt/cef/ 2>/dev/null || true
