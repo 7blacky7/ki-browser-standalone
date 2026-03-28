@@ -234,6 +234,21 @@ impl CdpClient {
     }
 
     // ========================================================================
+    // Low-level public access (for cdp_frames module)
+    // ========================================================================
+
+    /// Send a raw CDP command. Exposed for use by the `cdp_frames` module
+    /// which needs to call Page.getFrameTree, Page.createIsolatedWorld, etc.
+    pub async fn send_command_pub(
+        &self,
+        ws_url: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        self.send_command(ws_url, method, params).await
+    }
+
+    // ========================================================================
     // Public API
     // ========================================================================
 

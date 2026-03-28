@@ -431,17 +431,54 @@ impl BrowserCommandHandler {
         engine: &Option<BrowserEngineWrapper>,
         tab_id: &str,
         selector: &str,
-        _frame_id: Option<&str>,
+        frame_id: Option<&str>,
     ) -> IpcResponse {
         let _uuid = match Uuid::parse_str(tab_id) {
             Ok(u) => u,
             Err(_) => return IpcResponse::error("Invalid tab ID"),
         };
 
+        // Strategy 1: If frame_id is set, resolve element position via CDP frame context
+        if let Some(fid) = frame_id {
+            if let Some(ref cdp) = self.cdp_client {
+                let tab_url = match engine {
+                    #[cfg(feature = "cef-browser")]
+                    Some(BrowserEngineWrapper::Cef(e)) => {
+                        e.get_tabs_sync().into_iter()
+                            .find(|t| t.id == _uuid)
+                            .map(|t| t.url.clone())
+                    }
+                    _ => None,
+                };
+
+                if let Some(url) = tab_url {
+                    if let Ok(ws_url) = cdp.find_target_ws_url(&url).await {
+                        match crate::api::cdp_frames::get_element_center_in_frame(cdp, &ws_url, fid, selector).await {
+                            Ok((cx, cy)) => {
+                                match engine {
+                                    #[cfg(feature = "cef-browser")]
+                                    Some(BrowserEngineWrapper::Cef(e)) => {
+                                        match e.click(_uuid, cx, cy, 0).await {
+                                            Ok(_) => return IpcResponse::success(),
+                                            Err(e) => return IpcResponse::error(e.to_string()),
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            Err(e) => {
+                                debug!("CDP frame click failed ({}), falling back", e);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Strategy 2: Main frame click via CEF JS
         match engine {
             #[cfg(feature = "cef-browser")]
             Some(BrowserEngineWrapper::Cef(e)) => {
-                // ClickElement requires JS evaluation to find element center, then click
                 let escaped = selector.replace('\\', "\\\\").replace('\'', "\\'");
                 let js = format!(
                     r#"(function(){{var el=document.querySelector('{}');if(!el)return null;var r=el.getBoundingClientRect();return {{x:r.x+r.width/2,y:r.y+r.height/2}}}})()"#,
@@ -484,22 +521,51 @@ impl BrowserCommandHandler {
             Err(_) => return IpcResponse::error("Invalid tab ID"),
         };
 
-        // Strategy 1: Try CDP Input.insertText (works with contenteditable)
-        if frame_id.is_none() {
-            if let Some(ref cdp) = self.cdp_client {
-                let tab_url = match engine {
-                    #[cfg(feature = "cef-browser")]
-                    Some(BrowserEngineWrapper::Cef(e)) => {
-                        e.get_tabs_sync().into_iter()
-                            .find(|t| t.id == uuid)
-                            .map(|t| t.url.clone())
-                    }
-                    _ => None,
-                };
+        // Strategy 1: Try CDP (with frame isolation if frame_id is set)
+        if let Some(ref cdp) = self.cdp_client {
+            let tab_url = match engine {
+                #[cfg(feature = "cef-browser")]
+                Some(BrowserEngineWrapper::Cef(e)) => {
+                    e.get_tabs_sync().into_iter()
+                        .find(|t| t.id == uuid)
+                        .map(|t| t.url.clone())
+                }
+                _ => None,
+            };
 
-                if let Some(url) = tab_url {
-                    if let Ok(ws_url) = cdp.find_target_ws_url(&url).await {
-                        // If selector provided, focus the element first via CDP
+            if let Some(url) = tab_url {
+                if let Ok(ws_url) = cdp.find_target_ws_url(&url).await {
+                    if let Some(fid) = frame_id {
+                        // Frame-specific: focus element in frame context, then insertText
+                        if let Some(sel) = selector {
+                            let escaped = sel.replace('\'', "\\'");
+                            let focus_js = format!(
+                                r#"(()=>{{var el=document.querySelector('{}');if(!el)return 'not_found';el.focus();return 'focused'}})()"#,
+                                escaped
+                            );
+                            match crate::api::cdp_frames::evaluate_in_frame(cdp, &ws_url, fid, &focus_js, false).await {
+                                Ok(result) if !result.contains("not_found") => {
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                                    match cdp.insert_text(&ws_url, text).await {
+                                        Ok(_) => {
+                                            debug!("CDP frame type succeeded for frame '{}' selector '{}'", fid, sel);
+                                            return IpcResponse::success();
+                                        }
+                                        Err(e) => {
+                                            debug!("CDP frame insert_text failed ({}), falling back", e);
+                                        }
+                                    }
+                                }
+                                Ok(_) => {
+                                    debug!("Element '{}' not found in frame '{}'", sel, fid);
+                                }
+                                Err(e) => {
+                                    debug!("CDP frame focus failed ({}), falling back", e);
+                                }
+                            }
+                        }
+                    } else {
+                        // No frame_id — original main-context logic
                         if let Some(sel) = selector {
                             match cdp.focus_and_type(&ws_url, sel, text).await {
                                 Ok(_) => {
@@ -659,22 +725,38 @@ impl BrowserCommandHandler {
         };
 
         // Strategy 1: Try CDP Runtime.evaluate (bypasses CSP/Trusted Types)
-        if frame_id.is_none() {
-            if let Some(ref cdp) = self.cdp_client {
-                // Get the tab's current URL for target discovery
-                let tab_url = match engine {
-                    #[cfg(feature = "cef-browser")]
-                    Some(BrowserEngineWrapper::Cef(e)) => {
-                        e.get_tabs_sync().into_iter()
-                            .find(|t| t.id == uuid)
-                            .map(|t| t.url.clone())
-                    }
-                    _ => None,
-                };
+        if let Some(ref cdp) = self.cdp_client {
+            // Get the tab's current URL for target discovery
+            let tab_url = match engine {
+                #[cfg(feature = "cef-browser")]
+                Some(BrowserEngineWrapper::Cef(e)) => {
+                    e.get_tabs_sync().into_iter()
+                        .find(|t| t.id == uuid)
+                        .map(|t| t.url.clone())
+                }
+                _ => None,
+            };
 
-                if let Some(url) = tab_url {
-                    match cdp.find_target_ws_url(&url).await {
-                        Ok(ws_url) => {
+            if let Some(url) = tab_url {
+                match cdp.find_target_ws_url(&url).await {
+                    Ok(ws_url) => {
+                        // If frame_id is set, use frame-isolated evaluation
+                        if let Some(fid) = frame_id {
+                            match crate::api::cdp_frames::evaluate_in_frame(cdp, &ws_url, fid, script, true).await {
+                                Ok(result) => {
+                                    debug!("CDP frame evaluate succeeded for tab {} frame '{}'", tab_id, fid);
+                                    let value: serde_json::Value = serde_json::from_str(&result)
+                                        .unwrap_or(serde_json::Value::String(result));
+                                    return IpcResponse::success_with_data(serde_json::json!({
+                                        "result": value
+                                    }));
+                                }
+                                Err(e) => {
+                                    debug!("CDP frame evaluate failed ({}), falling back to CEF", e);
+                                }
+                            }
+                        } else {
+                            // No frame_id — evaluate in main context
                             match cdp.evaluate(&ws_url, script).await {
                                 Ok(result) => {
                                     debug!("CDP evaluate succeeded for tab {}", tab_id);
@@ -698,9 +780,9 @@ impl BrowserCommandHandler {
                                 }
                             }
                         }
-                        Err(e) => {
-                            debug!("CDP target discovery failed ({}), falling back to CEF", e);
-                        }
+                    }
+                    Err(e) => {
+                        debug!("CDP target discovery failed ({}), falling back to CEF", e);
                     }
                 }
             }

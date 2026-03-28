@@ -21,6 +21,7 @@ pub mod vision_routes;
 pub mod viewer_stream;
 pub mod websocket;
 pub mod cdp_client;
+pub mod cdp_frames;
 pub mod debug_routes;
 
 pub use agent_registry::{AgentInfo, AgentRegistry};
