@@ -11,7 +11,7 @@ FROM rust:1.87-slim-bookworm AS builder
 
 WORKDIR /build
 
-# Install build dependencies for CEF
+# Install build dependencies for CEF + FFmpeg (h264) + Tesseract (ocr)
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
@@ -36,6 +36,17 @@ RUN apt-get update && apt-get install -y \
     libxkbcommon-dev \
     libasound2-dev \
     libdbus-1-dev \
+    # FFmpeg dev libs (h264 NVENC feature)
+    libavcodec-dev \
+    libavformat-dev \
+    libavutil-dev \
+    libswscale-dev \
+    libavfilter-dev \
+    libavdevice-dev \
+    # Tesseract OCR dev libs (ocr feature)
+    libleptonica-dev \
+    libtesseract-dev \
+    clang \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy Rust project source
@@ -43,10 +54,9 @@ COPY Cargo.toml ./
 COPY build.rs ./
 COPY src/ ./src/
 
-# Build with cef-browser feature
+# Build with ALL features: cef-browser + h264 (NVENC) + ocr (Tesseract)
 # The cef-dll-sys crate will download CEF binaries automatically
-# If CEF build fails, fall back to mock-browser
-RUN cargo build --release --no-default-features --features cef-browser 2>&1 && \
+RUN cargo build --release --no-default-features --features "cef-browser,h264,ocr" 2>&1 && \
     # Find and collect CEF files from OUT_DIR
     mkdir -p /cef && \
     find /build/target -name "cef_binary*" -type d | head -1 | xargs -I{} cp -r {} /cef/ 2>/dev/null || \
@@ -116,6 +126,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-noto-color-emoji \
     # CA certificates for HTTPS
     ca-certificates \
+    # FFmpeg runtime libs (h264 NVENC encoding)
+    libavcodec59 \
+    libavformat59 \
+    libavutil57 \
+    libswscale6 \
+    # Tesseract OCR runtime
+    tesseract-ocr \
+    tesseract-ocr-deu \
+    tesseract-ocr-eng \
+    libleptonica-dev \
     # Process utilities
     procps \
     curl \
