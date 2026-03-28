@@ -501,7 +501,8 @@ async fn main() -> Result<()> {
             // Pass complete stealth script for CDP pre-document injection
             if let Some(ref stealth) = _stealth_config {
                 handler.set_stealth_init_script(stealth.get_complete_override_script());
-                info!("Stealth init-script set for CDP injection (WebGL, navigator, canvas, etc.)");
+                handler.set_stealth_section_scripts(stealth.get_section_scripts());
+                info!("Stealth: {} sections set for CDP injection", stealth.get_section_scripts().len());
             }
 
             let ipc_channel_clone = ipc_channel.clone();
@@ -615,6 +616,7 @@ async fn main() -> Result<()> {
             // Pass complete stealth script for CDP pre-document injection
             if let Some(ref stealth) = _stealth_config {
                 h.set_stealth_init_script(stealth.get_complete_override_script());
+                h.set_stealth_section_scripts(stealth.get_section_scripts());
             }
             h
         };

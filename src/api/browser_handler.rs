@@ -81,6 +81,8 @@ pub struct BrowserCommandHandler {
     cdp_client: Option<Arc<crate::api::cdp_client::CdpClient>>,
     /// Complete stealth override script for CDP injection (pre-document)
     stealth_init_script: Option<String>,
+    /// Individual stealth section scripts for reliable per-section CDP injection
+    stealth_section_scripts: Option<Vec<String>>,
 }
 
 impl BrowserCommandHandler {
@@ -90,6 +92,7 @@ impl BrowserCommandHandler {
             engine: Arc::new(RwLock::new(None)),
             cdp_client: None,
             stealth_init_script: None,
+            stealth_section_scripts: None,
         }
     }
 
@@ -103,6 +106,11 @@ impl BrowserCommandHandler {
         self.stealth_init_script = Some(script);
     }
 
+    /// Set individual stealth section scripts for reliable per-section CDP injection.
+    pub fn set_stealth_section_scripts(&mut self, scripts: Vec<String>) {
+        self.stealth_section_scripts = Some(scripts);
+    }
+
     /// Create a handler with a mock browser engine
     pub async fn with_mock() -> anyhow::Result<Self> {
         let wrapper = BrowserEngineWrapper::mock().await?;
@@ -110,6 +118,7 @@ impl BrowserCommandHandler {
             engine: Arc::new(RwLock::new(Some(wrapper))),
             cdp_client: None,
             stealth_init_script: None,
+            stealth_section_scripts: None,
         })
     }
 
@@ -121,6 +130,7 @@ impl BrowserCommandHandler {
             engine: Arc::new(RwLock::new(Some(wrapper))),
             cdp_client: None,
             stealth_init_script: None,
+            stealth_section_scripts: None,
         }
     }
 
@@ -133,6 +143,7 @@ impl BrowserCommandHandler {
             engine: Arc::new(RwLock::new(Some(wrapper))),
             cdp_client: None,
             stealth_init_script: None,
+            stealth_section_scripts: None,
         }
     }
 
@@ -255,19 +266,28 @@ impl BrowserCommandHandler {
                         if let Some(ref cdp) = self.cdp_client {
                             let tab_url = tab.url.clone();
                             let cdp = cdp.clone();
-                            let stealth_script = self.stealth_init_script.clone();
+                            let section_scripts = self.stealth_section_scripts.clone();
                             tokio::spawn(async move {
                                 // Wait for CDP target to become available
                                 tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                                 if let Ok(ws_url) = cdp.find_target_ws_url(&tab_url).await {
-                                    // Inject complete stealth script via CDP (runs before any page JS)
-                                    let stealth_js = stealth_script.unwrap_or_else(|| r#"
-                                        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                                        Object.defineProperty(Navigator.prototype, 'webdriver', {get: () => undefined});
-                                    "#.to_string());
-                                    match cdp.add_init_script(&ws_url, &stealth_js).await {
-                                        Ok(_) => debug!("CDP stealth init-script injected for new tab"),
-                                        Err(e) => debug!("CDP stealth injection failed: {}", e),
+                                    // Inject each stealth section separately via CDP Runtime.evaluate.
+                                    // Per-section injection is more reliable than one giant script
+                                    // because individual try/catch errors don't cascade.
+                                    if let Some(sections) = section_scripts {
+                                        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                                        let mut ok = 0;
+                                        let mut err = 0;
+                                        for (i, script) in sections.iter().enumerate() {
+                                            match cdp.evaluate(&ws_url, script).await {
+                                                Ok(_) => { ok += 1; }
+                                                Err(e) => {
+                                                    err += 1;
+                                                    warn!("Stealth section {} failed for new tab: {}", i, e);
+                                                }
+                                            }
+                                        }
+                                        debug!("CDP stealth: {}/{} sections injected for new tab", ok, ok + err);
                                     }
                                 }
                             });
@@ -356,7 +376,28 @@ impl BrowserCommandHandler {
             #[cfg(feature = "cef-browser")]
             Some(BrowserEngineWrapper::Cef(e)) => {
                 match e.navigate(uuid, url).await {
-                    Ok(_) => IpcResponse::success(),
+                    Ok(_) => {
+                        // Re-inject stealth sections after navigation via CDP Runtime.evaluate.
+                        if let (Some(ref cdp), Some(ref sections)) = (&self.cdp_client, &self.stealth_section_scripts) {
+                            let cdp = cdp.clone();
+                            let sections = sections.clone();
+                            let url_clone = url.to_string();
+                            tokio::spawn(async move {
+                                tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+                                if let Ok(ws_url) = cdp.find_target_ws_url(&url_clone).await {
+                                    let mut ok = 0;
+                                    for (i, script) in sections.iter().enumerate() {
+                                        match cdp.evaluate(&ws_url, script).await {
+                                            Ok(_) => { ok += 1; }
+                                            Err(e) => warn!("Stealth section {} failed after nav to {}: {}", i, url_clone, e),
+                                        }
+                                    }
+                                    debug!("Stealth: {}/{} sections re-injected after nav to {}", ok, sections.len(), url_clone);
+                                }
+                            });
+                        }
+                        IpcResponse::success()
+                    }
                     Err(e) => IpcResponse::error(e.to_string()),
                 }
             }
