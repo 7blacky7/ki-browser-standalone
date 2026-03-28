@@ -114,6 +114,24 @@ curl -s -X POST localhost:3000/debug/captcha/solve -d "{\"tab_id\":\"$TAB\"}"
 | GET | `/ws` | WebSocket events |
 | GET | `/ws/viewer` | Live frame stream |
 
+## Multi-Agent
+
+One browser instance serves multiple AI agents simultaneously without conflicts. Each agent works in its own tab(s):
+
+```bash
+# Agent 1 creates its tab
+TAB1=$(curl -s -X POST localhost:3000/tabs/new -d '{"url":"https://site-a.com"}' | ...)
+
+# Agent 2 creates its tab (same browser, no conflict)
+TAB2=$(curl -s -X POST localhost:3000/tabs/new -d '{"url":"https://site-b.com"}' | ...)
+
+# Both agents work in parallel — screenshots, JS eval, clicks — isolated by tab_id
+curl -s "localhost:3000/screenshot?tab_id=$TAB1&raw=true" -o agent1.jpg &
+curl -s "localhost:3000/screenshot?tab_id=$TAB2&raw=true" -o agent2.jpg &
+```
+
+All operations require `tab_id`, so agents never interfere with each other. Stealth profile, cookies, and viewport are shared across the browser instance. Tested with 3+ parallel agents and 4+ simultaneous tabs.
+
 ## Stealth
 
 Random Chrome/Edge profile per session. HTTP User-Agent and JS `navigator.userAgent` are identical (single identity).
