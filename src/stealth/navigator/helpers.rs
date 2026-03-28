@@ -155,6 +155,100 @@ pub(crate) fn get_automation_removal_script() -> String {
             });
         };
     }
+
     "#
     .to_string()
+}
+
+/// Generates a self-contained IIFE that stubs missing browser APIs.
+///
+/// Real Chrome exposes `navigator.mediaDevices`, `.bluetooth`, `.usb`,
+/// `navigator.getBattery()`, and `chrome.runtime`.  CEF headless is missing
+/// some of these, which is a strong fingerprinting signal.  This script is
+/// injected as its own CDP section so a failure here never breaks other
+/// stealth overrides.
+pub(crate) fn get_missing_api_stubs_script() -> String {
+    r#"(function() {
+    'use strict';
+
+    // navigator.mediaDevices
+    try {
+        if (!navigator.mediaDevices) {
+            Object.defineProperty(navigator, 'mediaDevices', {
+                get: function() {
+                    return {
+                        enumerateDevices: function() { return Promise.resolve([]); },
+                        getUserMedia: function() { return Promise.reject(new DOMException('Not allowed', 'NotAllowedError')); },
+                        getDisplayMedia: function() { return Promise.reject(new DOMException('Not allowed', 'NotAllowedError')); },
+                        getSupportedConstraints: function() { return { width: true, height: true, frameRate: true, facingMode: true, deviceId: true }; },
+                        addEventListener: function() {}, removeEventListener: function() {}, dispatchEvent: function() { return true; }
+                    };
+                },
+                configurable: true
+            });
+        }
+    } catch(e) {}
+
+    // navigator.bluetooth
+    try {
+        if (!navigator.bluetooth) {
+            Object.defineProperty(navigator, 'bluetooth', {
+                get: function() {
+                    return {
+                        getAvailability: function() { return Promise.resolve(false); },
+                        addEventListener: function() {}, removeEventListener: function() {}
+                    };
+                },
+                configurable: true
+            });
+        }
+    } catch(e) {}
+
+    // navigator.usb
+    try {
+        if (!navigator.usb) {
+            Object.defineProperty(navigator, 'usb', {
+                get: function() {
+                    return {
+                        getDevices: function() { return Promise.resolve([]); },
+                        requestDevice: function() { return Promise.reject(new DOMException('No device selected', 'NotFoundError')); },
+                        addEventListener: function() {}, removeEventListener: function() {}
+                    };
+                },
+                configurable: true
+            });
+        }
+    } catch(e) {}
+
+    // navigator.getBattery
+    try {
+        if (!navigator.getBattery) {
+            Object.defineProperty(navigator, 'getBattery', {
+                value: function() {
+                    return Promise.resolve({
+                        charging: true, chargingTime: 0, dischargingTime: Infinity, level: 1.0,
+                        addEventListener: function() {}, removeEventListener: function() {}
+                    });
+                },
+                configurable: true, writable: true
+            });
+        }
+    } catch(e) {}
+
+    // chrome.runtime (chrome.app/csi/loadTimes exist but runtime missing = inconsistent)
+    try {
+        if (typeof chrome !== 'undefined' && !chrome.runtime) {
+            chrome.runtime = {
+                connect: function() { return { onMessage: { addListener: function() {} }, postMessage: function() {}, disconnect: function() {} }; },
+                sendMessage: function() {},
+                onMessage: { addListener: function() {}, removeListener: function() {} },
+                onConnect: { addListener: function() {}, removeListener: function() {} },
+                getManifest: function() { return {}; },
+                getURL: function(path) { return path; },
+                id: undefined
+            };
+        }
+    } catch(e) {}
+
+})();"#.to_string()
 }

@@ -11,7 +11,7 @@
 //! - `helpers` - Utility functions for JS escaping, default plugins, and sub-scripts
 
 mod builder;
-mod helpers;
+pub(crate) mod helpers;
 mod script;
 mod types;
 

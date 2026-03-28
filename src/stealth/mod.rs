@@ -274,6 +274,14 @@ impl StealthConfig {
             self.audio.get_override_script()
         ));
 
+        // Missing browser API stubs (mediaDevices, bluetooth, usb, getBattery, chrome.runtime)
+        // Separate section so failures don't cascade into navigator overrides
+        if self.navigator.remove_automation_signals {
+            sections.push(
+                crate::stealth::navigator::helpers::get_missing_api_stubs_script()
+            );
+        }
+
         sections
     }
 
