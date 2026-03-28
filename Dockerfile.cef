@@ -164,10 +164,9 @@ RUN chmod +x /app/docker-entrypoint.sh
 # Create directories
 RUN mkdir -p /app/config /app/profiles /app/data /tmp/cef-data /tmp/.X11-unix
 
-# Set CEF library path
-ENV LD_LIBRARY_PATH=/opt/cef:/opt/cef/Release
-ENV CEF_RESOURCES_DIR=/opt/cef/Resources
-ENV CEF_FRAMEWORK_DIR=/opt/cef/Release
+# Set CEF library path — CEF_PATH is used by ki-browser's find_cef_dir()
+ENV LD_LIBRARY_PATH=/opt/cef
+ENV CEF_PATH=/opt/cef
 
 # Xvfb display configuration
 ENV DISPLAY=:99

@@ -71,10 +71,12 @@ fi
 
 echo "Xvfb started successfully (PID: $XVFB_PID)"
 
-# Start DBus session daemon (required by some CEF features)
+# Start DBus daemons (required by CEF)
 if [ -x /usr/bin/dbus-daemon ]; then
-    echo "Starting DBus session daemon..."
-    eval $(dbus-launch --sh-syntax)
+    echo "Starting DBus daemons..."
+    mkdir -p /run/dbus
+    dbus-daemon --system --fork 2>/dev/null || true
+    eval $(dbus-launch --sh-syntax) 2>/dev/null || true
 fi
 
 # Start KI-Browser
