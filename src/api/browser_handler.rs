@@ -172,8 +172,8 @@ impl BrowserCommandHandler {
             IpcCommand::TypeText { tab_id, text, selector, clear_first: _, frame_id } => {
                 self.handle_type_text(&engine_guard, &tab_id, &text, selector.as_deref(), frame_id.as_deref()).await
             }
-            IpcCommand::Scroll { tab_id, x, y, delta_x, delta_y, selector, behavior } => {
-                self.handle_scroll(&engine_guard, &tab_id, x, y, delta_x, delta_y, selector, behavior).await
+            IpcCommand::Scroll { tab_id, x, y, delta_x, delta_y, selector, behavior, frame_id } => {
+                self.handle_scroll(&engine_guard, &tab_id, x, y, delta_x, delta_y, selector, behavior, frame_id.as_deref()).await
             }
             IpcCommand::CaptureScreenshot { tab_id, format, quality, full_page, selector, clip_x, clip_y, clip_width, clip_height, clip_scale } => {
                 let clip = if let (Some(x), Some(y), Some(w), Some(h)) = (clip_x, clip_y, clip_width, clip_height) {
@@ -621,6 +621,7 @@ impl BrowserCommandHandler {
         delta_y: Option<i32>,
         selector: Option<String>,
         behavior: Option<String>,
+        frame_id: Option<&str>,
     ) -> IpcResponse {
         let uuid = match Uuid::parse_str(tab_id) {
             Ok(u) => u,
@@ -643,6 +644,47 @@ impl BrowserCommandHandler {
                 dx, dy, behavior_str
             )
         };
+
+        // If frame_id is set, try CDP frame-isolated evaluation first
+        if let Some(fid) = frame_id {
+            if let Some(ref cdp) = self.cdp_client {
+                let tab_url = match engine {
+                    #[cfg(feature = "cef-browser")]
+                    Some(BrowserEngineWrapper::Cef(e)) => {
+                        e.get_tabs_sync().into_iter()
+                            .find(|t| t.id == uuid)
+                            .map(|t| t.url.clone())
+                    }
+                    _ => None,
+                };
+
+                if let Some(url) = tab_url {
+                    match cdp.find_target_ws_url(&url).await {
+                        Ok(ws_url) => {
+                            match crate::api::cdp_frames::evaluate_in_frame(cdp, &ws_url, fid, &js, true).await {
+                                Ok(result) => {
+                                    debug!("CDP frame scroll succeeded for tab {} frame '{}'", tab_id, fid);
+                                    let value: serde_json::Value = serde_json::from_str(&result)
+                                        .unwrap_or(serde_json::Value::Null);
+                                    if let Some(err) = value.get("error").and_then(|e| e.as_str()) {
+                                        return IpcResponse::error(format!("Scroll failed: {}", err));
+                                    }
+                                    return IpcResponse::success_with_data(value);
+                                }
+                                Err(e) => {
+                                    debug!("CDP frame scroll failed ({}), falling back to CEF", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            debug!("CDP target discovery failed for scroll ({}), falling back to CEF", e);
+                        }
+                    }
+                }
+            }
+            // No CDP client available for frame-isolated scroll
+            warn!("Frame-specific scroll not possible without CDP, using main frame");
+        }
 
         match engine {
             #[cfg(feature = "cef-browser")]

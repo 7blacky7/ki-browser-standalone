@@ -85,6 +85,8 @@ pub async fn navigate(
 }
 
 /// POST /click - Click at coordinates or on element
+///
+/// Unterstuetzt frame_id fuer iFrame-Isolation via CDP. Cross-Origin Frames benoetigen CDP.
 #[utoipa::path(
     post,
     path = "/click",
@@ -221,6 +223,8 @@ pub async fn drag(
 }
 
 /// POST /type - Type text into focused element or specified selector
+///
+/// Unterstuetzt frame_id fuer iFrame-Isolation via CDP. Cross-Origin Frames benoetigen CDP.
 #[utoipa::path(
     post,
     path = "/type",
@@ -286,6 +290,8 @@ pub async fn type_text(
 }
 
 /// POST /evaluate - Execute JavaScript in the browser context
+///
+/// Unterstuetzt frame_id fuer iFrame-Isolation via CDP. Cross-Origin Frames benoetigen CDP.
 #[utoipa::path(
     post,
     path = "/evaluate",
@@ -464,6 +470,8 @@ pub async fn screenshot(
 }
 
 /// POST /scroll - Scroll the page by coordinates or to a selector
+///
+/// Unterstuetzt frame_id fuer iFrame-Isolation via CDP. Cross-Origin Frames benoetigen CDP.
 #[utoipa::path(
     post,
     path = "/scroll",
@@ -507,6 +515,7 @@ pub async fn scroll(
         delta_y: request.delta_y,
         selector: request.selector,
         behavior: request.behavior,
+        frame_id: request.frame_id,
     };
 
     match state.ipc_channel.send_command(IpcMessage::Command(command)).await {

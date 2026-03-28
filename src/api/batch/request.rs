@@ -112,6 +112,7 @@ impl BatchRequest {
                         delta_y: delta_y.map(|v| v as i32),
                         selector: None,
                         behavior: None,
+                        frame_id: None,
                     },
                     BatchCommand::Wait { .. } => {
                         // Wait operations are handled by the executor, not IPC

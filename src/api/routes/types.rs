@@ -122,6 +122,9 @@ pub struct ClickRequest {
     pub button: String,
     #[serde(default)]
     pub modifiers: Option<Vec<String>>,
+    /// Frame-ID fuer iFrame-Isolation. Aendert sich bei Navigation — /frames muss danach neu
+    /// abgerufen werden. Unterstuetzt: CDP-native IDs, 'main', 'frame-N' Index, iframe name/id
+    /// Attribute.
     #[serde(default)]
     pub frame_id: Option<String>,
 }
@@ -155,6 +158,9 @@ pub struct TypeRequest {
     pub selector: Option<String>,
     #[serde(default)]
     pub clear_first: Option<bool>,
+    /// Frame-ID fuer iFrame-Isolation. Aendert sich bei Navigation — /frames muss danach neu
+    /// abgerufen werden. Unterstuetzt: CDP-native IDs, 'main', 'frame-N' Index, iframe name/id
+    /// Attribute.
     #[serde(default)]
     pub frame_id: Option<String>,
 }
@@ -167,6 +173,9 @@ pub struct EvaluateRequest {
     pub script: String,
     #[serde(default)]
     pub await_promise: Option<bool>,
+    /// Frame-ID fuer iFrame-Isolation. Aendert sich bei Navigation — /frames muss danach neu
+    /// abgerufen werden. Unterstuetzt: CDP-native IDs, 'main', 'frame-N' Index, iframe name/id
+    /// Attribute.
     #[serde(default)]
     pub frame_id: Option<String>,
 }
@@ -248,6 +257,11 @@ pub struct ScrollRequest {
     pub selector: Option<String>,
     #[serde(default)]
     pub behavior: Option<String>, // "auto", "smooth", "instant"
+    /// Frame-ID fuer iFrame-Isolation. Aendert sich bei Navigation — /frames muss danach neu
+    /// abgerufen werden. Unterstuetzt: CDP-native IDs, 'main', 'frame-N' Index, iframe name/id
+    /// Attribute.
+    #[serde(default)]
+    pub frame_id: Option<String>,
 }
 
 /// Find element query parameters

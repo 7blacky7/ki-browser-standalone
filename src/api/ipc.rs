@@ -137,6 +137,8 @@ pub enum IpcCommand {
         delta_y: Option<i32>,
         selector: Option<String>,
         behavior: Option<String>,
+        #[serde(default)]
+        frame_id: Option<String>,
     },
 
     /// Find element
