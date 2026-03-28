@@ -49,7 +49,7 @@ pub struct CaptchaDetectResult {
     pub steps: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CaptchaPosition {
     pub x: i32,
     pub y: i32,
@@ -70,7 +70,51 @@ pub struct CaptchaSolveResult {
 }
 
 // ============================================================================
-// Detection Script
+// Lightweight Detection (for /navigate response — minimal overhead)
+// ============================================================================
+
+/// Lightweight CAPTCHA check result for embedding in /navigate response.
+#[derive(Debug, Serialize, Clone)]
+pub struct CaptchaQuickCheck {
+    pub detected: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub captcha_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<CaptchaPosition>,
+}
+
+/// Lightweight JS that checks for CAPTCHA presence in ~5ms (no grid analysis, no steps).
+pub const CAPTCHA_QUICK_SCRIPT: &str = r#"(function() {
+    var r = {d:false, t:null, x:0, y:0, w:0, h:0};
+
+    // Google Sorry / reCAPTCHA page
+    if (location.href.includes('/sorry') || location.href.includes('nocaptcha')) {
+        r.d=true; r.t='google_sorry'; return JSON.stringify(r);
+    }
+
+    // reCAPTCHA iframe
+    var rc = document.querySelector('iframe[src*="recaptcha"]');
+    if (rc) { var b=rc.getBoundingClientRect(); r.d=true; r.t='recaptcha'; r.x=Math.round(b.x); r.y=Math.round(b.y); r.w=Math.round(b.width); r.h=Math.round(b.height); return JSON.stringify(r); }
+
+    // Cloudflare Turnstile
+    var cf = document.querySelector('iframe[src*="challenges.cloudflare.com"], div.cf-turnstile');
+    if (cf) { var b=cf.getBoundingClientRect(); r.d=true; r.t='cloudflare'; r.x=Math.round(b.x); r.y=Math.round(b.y); r.w=Math.round(b.width); r.h=Math.round(b.height); return JSON.stringify(r); }
+
+    // hCaptcha
+    var hc = document.querySelector('iframe[src*="hcaptcha.com"]');
+    if (hc) { var b=hc.getBoundingClientRect(); r.d=true; r.t='hcaptcha'; r.x=Math.round(b.x); r.y=Math.round(b.y); r.w=Math.round(b.width); r.h=Math.round(b.height); return JSON.stringify(r); }
+
+    // Generic challenge text
+    var txt = document.body ? document.body.innerText.substring(0,1000) : '';
+    if (txt.match(/not a robot|verify you.re human|unusual traffic|Bestätigen Sie/i)) {
+        r.d=true; r.t='generic_challenge'; return JSON.stringify(r);
+    }
+
+    return JSON.stringify(r);
+})()"#;
+
+// ============================================================================
+// Full Detection Script
 // ============================================================================
 
 const CAPTCHA_DETECT_SCRIPT: &str = r#"(function() {
@@ -94,21 +138,9 @@ const CAPTCHA_DETECT_SCRIPT: &str = r#"(function() {
         return JSON.stringify(result);
     }
 
-    // --- reCAPTCHA v2 checkbox ---
-    var recaptchaFrame = document.querySelector('iframe[src*="recaptcha/api2/anchor"], iframe[src*="recaptcha/enterprise/anchor"]');
-    if (recaptchaFrame) {
-        var r = recaptchaFrame.getBoundingClientRect();
-        if (r.width > 0 && r.height > 0) {
-            result.detected = true;
-            result.captcha_type = 'recaptcha_checkbox';
-            result.position = {x: Math.round(r.x + 27), y: Math.round(r.y + 27), width: Math.round(r.width), height: Math.round(r.height)};
-            result.iframe_url = recaptchaFrame.src;
-            result.hint = 'Click checkbox at position. Checkbox is ~27px from top-left of iframe.';
-            return JSON.stringify(result);
-        }
-    }
-
-    // --- reCAPTCHA v2 image challenge (buster frame visible) ---
+    // --- reCAPTCHA v2 image challenge (bframe) — MUST CHECK BEFORE checkbox ---
+    // After clicking the checkbox, the bframe (image challenge) may appear while
+    // the anchor iframe is still present. Checking bframe first avoids misdetection.
     var challengeFrame = document.querySelector('iframe[src*="recaptcha/api2/bframe"], iframe[src*="recaptcha/enterprise/bframe"]');
     if (challengeFrame) {
         var r = challengeFrame.getBoundingClientRect();
@@ -118,6 +150,20 @@ const CAPTCHA_DETECT_SCRIPT: &str = r#"(function() {
             result.position = {x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height)};
             result.iframe_url = challengeFrame.src;
             result.hint = 'Image grid challenge. Use /screenshot with clip to capture the grid, analyze with vision, click correct tiles.';
+            return JSON.stringify(result);
+        }
+    }
+
+    // --- reCAPTCHA v2 checkbox (only if no bframe/image challenge is active) ---
+    var recaptchaFrame = document.querySelector('iframe[src*="recaptcha/api2/anchor"], iframe[src*="recaptcha/enterprise/anchor"]');
+    if (recaptchaFrame) {
+        var r = recaptchaFrame.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) {
+            result.detected = true;
+            result.captcha_type = 'recaptcha_checkbox';
+            result.position = {x: Math.round(r.x + 27), y: Math.round(r.y + 27), width: Math.round(r.width), height: Math.round(r.height)};
+            result.iframe_url = recaptchaFrame.src;
+            result.hint = 'Click checkbox at position. Checkbox is ~27px from top-left of iframe.';
             return JSON.stringify(result);
         }
     }

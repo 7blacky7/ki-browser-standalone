@@ -66,7 +66,13 @@ pub async fn navigate(
 
                 tracing::info!("Navigating tab {} to {}", tab_id, request.url);
 
-                Json(ApiResponse::success(())).into_response()
+                // Return immediately — include a hint that agent should check for CAPTCHA
+                // after waiting for page load. The lightweight check in navigate was too slow
+                // (2s delay made the response sluggish without guaranteeing the page was loaded).
+                // Instead: agent uses /debug/captcha/detect after confirming page is loaded.
+                Json(ApiResponse::success(serde_json::json!({
+                    "hint": "After page loads, POST /debug/captcha/detect to check for CAPTCHAs"
+                }))).into_response()
             } else {
                 (
                     StatusCode::BAD_REQUEST,
