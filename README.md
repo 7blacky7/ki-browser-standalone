@@ -64,13 +64,24 @@ curl -s -X POST localhost:3000/debug/captcha/solve -d "{\"tab_id\":\"$TAB\"}"
 | POST | `/tabs/new` | Create tab (`url?`, `active?`) |
 | POST | `/tabs/close` | Close tab (`tab_id`) |
 | POST | `/navigate` | Navigate (`tab_id`, `url`) |
-| POST | `/click` | Click (`tab_id`, `selector?` or `x,y`) |
-| POST | `/type` | Type text (`tab_id`, `text`, `selector?`) |
-| POST | `/scroll` | Scroll (`tab_id`, `delta_y`) |
+| POST | `/click` | Click (`tab_id`, `selector?` or `x,y`, `frame_id?`) |
+| POST | `/type` | Type text (`tab_id`, `text`, `selector?`, `frame_id?`) |
+| POST | `/scroll` | Scroll (`tab_id`, `delta_y`, `frame_id?`) |
 | POST | `/evaluate` | JS eval via CDP (`tab_id`, `script`, `frame_id?`) |
 | POST | `/drag` | Drag & drop (`tab_id`, `from_x/y`, `to_x/y`) |
 | GET | `/screenshot` | Screenshot (`tab_id`, `format?`, `clip_*?`, `full_page?`, `raw?`) |
-| GET | `/frames` | iFrame tree |
+| GET | `/frames` | iFrame tree — **Frame-IDs invalidieren nach Navigation, danach neu abrufen** |
+
+#### iFrame-Isolation (`frame_id`)
+
+Endpoints `/click`, `/type`, `/evaluate`, `/scroll` unterstuetzen `frame_id` fuer iFrame-Isolation via CDP. Unterstuetzte Formate:
+
+- **CDP-native IDs** — direkt von `/frames` zurueckgegeben
+- **`'main'`** — Hauptframe der Seite
+- **`'frame-N'`** — Index-basiert (z.B. `frame-0`, `frame-1`)
+- **iframe `name`/`id` Attribute** — z.B. `name="checkout"` oder `id="payment"`
+
+> **Wichtig:** Frame-IDs invalidieren nach jeder Navigation. `/frames` muss danach neu abgerufen werden. Cross-Origin Frames benoetigen CDP.
 
 ### DOM & Vision
 

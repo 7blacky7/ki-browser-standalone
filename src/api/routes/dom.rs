@@ -244,6 +244,9 @@ pub async fn dom_snapshot(
 }
 
 /// GET /frames - Get frame tree for a tab
+///
+/// Frame-IDs invalidieren nach Navigation. Dieser Endpoint muss nach jeder Navigation erneut
+/// aufgerufen werden.
 pub async fn get_frames(
     State(state): State<AppState>,
     Query(query): Query<FramesQuery>,
