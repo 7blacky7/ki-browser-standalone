@@ -138,13 +138,14 @@ const CAPTCHA_DETECT_SCRIPT: &str = r#"(function() {
         return JSON.stringify(result);
     }
 
-    // --- reCAPTCHA v2 image challenge (bframe) — MUST CHECK BEFORE checkbox ---
-    // After clicking the checkbox, the bframe (image challenge) may appear while
-    // the anchor iframe is still present. Checking bframe first avoids misdetection.
+    // --- reCAPTCHA v2 image challenge (bframe) — check if VISIBLE on screen ---
+    // The bframe always exists in the DOM but is offscreen (y=-9999) until
+    // the checkbox is clicked and an image challenge appears. Only treat as
+    // image challenge if bframe is on-screen (y >= 0).
     var challengeFrame = document.querySelector('iframe[src*="recaptcha/api2/bframe"], iframe[src*="recaptcha/enterprise/bframe"]');
     if (challengeFrame) {
         var r = challengeFrame.getBoundingClientRect();
-        if (r.width > 100 && r.height > 100) {
+        if (r.width > 100 && r.height > 100 && r.y >= 0) {
             result.detected = true;
             result.captcha_type = 'recaptcha_image';
             result.position = {x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height)};
@@ -168,17 +169,30 @@ const CAPTCHA_DETECT_SCRIPT: &str = r#"(function() {
         }
     }
 
-    // --- Cloudflare Turnstile ---
+    // --- Cloudflare Turnstile (iframe OR div.cf-turnstile) ---
+    // Turnstile can be a visible iframe OR an invisible div that runs in background.
+    // The div.cf-turnstile is the container; its inner iframe may be hidden/0x0.
     var turnstile = document.querySelector('iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"]');
+    var turnstileDiv = document.querySelector('div.cf-turnstile, [data-turnstile-callback]');
     if (turnstile) {
         var r = turnstile.getBoundingClientRect();
         if (r.width > 0 && r.height > 0) {
             result.detected = true;
             result.captcha_type = 'cloudflare_turnstile';
             result.position = {x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), width: Math.round(r.width), height: Math.round(r.height)};
-            result.hint = 'Cloudflare Turnstile checkbox. Click center of iframe.';
+            result.hint = 'Cloudflare Turnstile widget visible. Click center of iframe.';
             return JSON.stringify(result);
         }
+    }
+    if (turnstileDiv) {
+        var r = turnstileDiv.getBoundingClientRect();
+        result.detected = true;
+        result.captcha_type = 'cloudflare_turnstile_invisible';
+        result.position = (r.width > 0 && r.height > 0)
+            ? {x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), width: Math.round(r.width), height: Math.round(r.height)}
+            : null;
+        result.hint = 'Cloudflare Turnstile (invisible/background). Runs fingerprint check automatically. Wait 5-10s and reload if blocked. Cannot be solved by clicking.';
+        return JSON.stringify(result);
     }
 
     // --- hCaptcha ---
@@ -243,6 +257,13 @@ fn generate_solving_steps(result: &CaptchaDetectResult, tab_id: &str) -> Vec<Str
             "Warte 5s (Turnstile braucht laenger).".to_string(),
             "POST /debug/captcha/detect nochmal pruefen.".to_string(),
             "Falls immer noch detected: Seite neu laden (POST /navigate zur selben URL), dann nochmal versuchen.".to_string(),
+        ],
+        "cloudflare_turnstile_invisible" => vec![
+            "Cloudflare Turnstile laeuft unsichtbar im Hintergrund (Fingerprint-Check).".to_string(),
+            "Dieses CAPTCHA kann NICHT durch Klicken geloest werden.".to_string(),
+            "Warte 5-10s — Turnstile prueft den Browser-Fingerprint automatisch.".to_string(),
+            format!("Falls blockiert: Seite neu laden (POST /navigate mit {{\"tab_id\":\"{}\",\"url\":\"AKTUELLE_URL\"}}).", tab_id),
+            "Falls wiederholt blockiert: Diese Seite hat aggressive Bot-Detection. Versuche die Aufgabe ohne Login/Registrierung.".to_string(),
         ],
         "recaptcha_image" => {
             let clip_scale = if w > 0 && w < 300 { 3.0 } else { 2.0 };
