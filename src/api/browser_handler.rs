@@ -714,7 +714,7 @@ impl BrowserCommandHandler {
         tab_id: &str,
         params: ScreenshotParams<'_>,
     ) -> IpcResponse {
-        let ScreenshotParams { format, quality, full_page, selector: _selector, clip: _clip } = params;
+        let ScreenshotParams { format, quality, full_page, selector: _selector, clip } = params;
         let uuid = match Uuid::parse_str(tab_id) {
             Ok(u) => u,
             Err(_) => return IpcResponse::error("Invalid tab ID"),
@@ -726,10 +726,15 @@ impl BrowserCommandHandler {
             _ => ScreenshotFormat::Png,
         };
 
+        let clip_region = clip.map(|(x, y, w, h, scale)| {
+            crate::browser::screenshot::ClipRegion::with_scale(x, y, w, h, scale)
+        });
+
         let options = ScreenshotOptions {
             format: screenshot_format,
             quality: quality.unwrap_or(90),
             full_page,
+            clip_region,
             ..Default::default()
         };
 

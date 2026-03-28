@@ -250,18 +250,34 @@ pub(crate) fn screenshot_internal(
         return Err(anyhow!("No frame data available for screenshot"));
     }
 
-    // Convert BGRA to RGB/RGBA based on format
-    let image_data = convert_frame_to_image(
-        &frame_buffer,
-        width,
-        height,
-        options.format,
-        options.quality,
-    )?;
+    // Convert BGRA to RGB/RGBA based on format, applying clip region if specified
+    let (image_data, out_width, out_height) = if let Some(ref clip) = options.clip_region {
+        // Crop and optionally scale the frame buffer
+        let image_data = convert_frame_to_image_with_clip(
+            &frame_buffer,
+            width,
+            height,
+            clip.x, clip.y, clip.width, clip.height, clip.scale,
+            options.format,
+            options.quality,
+        )?;
+        let out_w = (clip.width * clip.scale) as u32;
+        let out_h = (clip.height * clip.scale) as u32;
+        (image_data, out_w, out_h)
+    } else {
+        let image_data = convert_frame_to_image(
+            &frame_buffer,
+            width,
+            height,
+            options.format,
+            options.quality,
+        )?;
+        (image_data, width, height)
+    };
 
     let data = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &image_data);
 
-    Ok(Screenshot::new(data, options.format, width, height, 1.0))
+    Ok(Screenshot::new(data, options.format, out_width, out_height, 1.0))
 }
 
 /// Converts raw BGRA frame buffer to encoded image (PNG, JPEG, or WebP).
@@ -303,6 +319,65 @@ fn convert_frame_to_image(
 
     img.write_to(&mut std::io::Cursor::new(&mut output), format)
         .context("Failed to encode screenshot")?;
+
+    Ok(output)
+}
+
+/// Converts raw BGRA frame buffer to encoded image with clip region and scale.
+fn convert_frame_to_image_with_clip(
+    buffer: &[u8],
+    width: u32,
+    height: u32,
+    clip_x: f64,
+    clip_y: f64,
+    clip_w: f64,
+    clip_h: f64,
+    scale: f64,
+    format: ScreenshotFormat,
+    quality: u8,
+) -> Result<Vec<u8>> {
+    use image::{ImageBuffer, ImageOutputFormat, Rgba};
+
+    // Clamp clip region to image bounds
+    let cx = (clip_x.max(0.0) as u32).min(width);
+    let cy = (clip_y.max(0.0) as u32).min(height);
+    let cw = (clip_w as u32).min(width - cx);
+    let ch = (clip_h as u32).min(height - cy);
+
+    // Create cropped image from BGRA buffer
+    let mut cropped: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::new(cw, ch);
+    for (x, y, pixel) in cropped.enumerate_pixels_mut() {
+        let src_x = cx + x;
+        let src_y = cy + y;
+        let idx = ((src_y * width + src_x) * 4) as usize;
+        if idx + 3 < buffer.len() {
+            *pixel = Rgba([
+                buffer[idx + 2], // R (from BGRA)
+                buffer[idx + 1], // G
+                buffer[idx],     // B
+                buffer[idx + 3], // A
+            ]);
+        }
+    }
+
+    // Scale if scale != 1.0
+    let final_img = if (scale - 1.0).abs() > 0.01 {
+        let new_w = (cw as f64 * scale) as u32;
+        let new_h = (ch as f64 * scale) as u32;
+        image::imageops::resize(&cropped, new_w, new_h, image::imageops::FilterType::Lanczos3)
+    } else {
+        cropped
+    };
+
+    let mut output = Vec::new();
+    let fmt = match format {
+        ScreenshotFormat::Png => ImageOutputFormat::Png,
+        ScreenshotFormat::Jpeg => ImageOutputFormat::Jpeg(quality),
+        ScreenshotFormat::WebP => ImageOutputFormat::Png,
+    };
+
+    final_img.write_to(&mut std::io::Cursor::new(&mut output), fmt)
+        .context("Failed to encode clipped screenshot")?;
 
     Ok(output)
 }
