@@ -23,6 +23,7 @@ pub mod websocket;
 pub mod cdp_client;
 pub mod cdp_frames;
 pub mod debug_routes;
+pub mod guard_middleware;
 
 pub use agent_registry::{AgentInfo, AgentRegistry};
 pub use agent_routes::agent_routes;

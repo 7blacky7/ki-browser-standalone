@@ -280,11 +280,18 @@ impl ApiServer {
         use utoipa::OpenApi;
         use utoipa_swagger_ui::SwaggerUi;
 
+        let guard_state = crate::api::guard_middleware::GuardState::default();
+
         create_router(self.state.clone())
             .merge(
                 SwaggerUi::new("/swagger-ui")
                     .url("/api-doc/openapi.json", ApiDoc::openapi()),
             )
+            .fallback(crate::api::guard_middleware::guard_fallback)
+            .layer(axum::middleware::from_fn_with_state(
+                guard_state,
+                crate::api::guard_middleware::guard_layer,
+            ))
             .layer(Self::configure_cors())
             .layer(TraceLayer::new_for_http())
     }
