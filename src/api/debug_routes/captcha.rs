@@ -43,6 +43,10 @@ pub struct CaptchaDetectResult {
     pub iframe_url: Option<String>,
     /// Hint for the agent on how to proceed.
     pub hint: String,
+    /// Step-by-step solving instructions with exact API calls.
+    /// The agent can follow these without any prior knowledge.
+    #[serde(default, skip_deserializing)]
+    pub steps: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -168,6 +172,90 @@ const CAPTCHA_DETECT_SCRIPT: &str = r#"(function() {
 })()"#;
 
 // ============================================================================
+// Step Generation — Agent receives exact instructions to solve the CAPTCHA
+// ============================================================================
+
+fn generate_solving_steps(result: &CaptchaDetectResult, tab_id: &str) -> Vec<String> {
+    if !result.detected {
+        return vec!["No CAPTCHA detected. Proceed normally.".to_string()];
+    }
+
+    let pos = result.position.as_ref();
+    let (x, y, w, h) = pos
+        .map(|p| (p.x, p.y, p.width, p.height))
+        .unwrap_or((0, 0, 0, 0));
+
+    match result.captcha_type.as_str() {
+        "recaptcha_checkbox" | "hcaptcha" => vec![
+            format!("POST /debug/captcha/solve mit {{\"tab_id\":\"{}\"}} — klickt die Checkbox automatisch.", tab_id),
+            "Warte 3s, dann nochmal POST /debug/captcha/detect pruefen.".to_string(),
+            "Falls 'recaptcha_image' erscheint: Image-Challenge wurde ausgeloest, folge den neuen Steps.".to_string(),
+            "Falls 'none': CAPTCHA geloest, weiter mit der eigentlichen Aufgabe.".to_string(),
+        ],
+        "cloudflare_turnstile" => vec![
+            format!("POST /debug/captcha/solve mit {{\"tab_id\":\"{}\"}} — klickt das Turnstile-Widget.", tab_id),
+            "Warte 5s (Turnstile braucht laenger).".to_string(),
+            "POST /debug/captcha/detect nochmal pruefen.".to_string(),
+            "Falls immer noch detected: Seite neu laden (POST /navigate zur selben URL), dann nochmal versuchen.".to_string(),
+        ],
+        "recaptcha_image" => {
+            let clip_scale = if w > 0 && w < 300 { 3.0 } else { 2.0 };
+            let grid_hint = if w > 0 && h > 0 {
+                let ratio = w as f64 / h as f64;
+                if (ratio - 1.0).abs() < 0.2 {
+                    if w > 350 { "4x4" } else { "3x3" }
+                } else {
+                    "3x3"
+                }
+            } else {
+                "3x3"
+            };
+            let cell_w = w / if grid_hint == "4x4" { 4 } else { 3 };
+            let cell_h = h / if grid_hint == "4x4" { 4 } else { 3 };
+
+            vec![
+                format!("Image-Grid CAPTCHA erkannt (vermutlich {} Grid, Position: {},{}  {}x{}).", grid_hint, x, y, w, h),
+                format!("Schritt 1: Zoom-Screenshot der Challenge-Area:"),
+                format!("  GET /screenshot?tab_id={}&clip_x={}&clip_y={}&clip_width={}&clip_height={}&clip_scale={}&format=jpeg&quality=95&raw=true", tab_id, x, y, w, h, clip_scale),
+                "Schritt 2: Analysiere das Bild mit deiner Vision — lies den Aufgabentext oben (z.B. 'Select all squares with traffic lights').".to_string(),
+                format!("Schritt 3: Klicke auf die richtigen Zellen. Jede Zelle ist ~{}x{}px. Berechne die Mitte jeder Zelle:", cell_w, cell_h),
+                format!("  Zelle (Reihe, Spalte) = POST /click mit x={} + spalte*{} + {}, y={} + reihe*{} + {}", x, cell_w, cell_w/2, y, cell_h, cell_h/2),
+                "Schritt 4: Klicke den 'Verify'/'Bestätigen' Button (meist unter dem Grid).".to_string(),
+                "Schritt 5: Warte 2s, dann POST /debug/captcha/detect — neue Challenge oder geloest?".to_string(),
+                "TIPP: Bei 'Select all images' koennen nach Klick neue Bilder nachladen — warte 1s nach jedem Klick und pruefe ob sich Zellen aendern.".to_string(),
+            ]
+        }
+        "text_captcha" => vec![
+            format!("Text-CAPTCHA erkannt (Position: {},{}  {}x{}).", x, y, w, h),
+            format!("Schritt 1: Zoom-Screenshot des CAPTCHA-Bildes:"),
+            format!("  GET /screenshot?tab_id={}&clip_x={}&clip_y={}&clip_width={}&clip_height={}&clip_scale=3&format=png&raw=true", tab_id, x, y, w, h),
+            "Schritt 2: Lies den Text im Bild (OCR/Vision).".to_string(),
+            "Schritt 3: Tippe den Text ins Eingabefeld:".to_string(),
+            format!("  POST /type mit {{\"tab_id\":\"{}\",\"text\":\"ERKANNTER_TEXT\",\"selector\":\"input[name*='captcha'], #captchacharacters\"}}", tab_id),
+            "Schritt 4: Submit das Formular (Enter-Taste oder Submit-Button klicken).".to_string(),
+        ],
+        "google_sorry" => vec![
+            "Google Sorry-Seite ohne sichtbares CAPTCHA.".to_string(),
+            "Option 1: Warte 30-60s und lade die Seite neu.".to_string(),
+            "Option 2: Verwende eine andere Suchmaschine (Bing, DuckDuckGo).".to_string(),
+            format!("Option 3: POST /navigate mit {{\"tab_id\":\"{}\",\"url\":\"https://www.bing.com/search?q=DEINE_SUCHE\"}}", tab_id),
+        ],
+        "generic_challenge" => vec![
+            "Generischer Bot-Challenge erkannt (Text auf der Seite deutet auf Verifizierung hin).".to_string(),
+            format!("Schritt 1: Screenshot fuer visuelle Analyse:"),
+            format!("  GET /screenshot?tab_id={}&raw=true", tab_id),
+            "Schritt 2: Analysiere den Screenshot — was fuer eine Challenge ist es?".to_string(),
+            "Schritt 3: Falls Checkbox sichtbar: POST /click auf die Checkbox-Koordinaten.".to_string(),
+            "Schritt 4: Falls Warteseite: sleep 10s, dann Seite neu laden.".to_string(),
+        ],
+        _ => vec![
+            format!("Unbekannter CAPTCHA-Typ: '{}'. Screenshot machen und visuell analysieren.", result.captcha_type),
+            format!("  GET /screenshot?tab_id={}&raw=true", tab_id),
+        ],
+    }
+}
+
+// ============================================================================
 // Handlers
 // ============================================================================
 
@@ -189,7 +277,10 @@ async fn detect_captcha(
 
     match evaluate_in_tab(&state, &tab_id, CAPTCHA_DETECT_SCRIPT).await {
         Ok(json_str) => match serde_json::from_str::<CaptchaDetectResult>(&json_str) {
-            Ok(result) => Json(ApiResponse::success(result)).into_response(),
+            Ok(mut result) => {
+                result.steps = generate_solving_steps(&result, &tab_id);
+                Json(ApiResponse::success(result)).into_response()
+            }
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ApiResponse::<()>::error(format!("Parse error: {}", e))),
