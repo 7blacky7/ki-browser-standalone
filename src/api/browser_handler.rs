@@ -172,8 +172,8 @@ impl BrowserCommandHandler {
             IpcCommand::TypeText { tab_id, text, selector, clear_first: _, frame_id } => {
                 self.handle_type_text(&engine_guard, &tab_id, &text, selector.as_deref(), frame_id.as_deref()).await
             }
-            IpcCommand::Scroll { tab_id, x, y, delta_x, delta_y, selector: _, behavior: _ } => {
-                self.handle_scroll(&engine_guard, &tab_id, x, y, delta_x, delta_y).await
+            IpcCommand::Scroll { tab_id, x, y, delta_x, delta_y, selector, behavior } => {
+                self.handle_scroll(&engine_guard, &tab_id, x, y, delta_x, delta_y, selector, behavior).await
             }
             IpcCommand::CaptureScreenshot { tab_id, format, quality, full_page, selector, clip_x, clip_y, clip_width, clip_height, clip_scale } => {
                 let clip = if let (Some(x), Some(y), Some(w), Some(h)) = (clip_x, clip_y, clip_width, clip_height) {
@@ -553,6 +553,8 @@ impl BrowserCommandHandler {
         _y: Option<i32>,
         delta_x: Option<i32>,
         delta_y: Option<i32>,
+        selector: Option<String>,
+        behavior: Option<String>,
     ) -> IpcResponse {
         let uuid = match Uuid::parse_str(tab_id) {
             Ok(u) => u,
@@ -561,14 +563,34 @@ impl BrowserCommandHandler {
 
         let dx = delta_x.unwrap_or(0);
         let dy = delta_y.unwrap_or(100);
+        let behavior_str = behavior.unwrap_or_else(|| "instant".to_string());
+
+        // Use JS-based scrolling for reliability (CEF MouseWheel at 0,0 is unreliable)
+        let js = if let Some(ref sel) = selector {
+            format!(
+                "(() => {{ var el = document.querySelector('{}'); if (!el) return JSON.stringify({{error: 'Element not found'}}); el.scrollIntoView({{behavior: '{}', block: 'start'}}); return JSON.stringify({{scrollY: window.scrollY}}); }})()",
+                sel.replace('\'', "\\'"), behavior_str
+            )
+        } else {
+            format!(
+                "(() => {{ window.scrollBy({{left: {}, top: {}, behavior: '{}'}}); return JSON.stringify({{scrollY: window.scrollY}}); }})()",
+                dx, dy, behavior_str
+            )
+        };
 
         match engine {
             #[cfg(feature = "cef-browser")]
             Some(BrowserEngineWrapper::Cef(e)) => {
-                let scroll_x = _x.unwrap_or(0);
-                let scroll_y = _y.unwrap_or(0);
-                match e.scroll(uuid, scroll_x, scroll_y, dx, dy).await {
-                    Ok(_) => IpcResponse::success(),
+                match e.execute_js_with_result(uuid, &js).await {
+                    Ok(Some(result)) => {
+                        let value: serde_json::Value = serde_json::from_str(&result)
+                            .unwrap_or(serde_json::Value::Null);
+                        if let Some(err) = value.get("error").and_then(|e| e.as_str()) {
+                            return IpcResponse::error(format!("Scroll failed: {}", err));
+                        }
+                        IpcResponse::success_with_data(value)
+                    }
+                    Ok(None) => IpcResponse::success(),
                     Err(e) => IpcResponse::error(e.to_string()),
                 }
             }
@@ -965,7 +987,7 @@ impl BrowserCommandHandler {
         engine: &Option<BrowserEngineWrapper>,
         tab_id: &str,
     ) -> IpcResponse {
-        let _uuid = match Uuid::parse_str(tab_id) {
+        let uuid = match Uuid::parse_str(tab_id) {
             Ok(u) => u,
             Err(_) => return IpcResponse::error("Invalid tab ID"),
         };
@@ -973,21 +995,45 @@ impl BrowserCommandHandler {
         match engine {
             #[cfg(feature = "cef-browser")]
             Some(BrowserEngineWrapper::Cef(e)) => {
-                match e.get_frame_tree(_uuid).await {
-                    Ok(frames) => {
-                        let frames_data: Vec<_> = frames.iter().map(|f| {
-                            serde_json::json!({
-                                "frame_id": f.frame_id,
-                                "parent_frame_id": f.parent_frame_id,
-                                "url": f.url,
-                                "name": f.name,
-                                "security_origin": f.security_origin,
-                            })
-                        }).collect();
+                // Engine trait default returns empty vec, so use JS-based extraction
+                let js = r#"
+                    (() => {
+                        const frames = [{
+                            frame_id: 'main',
+                            parent_frame_id: null,
+                            url: location.href,
+                            name: '',
+                            security_origin: location.origin
+                        }];
+                        document.querySelectorAll('iframe').forEach((f, i) => {
+                            frames.push({
+                                frame_id: f.id || f.name || `frame-${i}`,
+                                parent_frame_id: 'main',
+                                url: f.src || '',
+                                name: f.name || '',
+                                security_origin: (() => { try { return new URL(f.src || location.href).origin; } catch(e) { return ''; } })()
+                            });
+                        });
+                        return JSON.stringify(frames);
+                    })()
+                "#;
+                match e.execute_js_with_result(uuid, js).await {
+                    Ok(Some(result)) => {
+                        let frames: serde_json::Value = serde_json::from_str(&result)
+                            .unwrap_or(serde_json::Value::Array(vec![]));
+                        // Handle double-encoded JSON string
+                        let frames = if let serde_json::Value::String(ref s) = frames {
+                            serde_json::from_str(s).unwrap_or(serde_json::Value::Array(vec![]))
+                        } else {
+                            frames
+                        };
                         IpcResponse::success_with_data(serde_json::json!({
-                            "frames": frames_data
+                            "frames": frames
                         }))
                     }
+                    Ok(None) => IpcResponse::success_with_data(serde_json::json!({
+                        "frames": []
+                    })),
                     Err(e) => IpcResponse::error(e.to_string()),
                 }
             }
