@@ -177,22 +177,40 @@ cef::wrap_app! {
                 cmd.append_switch(Some(&CefString::from("no-default-browser-check")));
 
                 if self.headless {
-                    // Headless: use SwiftShader for software-based WebGL.
-                    // This matches Playwright's behavior: WebGL works via ANGLE+SwiftShader
-                    // without requiring a real GPU. Critical for bot-detection evasion
-                    // (Sannysoft checks WebGL vendor/renderer).
-                    cmd.append_switch_with_value(
-                        Some(&CefString::from("use-gl")),
-                        Some(&CefString::from("angle")),
-                    );
-                    cmd.append_switch_with_value(
-                        Some(&CefString::from("use-angle")),
-                        Some(&CefString::from("swiftshader")),
-                    );
-                    cmd.append_switch(Some(&CefString::from("enable-webgl")));
-                    cmd.append_switch(Some(&CefString::from("disable-gpu-compositing")));
-                    cmd.append_switch(Some(&CefString::from("in-process-gpu")));
-                    debug!("CEF: SwiftShader WebGL enabled (headless mode)");
+                    // Headless: prefer real GPU if available, fall back to SwiftShader.
+                    // A real GPU avoids the "SwiftShader" WebGL renderer string which
+                    // is a strong bot-detection signal on sites like bot.sannysoft.com.
+                    let has_real_gpu = std::path::Path::new("/dev/dri/renderD128").exists();
+
+                    if has_real_gpu {
+                        // Real GPU available — use hardware-accelerated ANGLE via EGL
+                        cmd.append_switch_with_value(
+                            Some(&CefString::from("use-gl")),
+                            Some(&CefString::from("angle")),
+                        );
+                        cmd.append_switch_with_value(
+                            Some(&CefString::from("use-angle")),
+                            Some(&CefString::from("gl-egl")),
+                        );
+                        cmd.append_switch(Some(&CefString::from("enable-webgl")));
+                        cmd.append_switch(Some(&CefString::from("in-process-gpu")));
+                        cmd.append_switch(Some(&CefString::from("enable-gpu")));
+                        debug!("CEF: Real GPU detected (/dev/dri/renderD128), using hardware WebGL (headless mode)");
+                    } else {
+                        // No real GPU — fall back to SwiftShader for software-based WebGL
+                        cmd.append_switch_with_value(
+                            Some(&CefString::from("use-gl")),
+                            Some(&CefString::from("angle")),
+                        );
+                        cmd.append_switch_with_value(
+                            Some(&CefString::from("use-angle")),
+                            Some(&CefString::from("swiftshader")),
+                        );
+                        cmd.append_switch(Some(&CefString::from("enable-webgl")));
+                        cmd.append_switch(Some(&CefString::from("disable-gpu-compositing")));
+                        cmd.append_switch(Some(&CefString::from("in-process-gpu")));
+                        debug!("CEF: No GPU found, using SwiftShader WebGL (headless mode)");
+                    }
                 } else {
                     // GUI: keep GPU enabled for hardware-accelerated rendering
                     cmd.append_switch(Some(&CefString::from("in-process-gpu")));
