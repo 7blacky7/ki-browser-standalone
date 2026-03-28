@@ -106,5 +106,67 @@ pub async fn guard_layer(
         }
     }
 
+    // Rewrite 422 (Unprocessable Entity) Serde errors into friendly messages
+    if response.status() == StatusCode::UNPROCESSABLE_ENTITY {
+        let (parts, body) = response.into_parts();
+        if let Ok(bytes) = axum::body::to_bytes(body, 16384).await {
+            let body_str = String::from_utf8_lossy(&bytes);
+            let friendly = friendly_json_error(&path, &body_str);
+            let new_body = serde_json::to_vec(&json!({
+                "success": false,
+                "error": friendly
+            }))
+            .unwrap_or_else(|_| bytes.to_vec());
+            return Response::from_parts(parts, Body::from(new_body));
+        }
+        // If we couldn't read the body, reconstruct a generic error
+        return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({
+            "success": false,
+            "error": "Ungueltige Request-Daten"
+        }))).into_response();
+    }
+
     response
+}
+
+/// Rewrites cryptic Serde/Axum JSON rejection messages into agent-friendly hints.
+///
+/// Called from route handlers via the `AgentJson` extractor.
+pub fn friendly_json_error(path: &str, raw_error: &str) -> String {
+    // Parameter-specific hints based on endpoint + missing field
+    let hint = match (path, raw_error) {
+        (_, e) if e.contains("missing field `url`") => {
+            Some("Parameter 'url' ist erforderlich. Beispiel: {\"tab_id\":\"...\", \"url\":\"https://example.com\"}")
+        }
+        (_, e) if e.contains("missing field `text`") => {
+            Some("Parameter 'text' ist erforderlich. Beispiel: {\"tab_id\":\"...\", \"text\":\"Hello\", \"selector\":\"#input\"}")
+        }
+        (_, e) if e.contains("missing field `operations`") => {
+            Some("Nutze 'operations' statt 'commands'. Beispiel: {\"operations\":[{\"command\":{\"Navigate\":{\"url\":\"...\"}}}]}")
+        }
+        (_, e) if e.contains("missing field `script`") => {
+            Some("Parameter 'script' ist erforderlich. Beispiel: {\"tab_id\":\"...\", \"script\":\"document.title\"}")
+        }
+        (_, e) if e.contains("missing field `selector`") => {
+            Some("Parameter 'selector' ist erforderlich. Beispiel: {\"tab_id\":\"...\", \"selector\":\"#element\"}")
+        }
+        _ => None,
+    };
+
+    // Unknown field suggestions
+    let field_hint = if raw_error.contains("unknown field `direction`") {
+        Some("Nutze 'delta_y' statt 'direction'. Beispiel: {\"tab_id\":\"...\", \"delta_y\":300}")
+    } else if raw_error.contains("unknown field `commands`") {
+        Some("Nutze 'operations' statt 'commands'.")
+    } else if raw_error.contains("unknown field `query`") || raw_error.contains("unknown field `code`") {
+        Some("Nutze 'script' statt 'query'/'code'. Beispiel: {\"tab_id\":\"...\", \"script\":\"...\"}")
+    } else {
+        None
+    };
+
+    if let Some(h) = hint.or(field_hint) {
+        format!("{} ({})", h, raw_error)
+    } else {
+        format!("Ungueltige Request-Daten: {}", raw_error)
+    }
 }
