@@ -3,7 +3,7 @@
 
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
+    http::{StatusCode, header},
     response::IntoResponse,
     Json,
 };
@@ -399,6 +399,8 @@ pub async fn screenshot(
         clip_scale: query.clip_scale,
     };
 
+    let raw = query.raw.unwrap_or(false);
+
     match state.ipc_channel.send_command(IpcMessage::Command(command)).await {
         Ok(response) => {
             if response.success {
@@ -407,6 +409,30 @@ pub async fn screenshot(
                     if let Some(screenshot) = data.get("screenshot").and_then(|v| v.as_str()) {
                         let width = data.get("width").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                         let height = data.get("height").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+
+                        if raw {
+                            // Return raw binary image
+                            use base64::Engine;
+                            match base64::engine::general_purpose::STANDARD.decode(screenshot) {
+                                Ok(bytes) => {
+                                    let content_type = match query.format.as_str() {
+                                        "jpeg" | "jpg" => "image/jpeg",
+                                        _ => "image/png",
+                                    };
+                                    return (
+                                        [(header::CONTENT_TYPE, content_type)],
+                                        bytes,
+                                    ).into_response();
+                                }
+                                Err(e) => {
+                                    error!("Failed to decode base64 screenshot: {}", e);
+                                    return (
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        Json(ApiResponse::<ScreenshotResponse>::error("Failed to decode screenshot data")),
+                                    ).into_response();
+                                }
+                            }
+                        }
 
                         return Json(ApiResponse::success(ScreenshotResponse {
                             data: screenshot.to_string(),

@@ -213,6 +213,9 @@ pub struct ScreenshotQuery {
     /// Scale factor for clip region (default 1.0, use 2.0 to zoom 2x)
     #[serde(default)]
     pub clip_scale: Option<f64>,
+    /// If true, return raw binary image instead of JSON with base64 data
+    #[serde(default)]
+    pub raw: Option<bool>,
 }
 
 fn default_screenshot_format() -> String {
