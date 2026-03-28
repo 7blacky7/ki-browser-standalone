@@ -21,7 +21,7 @@ pub use types::*;
 pub use tabs::{list_tabs, create_tab, close_tab};
 pub use navigation::{navigate, click, drag, type_text, evaluate, screenshot, scroll};
 pub use dom::{find_element, annotate_elements, dom_snapshot, get_frames};
-pub use misc::{health_check, toggle_api, api_status, cdp_targets, cdp_target_by_tab};
+pub use misc::{health_check, toggle_api, api_status, cdp_targets, cdp_target_by_tab, list_endpoints};
 pub(crate) use misc::cdp_info;
 
 use axum::{
@@ -74,6 +74,7 @@ pub fn create_router(state: AppState) -> Router {
         // API management
         .route("/api/toggle", post(toggle_api))
         .route("/api/status", get(api_status))
+        .route("/api/endpoints", get(list_endpoints))
 
         // DOM extraction routes (structured data, content, forms)
         .merge(extraction_routes())

@@ -411,7 +411,7 @@ pub async fn screenshot(
         clip_scale: query.clip_scale,
     };
 
-    let raw = query.raw.unwrap_or(false);
+    let raw = query.raw.unwrap_or(true);
 
     match state.ipc_channel.send_command(IpcMessage::Command(command)).await {
         Ok(response) => {
