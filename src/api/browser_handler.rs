@@ -79,6 +79,8 @@ pub struct BrowserCommandHandler {
     engine: Arc<RwLock<Option<BrowserEngineWrapper>>>,
     /// CDP client for privileged operations (bypasses CSP/Trusted Types)
     cdp_client: Option<Arc<crate::api::cdp_client::CdpClient>>,
+    /// Complete stealth override script for CDP injection (pre-document)
+    stealth_init_script: Option<String>,
 }
 
 impl BrowserCommandHandler {
@@ -87,6 +89,7 @@ impl BrowserCommandHandler {
         Self {
             engine: Arc::new(RwLock::new(None)),
             cdp_client: None,
+            stealth_init_script: None,
         }
     }
 
@@ -95,12 +98,18 @@ impl BrowserCommandHandler {
         self.cdp_client = Some(client);
     }
 
+    /// Set the complete stealth init script for CDP pre-document injection.
+    pub fn set_stealth_init_script(&mut self, script: String) {
+        self.stealth_init_script = Some(script);
+    }
+
     /// Create a handler with a mock browser engine
     pub async fn with_mock() -> anyhow::Result<Self> {
         let wrapper = BrowserEngineWrapper::mock().await?;
         Ok(Self {
             engine: Arc::new(RwLock::new(Some(wrapper))),
             cdp_client: None,
+            stealth_init_script: None,
         })
     }
 
@@ -111,6 +120,7 @@ impl BrowserCommandHandler {
         Self {
             engine: Arc::new(RwLock::new(Some(wrapper))),
             cdp_client: None,
+            stealth_init_script: None,
         }
     }
 
@@ -122,6 +132,7 @@ impl BrowserCommandHandler {
         Self {
             engine: Arc::new(RwLock::new(Some(wrapper))),
             cdp_client: None,
+            stealth_init_script: None,
         }
     }
 
@@ -196,6 +207,14 @@ impl BrowserCommandHandler {
             IpcCommand::FindElement { tab_id, selector, timeout } => {
                 self.handle_find_element(&engine_guard, &tab_id, &selector, timeout).await
             }
+            IpcCommand::VisionLabels { tab_id } => {
+                // Delegate to annotate with default element types (all interactive)
+                let types = vec![
+                    "button".to_string(), "input".to_string(), "link".to_string(),
+                    "select".to_string(), "textarea".to_string(),
+                ];
+                self.handle_annotate(&engine_guard, &tab_id, types, None, false, String::new()).await
+            }
             IpcCommand::Shutdown => {
                 info!("Shutdown command received");
                 IpcResponse::success()
@@ -236,16 +255,17 @@ impl BrowserCommandHandler {
                         if let Some(ref cdp) = self.cdp_client {
                             let tab_url = tab.url.clone();
                             let cdp = cdp.clone();
+                            let stealth_script = self.stealth_init_script.clone();
                             tokio::spawn(async move {
                                 // Wait for CDP target to become available
                                 tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                                 if let Ok(ws_url) = cdp.find_target_ws_url(&tab_url).await {
-                                    // Inject webdriver override via CDP (definitive fix)
-                                    let stealth_js = r#"
+                                    // Inject complete stealth script via CDP (runs before any page JS)
+                                    let stealth_js = stealth_script.unwrap_or_else(|| r#"
                                         Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
                                         Object.defineProperty(Navigator.prototype, 'webdriver', {get: () => undefined});
-                                    "#;
-                                    match cdp.add_init_script(&ws_url, stealth_js).await {
+                                    "#.to_string());
+                                    match cdp.add_init_script(&ws_url, &stealth_js).await {
                                         Ok(_) => debug!("CDP stealth init-script injected for new tab"),
                                         Err(e) => debug!("CDP stealth injection failed: {}", e),
                                     }
@@ -303,6 +323,11 @@ impl BrowserCommandHandler {
             Err(_) => return IpcResponse::error("Invalid tab ID"),
         };
 
+        // Validate URL scheme before navigating
+        if !url.starts_with("http://") && !url.starts_with("https://") && !url.starts_with("about:") && !url.starts_with("data:") {
+            return IpcResponse::error(format!("Invalid URL scheme: URL must start with http://, https://, about:, or data: — got: {}", url));
+        }
+
         // Before navigating: inject stealth init-script via CDP so it runs
         // before any page JS on the new document.
         if let Some(ref cdp) = self.cdp_client {
@@ -316,34 +341,12 @@ impl BrowserCommandHandler {
                 _ => None,
             } {
                 if let Ok(ws_url) = cdp.find_target_ws_url(&tab_url).await {
-                    // Aggressive webdriver removal: delete from prototype, then
-                    // redefine as non-enumerable with value false.
-                    // Also patch getOwnPropertyDescriptor to hide the override.
-                    let stealth_js = r#"
-                        (() => {
-                            // Delete webdriver from Navigator.prototype
-                            const proto = Navigator.prototype;
-                            if ('webdriver' in proto) {
-                                delete proto.webdriver;
-                            }
-                            // Redefine as a data property with value false (not undefined)
-                            // so 'webdriver' in navigator returns false
-                            Object.defineProperty(proto, 'webdriver', {
-                                get: () => false,
-                                configurable: true,
-                                enumerable: true
-                            });
-                            // Patch hasOwnProperty/in operator detection
-                            const origGetOPD = Object.getOwnPropertyDescriptor;
-                            Object.getOwnPropertyDescriptor = function(obj, prop) {
-                                if (prop === 'webdriver' && (obj === navigator || obj === proto)) {
-                                    return undefined;
-                                }
-                                return origGetOPD.call(this, obj, prop);
-                            };
-                        })();
-                    "#;
-                    let _ = cdp.add_init_script(&ws_url, stealth_js).await;
+                    // Inject complete stealth script via CDP (includes WebGL, navigator, etc.)
+                    let stealth_js = self.stealth_init_script.clone().unwrap_or_else(|| r#"
+                        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                        Object.defineProperty(Navigator.prototype, 'webdriver', {get: () => undefined});
+                    "#.to_string());
+                    let _ = cdp.add_init_script(&ws_url, &stealth_js).await;
                     debug!("CDP stealth init-script set before navigation to {}", url);
                 }
             }
@@ -655,6 +658,15 @@ impl BrowserCommandHandler {
                                     debug!("CDP evaluate succeeded for tab {}", tab_id);
                                     let value: serde_json::Value = serde_json::from_str(&result)
                                         .unwrap_or(serde_json::Value::String(result));
+                                    // Check for JS errors in the result
+                                    if let Some(err) = value.get("__error").and_then(|e| e.as_str()) {
+                                        return IpcResponse::error(format!("JavaScript error: {}", err));
+                                    }
+                                    if let Some(result_val) = value.get("result") {
+                                        if let Some(err) = result_val.get("__error").and_then(|e| e.as_str()) {
+                                            return IpcResponse::error(format!("JavaScript error: {}", err));
+                                        }
+                                    }
                                     return IpcResponse::success_with_data(serde_json::json!({
                                         "result": value
                                     }));
@@ -683,6 +695,15 @@ impl BrowserCommandHandler {
                     Ok(Some(result)) => {
                         let value: serde_json::Value = serde_json::from_str(&result)
                             .unwrap_or(serde_json::Value::String(result));
+                        // Check for JS errors in the result (CEF path)
+                        if let Some(err) = value.get("__error").and_then(|e| e.as_str()) {
+                            return IpcResponse::error(format!("JavaScript error: {}", err));
+                        }
+                        if let Some(result_val) = value.get("result") {
+                            if let Some(err) = result_val.get("__error").and_then(|e| e.as_str()) {
+                                return IpcResponse::error(format!("JavaScript error: {}", err));
+                            }
+                        }
                         IpcResponse::success_with_data(serde_json::json!({
                             "result": value
                         }))
@@ -726,17 +747,36 @@ impl BrowserCommandHandler {
                     Err(e) => return IpcResponse::error(format!("JS evaluation failed: {}", e)),
                 };
 
-                // CEF execute_js returns Option<String>, parse to Value first
+                // CEF execute_js returns Option<String>, parse to Value first.
+                // Handle double-encoded JSON (string containing JSON array).
                 let elements_value: serde_json::Value = match elements_json_str {
-                    Some(s) => serde_json::from_str(&s).unwrap_or(serde_json::Value::Null),
+                    Some(s) => {
+                        let parsed: serde_json::Value = serde_json::from_str(&s).unwrap_or(serde_json::Value::Null);
+                        // If the result is a string, it may be double-encoded JSON
+                        if let serde_json::Value::String(ref inner) = parsed {
+                            serde_json::from_str(inner).unwrap_or(parsed)
+                        } else {
+                            parsed
+                        }
+                    }
                     None => serde_json::Value::Null,
                 };
 
                 let elements: Vec<crate::browser::annotate::AnnotatedElement> =
-                    match serde_json::from_value(elements_value) {
+                    match serde_json::from_value(elements_value.clone()) {
                         Ok(elems) => elems,
                         Err(e) => {
-                            return IpcResponse::error(format!("Failed to parse elements: {}", e))
+                            // If it's an array inside a wrapper object, try extracting it
+                            if let Some(arr) = elements_value.as_object()
+                                .and_then(|obj| obj.values().next())
+                                .filter(|v| v.is_array()) {
+                                serde_json::from_value(arr.clone()).unwrap_or_else(|_| {
+                                    warn!("Failed to parse annotated elements from wrapper: {}", e);
+                                    vec![]
+                                })
+                            } else {
+                                return IpcResponse::error(format!("Failed to parse elements: {}", e))
+                            }
                         }
                     };
 

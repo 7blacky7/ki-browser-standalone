@@ -282,7 +282,21 @@ pub fn parse_snapshot_json(json_str: &str) -> BrowserResult<DomSnapshot> {
         scroll_y: f64,
     }
 
-    let raw: RawSnapshot = serde_json::from_str(json_str).map_err(|e| {
+    // Handle double-encoded JSON strings: if the input is a JSON-encoded string
+    // (starts with '"'), unwrap it first before parsing the actual snapshot.
+    let unescaped;
+    let effective_json = if json_str.starts_with('"') {
+        unescaped = serde_json::from_str::<String>(json_str).map_err(|e| {
+            BrowserError::ScriptEvaluationFailed {
+                reason: format!("Failed to unescape double-encoded JSON: {}", e),
+            }
+        })?;
+        unescaped.as_str()
+    } else {
+        json_str
+    };
+
+    let raw: RawSnapshot = serde_json::from_str(effective_json).map_err(|e| {
         BrowserError::ScriptEvaluationFailed {
             reason: format!("Failed to parse DOM snapshot JSON: {}", e),
         }

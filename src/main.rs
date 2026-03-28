@@ -498,6 +498,12 @@ async fn main() -> Result<()> {
                 info!("CDP client enabled on port {} for CSP-bypass evaluation", cdp_port);
             }
 
+            // Pass complete stealth script for CDP pre-document injection
+            if let Some(ref stealth) = _stealth_config {
+                handler.set_stealth_init_script(stealth.get_complete_override_script());
+                info!("Stealth init-script set for CDP injection (WebGL, navigator, canvas, etc.)");
+            }
+
             let ipc_channel_clone = ipc_channel.clone();
             tokio::spawn(async move {
                 if let Some(mut processor) = ki_browser_standalone::api::IpcProcessor::new(&ipc_channel_clone).await {
@@ -605,6 +611,10 @@ async fn main() -> Result<()> {
                 let cdp_client = std::sync::Arc::new(ki_browser_standalone::api::cdp_client::CdpClient::new(cdp_port));
                 h.set_cdp_client(cdp_client);
                 info!("CDP client enabled on port {} for CSP-bypass evaluation", cdp_port);
+            }
+            // Pass complete stealth script for CDP pre-document injection
+            if let Some(ref stealth) = _stealth_config {
+                h.set_stealth_init_script(stealth.get_complete_override_script());
             }
             h
         };
