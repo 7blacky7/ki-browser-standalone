@@ -17,10 +17,11 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Rust project source
+# Copy Rust project source (inkl. Workspace-Members)
 COPY Cargo.toml ./
 COPY build.rs ./
 COPY src/ ./src/
+COPY crates/ ./crates/
 
 # Build with chromium-browser feature
 RUN cargo build --release --features chromium-browser 2>&1 || \

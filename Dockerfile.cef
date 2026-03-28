@@ -49,10 +49,11 @@ RUN apt-get update && apt-get install -y \
     clang \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Rust project source
+# Copy Rust project source (inkl. Workspace-Members)
 COPY Cargo.toml ./
 COPY build.rs ./
 COPY src/ ./src/
+COPY crates/ ./crates/
 
 # Build with ALL features: cef-browser + h264 (NVENC) + ocr (Tesseract)
 # The cef-dll-sys crate will download CEF binaries automatically
