@@ -195,6 +195,8 @@ cef::wrap_app! {
                         cmd.append_switch(Some(&CefString::from("enable-webgl")));
                         cmd.append_switch(Some(&CefString::from("in-process-gpu")));
                         cmd.append_switch(Some(&CefString::from("enable-gpu")));
+                        cmd.append_switch(Some(&CefString::from("ignore-gpu-blocklist")));
+                        cmd.append_switch(Some(&CefString::from("ignore-gpu-blacklist")));
                         debug!("CEF: Real GPU detected (/dev/dri/renderD128), using hardware WebGL (headless mode)");
                     } else {
                         // No real GPU — fall back to SwiftShader for software-based WebGL
