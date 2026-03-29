@@ -54,6 +54,10 @@ else
     echo "No NVIDIA GPU detected, using software rendering"
 fi
 
+# Clean up stale Xvfb lock files from previous runs
+DISPLAY_NUM=${DISPLAY#:}
+rm -f /tmp/.X${DISPLAY_NUM}-lock /tmp/.X11-unix/X${DISPLAY_NUM} 2>/dev/null
+
 # Start Xvfb virtual framebuffer
 echo "Starting Xvfb on display ${DISPLAY}..."
 Xvfb ${DISPLAY} -screen 0 ${XVFB_RESOLUTION} -ac +extension GLX +render -noreset &
