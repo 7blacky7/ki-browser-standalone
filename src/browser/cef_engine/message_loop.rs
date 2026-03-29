@@ -78,6 +78,16 @@ pub(crate) fn run_cef_message_loop(
         }
     }
 
+    // Set CEF resource paths if CEF directory is found (needed when binary != CEF dir)
+    if let Some(ref dir) = cef_dir {
+        let dir_str = dir.to_string_lossy();
+        settings.resources_dir_path = CefString::from(dir_str.as_ref());
+        let locales = dir.join("locales");
+        if locales.exists() {
+            settings.locales_dir_path = CefString::from(locales.to_string_lossy().as_ref());
+        }
+    }
+
     // Set log level
     settings.log_severity = LogSeverity::WARNING;
 
