@@ -384,7 +384,8 @@ pub async fn list_endpoints() -> impl IntoResponse {
             endpoints: vec![
                 EndpointInfo { method: "POST", path: "/debug/network/start", description: "Network Capture starten" },
                 EndpointInfo { method: "POST", path: "/debug/network/stop", description: "Network Capture stoppen" },
-                EndpointInfo { method: "GET", path: "/debug/network/requests", description: "Erfasste Requests abrufen" },
+                EndpointInfo { method: "GET", path: "/debug/network/entries", description: "Erfasste Network-Requests abrufen" },
+                EndpointInfo { method: "DELETE", path: "/debug/network/entries", description: "Erfasste Entries loeschen" },
             ],
         },
         EndpointCategory {
