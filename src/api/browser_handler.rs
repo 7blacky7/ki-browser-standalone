@@ -390,8 +390,9 @@ impl BrowserCommandHandler {
             }
         }
 
-        let accept_language =
-            crate::api::identity::accept_language_header(&stealth.fingerprint.languages);
+        // CDP's acceptLanguage expects a plain language list; Chromium adds
+        // the q-values itself (a pre-annotated header duplicates them).
+        let accept_language = stealth.fingerprint.languages.join(",");
         if let Err(e) = cdp
             .set_user_agent_override(
                 ws_url,
@@ -407,6 +408,12 @@ impl BrowserCommandHandler {
                 "HTTP identity set for tab {}: UA + Accept-Language '{}'",
                 tab_id, accept_language
             );
+        }
+        if let Err(e) = cdp
+            .set_timezone_override(ws_url, &stealth.fingerprint.timezone)
+            .await
+        {
+            warn!("Failed to set timezone override for tab {}: {}", tab_id, e);
         }
 
         // Protect the already-existing about:blank document too.
@@ -508,9 +515,8 @@ impl BrowserCommandHandler {
                         }
                         // Keep the HTTP layer consistent with the JS layer.
                         if let Some(ref s) = tab_stealth {
-                            let accept_language = crate::api::identity::accept_language_header(
-                                &s.fingerprint.languages,
-                            );
+                            // Plain list — Chromium adds the q-values itself.
+                            let accept_language = s.fingerprint.languages.join(",");
                             if let Err(e) = cdp
                                 .set_user_agent_override(
                                     &ws_url,
@@ -521,6 +527,12 @@ impl BrowserCommandHandler {
                                 .await
                             {
                                 warn!("Failed to set UA/Accept-Language override before navigation: {}", e);
+                            }
+                            if let Err(e) = cdp
+                                .set_timezone_override(&ws_url, &s.fingerprint.timezone)
+                                .await
+                            {
+                                warn!("Failed to set timezone override before navigation: {}", e);
                             }
                         }
                         debug!("CDP stealth identity registered before navigation to {}", url);

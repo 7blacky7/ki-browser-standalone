@@ -185,6 +185,20 @@ impl CdpClient {
         Ok(())
     }
 
+    /// Overrides the target's timezone via CDP `Emulation.setTimezoneOverride`
+    /// so `Intl.DateTimeFormat().resolvedOptions().timeZone` and `Date` match
+    /// the spoofed identity instead of the host timezone (UTC in the container).
+    pub async fn set_timezone_override(
+        &self,
+        ws_url: &str,
+        timezone_id: &str,
+    ) -> Result<(), String> {
+        let params = serde_json::json!({ "timezoneId": timezone_id });
+        self.send_command(ws_url, "Emulation.setTimezoneOverride", params)
+            .await?;
+        Ok(())
+    }
+
     // ========================================================================
     // WebSocket Connection Management
     // ========================================================================
