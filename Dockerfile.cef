@@ -179,8 +179,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #     Abhaengigkeiten (typing-extensions etc.) nicht vollstaendig hostet.
 #   CPU-FALLBACK bleibt automatisch: ohne CUDA waehlt torch transparent CPU;
 #     surya.rs setzt device entsprechend torch.cuda.is_available().
+#   paddleocr==2.8.1: paddleocr 3.x braucht paddlepaddle>=3.0, aber PyPIs
+#     paddlepaddle-gpu endet bei 2.6.2 (3.x-GPU-Wheels nur ueber den
+#     Paddle-eigenen Index). 2.8.1 passt zu paddle 2.6 und zur
+#     .ocr(cls=True)-API in paddleocr.rs. GPU-Init scheitert an fehlendem
+#     System-cuDNN -> Script faellt automatisch auf CPU zurueck (verifiziert,
+#     conf 0.98). Surya nutzt die GPU, Paddle-CPU ist schnell genug.
 RUN pip3 install --no-cache-dir --break-system-packages \
-        paddleocr \
+        "paddleocr==2.8.1" \
         paddlepaddle-gpu \
         "surya-ocr==0.14.5" \
         "transformers==4.53.3" \
@@ -196,7 +202,7 @@ RUN pip3 install --no-cache-dir --break-system-packages \
 # Nicht-fatal (|| true): ein fehlgeschlagener Warmup darf den Build NICHT
 # killen. device='cpu' beim Surya-Warmup: im Build gibt es keine GPU, der
 # Download der Gewichte ist deviceunabhaengig.
-RUN python3 -c "from paddleocr import PaddleOCR; PaddleOCR(use_angle_cls=True, lang='en')" || true
+RUN python3 -c "from paddleocr import PaddleOCR; PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False, show_log=False)" || true
 RUN python3 -c "from surya.detection import DetectionPredictor; from surya.recognition import RecognitionPredictor; DetectionPredictor(device='cpu'); RecognitionPredictor(device='cpu')" || true
 
 # NVIDIA Container Runtime — GPU wird vom Host durchgereicht

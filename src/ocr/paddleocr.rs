@@ -45,12 +45,18 @@ fn check_paddleocr_available() -> (bool, Option<String>) {
 }
 
 /// Python script that runs PaddleOCR on a given image file and outputs JSON.
+/// GPU init is attempted first; on failure (e.g. paddlepaddle-gpu 2.6 cannot
+/// dlopen a system cuDNN) it transparently retries on CPU.
 const PADDLE_SCRIPT: &str = r#"
 import sys, json
 from paddleocr import PaddleOCR
 
-ocr = PaddleOCR(use_angle_cls=True, lang='en', show_log=False)
-result = ocr.ocr(sys.argv[1], cls=True)
+try:
+    ocr = PaddleOCR(use_angle_cls=True, lang='en', show_log=False)
+    result = ocr.ocr(sys.argv[1], cls=True)
+except Exception:
+    ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False, show_log=False)
+    result = ocr.ocr(sys.argv[1], cls=True)
 
 items = []
 full_parts = []
