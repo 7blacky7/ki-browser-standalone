@@ -33,6 +33,21 @@ api_enabled = true
 # Default: 9222
 api_port = 9222
 
+# IP address the API server binds to.
+# "0.0.0.0" = reachable from the whole LAN (default, current behaviour).
+# "127.0.0.1" = localhost only — combine with a reverse proxy for external access.
+# Can also be set via KI_BROWSER_API_BIND.
+# Default: "0.0.0.0"
+api_bind = "0.0.0.0"
+
+# Optional Bearer token for API authentication (access protection).
+# When UNSET (default), the API is open — exactly today's behaviour.
+# When set, all routes except /health, /status, /api-doc and /swagger-ui
+# require the header:  Authorization: Bearer <token>
+# Strongly recommended when api_bind is "0.0.0.0" / the server is exposed.
+# Can also be set via KI_BROWSER_API_TOKEN.
+# api_token = "change-me-to-a-long-random-secret"
+
 # =============================================================================
 # Browser Behavior
 # =============================================================================

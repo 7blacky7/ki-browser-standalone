@@ -634,6 +634,16 @@ async fn main() -> Result<()> {
 
         let mut server = ApiServer::new_with_cdp(settings.api_port, ipc_channel, settings.cdp_port);
 
+        // Apply configurable bind address (KI_BROWSER_API_BIND / api_bind).
+        server.set_bind(settings.api_bind.clone());
+
+        // Enable opt-in Bearer-token auth when a token is configured.
+        // No token => pass-through (default, unchanged LAN behaviour).
+        if let Some(ref token) = settings.api_token {
+            server.state_mut().api_token = Some(std::sync::Arc::new(token.clone()));
+            info!("API Bearer-token authentication enabled");
+        }
+
         // Store CefEngine reference for /ws/viewer frame-buffer access.
         #[cfg(feature = "cef-browser")]
         server.state_mut().set_cef_engine(_cef_engine.clone());

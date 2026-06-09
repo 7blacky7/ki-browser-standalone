@@ -53,6 +53,23 @@ curl -s -X POST localhost:3000/debug/consent/accept -d "{\"tab_id\":\"$TAB\"}"
 curl -s -X POST localhost:3000/debug/captcha/solve -d "{\"tab_id\":\"$TAB\"}"
 ```
 
+## Access Protection
+
+By default the API listens on `0.0.0.0` **without authentication** (open on the LAN),
+which preserves the historical behaviour. To lock it down:
+
+- **`KI_BROWSER_API_TOKEN`** (or `api_token` in `config.toml`): when set, every
+  route except `/health`, `/status`, `/api-doc` and `/swagger-ui` requires the
+  header `Authorization: Bearer <token>`. Unset = auth disabled (default).
+- **`KI_BROWSER_API_BIND`** (or `api_bind`): the IP the server binds to.
+  Use `127.0.0.1` to restrict to localhost, or keep `0.0.0.0` for LAN access.
+
+```bash
+export KI_BROWSER_API_TOKEN="a-long-random-secret"
+export KI_BROWSER_API_BIND="0.0.0.0"
+curl -H "Authorization: Bearer a-long-random-secret" http://host:9222/tabs
+```
+
 ## API Reference
 
 ### Core

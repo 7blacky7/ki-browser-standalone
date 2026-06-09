@@ -113,6 +113,10 @@ pub struct AppState {
     pub console_log_buffer: Arc<RwLock<crate::api::debug_routes::console::ConsoleLogBuffer>>,
     /// CDP WebSocket client for privileged JS evaluation (bypasses CSP/Trusted Types).
     pub cdp_client: Option<Arc<crate::api::cdp_client::CdpClient>>,
+    /// Optional bearer token for API authentication. `None` = auth disabled (pass-through).
+    pub api_token: Option<Arc<String>>,
+    /// Runtime OCR engine enable/disable configuration (global + per-tab).
+    pub ocr_config: Arc<RwLock<crate::ocr::OcrRuntimeConfig>>,
 }
 
 impl AppState {
@@ -132,6 +136,8 @@ impl AppState {
             cef_engine: None,
             console_log_buffer: Arc::new(RwLock::new(crate::api::debug_routes::console::ConsoleLogBuffer::default())),
             cdp_client: None,
+            api_token: None,
+            ocr_config: Arc::new(RwLock::new(crate::ocr::OcrRuntimeConfig::with_all_enabled())),
         }
     }
 
@@ -155,6 +161,8 @@ impl AppState {
             cef_engine: None,
             console_log_buffer: Arc::new(RwLock::new(crate::api::debug_routes::console::ConsoleLogBuffer::default())),
             cdp_client,
+            api_token: None,
+            ocr_config: Arc::new(RwLock::new(crate::ocr::OcrRuntimeConfig::with_all_enabled())),
         }
     }
 
@@ -186,6 +194,8 @@ impl AppState {
 pub struct ApiServer {
     /// Port to listen on
     port: u16,
+    /// IP address to bind to (e.g. "0.0.0.0" or "127.0.0.1"). Default "0.0.0.0".
+    bind: String,
     /// Whether the server is enabled
     enabled: bool,
     /// Shared application state
@@ -201,6 +211,7 @@ impl ApiServer {
     pub fn new(port: u16, ipc_channel: IpcChannel) -> Self {
         Self {
             port,
+            bind: String::from("0.0.0.0"),
             enabled: false,
             state: AppState::new(ipc_channel),
             shutdown_tx: None,
@@ -216,6 +227,7 @@ impl ApiServer {
     pub fn new_with_cdp(port: u16, ipc_channel: IpcChannel, cdp_port: Option<u16>) -> Self {
         Self {
             port,
+            bind: String::from("0.0.0.0"),
             enabled: false,
             state: AppState::new_with_cdp(ipc_channel, cdp_port),
             shutdown_tx: None,
@@ -227,11 +239,17 @@ impl ApiServer {
     pub fn with_state(port: u16, state: AppState) -> Self {
         Self {
             port,
+            bind: String::from("0.0.0.0"),
             enabled: false,
             state,
             shutdown_tx: None,
             server_handle: None,
         }
+    }
+
+    /// Set the IP address the server binds to (e.g. "0.0.0.0" or "127.0.0.1").
+    pub fn set_bind(&mut self, bind: impl Into<String>) {
+        self.bind = bind.into();
     }
 
     /// Get the server port
@@ -292,6 +310,14 @@ impl ApiServer {
                 guard_state,
                 crate::api::guard_middleware::guard_layer,
             ))
+            // Auth layer is added AFTER guard so that, in tower's outer-to-inner
+            // execution order, auth runs FIRST — unauthenticated requests are
+            // rejected before reaching the guard/handler. Pass-through when no
+            // token is configured (default).
+            .layer(axum::middleware::from_fn_with_state(
+                self.state.api_token.clone(),
+                crate::api::auth_middleware::auth_layer,
+            ))
             .layer(Self::configure_cors())
             .layer(TraceLayer::new_for_http())
     }
@@ -303,7 +329,10 @@ impl ApiServer {
             return Ok(());
         }
 
-        let addr = SocketAddr::from(([0, 0, 0, 0], self.port));
+        let ip: std::net::IpAddr = self.bind.parse().map_err(|e| {
+            format!("Invalid API bind address '{}': {}", self.bind, e)
+        })?;
+        let addr = SocketAddr::new(ip, self.port);
         let router = self.build_router();
 
         // Create shutdown channel

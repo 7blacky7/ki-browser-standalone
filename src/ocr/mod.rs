@@ -11,6 +11,8 @@ pub mod paddleocr;
 pub mod surya;
 pub mod tesseract;
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 /// A single OCR recognition result for a detected text region.
@@ -43,7 +45,9 @@ pub struct OcrResponse {
     pub duration_ms: u64,
 }
 
-/// Availability information for an OCR engine on this system.
+/// Availability information for an OCR engine on this system, including
+/// self-documenting metadata so the consuming AI can pick the right engine
+/// without external docs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OcrEngineInfo {
     /// Engine identifier (e.g. "tesseract", "paddleocr", "surya").
@@ -52,6 +56,86 @@ pub struct OcrEngineInfo {
     pub available: bool,
     /// Engine or binding version string, if available.
     pub version: Option<String>,
+    /// Human-readable description of what the engine does.
+    pub description: String,
+    /// Short hint describing the workload this engine is best suited for.
+    pub best_for: String,
+    /// Relative speed class: "fast", "medium" or "slow".
+    pub speed: String,
+    /// Whether the engine uses GPU acceleration.
+    pub gpu_accelerated: bool,
+    /// Languages / language coverage the engine supports.
+    pub languages: String,
+}
+
+/// Static, self-documenting metadata for a single engine, independent of
+/// whether the engine is currently installed/available.
+struct EngineMeta {
+    description: &'static str,
+    best_for: &'static str,
+    speed: &'static str,
+    gpu_accelerated: bool,
+    languages: &'static str,
+}
+
+/// Returns the static metadata for a given engine name. Unknown names fall
+/// back to a neutral placeholder so callers never panic.
+fn engine_meta(name: &str) -> EngineMeta {
+    match name {
+        "tesseract" => EngineMeta {
+            description: "Fast classic OCR engine via native leptess/Tesseract bindings.",
+            best_for: "clean printed text",
+            speed: "fast",
+            gpu_accelerated: false,
+            languages: "eng+deu",
+        },
+        "paddleocr" => EngineMeta {
+            description: "PaddleOCR Python engine for dense, multilingual text and tables.",
+            best_for: "dense or multilingual text, tables",
+            speed: "medium",
+            gpu_accelerated: true,
+            languages: "80+ languages",
+        },
+        "surya" => EngineMeta {
+            description: "Surya engine with the strongest layout and multilingual recognition.",
+            best_for: "complex layouts, 90+ languages",
+            speed: "slow",
+            gpu_accelerated: true,
+            languages: "90+ languages",
+        },
+        _ => EngineMeta {
+            description: "Unknown OCR engine.",
+            best_for: "unknown",
+            speed: "medium",
+            gpu_accelerated: false,
+            languages: "unknown",
+        },
+    }
+}
+
+/// Runtime configuration controlling which OCR engines are enabled, both
+/// globally and per browser tab. Stored in `AppState` behind an `RwLock` so
+/// engines can be toggled at runtime without a restart.
+#[derive(Debug, Clone, Default)]
+pub struct OcrRuntimeConfig {
+    /// Global enable/disable state per engine name (`engine -> enabled`).
+    pub global: HashMap<String, bool>,
+    /// Per-tab overrides: `tab_id -> (engine -> enabled)`.
+    pub per_tab: HashMap<String, HashMap<String, bool>>,
+}
+
+impl OcrRuntimeConfig {
+    /// Creates a config with every registered engine globally enabled.
+    pub fn with_all_enabled() -> Self {
+        let global = engine_info()
+            .into_iter()
+            .map(|info| (info.name, true))
+            .collect();
+        Self {
+            global,
+            per_tab: HashMap::new(),
+        }
+    }
 }
 
 /// Trait implemented by each OCR engine backend.
@@ -101,21 +185,46 @@ pub fn all_engines() -> Vec<Box<dyn OcrEngine>> {
     ]
 }
 
-/// Returns availability information for every registered OCR engine.
+/// Returns availability information (including self-documenting metadata) for
+/// every registered OCR engine.
 pub fn engine_info() -> Vec<OcrEngineInfo> {
     all_engines()
         .iter()
-        .map(|e| OcrEngineInfo {
-            name: e.name().to_string(),
-            available: e.is_available(),
-            version: e.version(),
+        .map(|e| {
+            let name = e.name().to_string();
+            let meta = engine_meta(&name);
+            OcrEngineInfo {
+                available: e.is_available(),
+                version: e.version(),
+                description: meta.description.to_string(),
+                best_for: meta.best_for.to_string(),
+                speed: meta.speed.to_string(),
+                gpu_accelerated: meta.gpu_accelerated,
+                languages: meta.languages.to_string(),
+                name,
+            }
         })
         .collect()
+}
+
+/// Alias for [`engine_info`], exposing the full self-documenting engine catalog.
+pub fn engine_catalog() -> Vec<OcrEngineInfo> {
+    engine_info()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_ocr_runtime_config_with_all_enabled() {
+        let cfg = OcrRuntimeConfig::with_all_enabled();
+        assert_eq!(cfg.global.len(), 3);
+        assert_eq!(cfg.global.get("tesseract"), Some(&true));
+        assert_eq!(cfg.global.get("paddleocr"), Some(&true));
+        assert_eq!(cfg.global.get("surya"), Some(&true));
+        assert!(cfg.per_tab.is_empty());
+    }
 
     #[test]
     fn test_engine_info_returns_all_three() {
@@ -183,9 +292,36 @@ mod tests {
             name: "tesseract".into(),
             available: true,
             version: Some("5.3".into()),
+            description: "desc".into(),
+            best_for: "clean printed text".into(),
+            speed: "fast".into(),
+            gpu_accelerated: false,
+            languages: "eng+deu".into(),
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("tesseract"));
         assert!(json.contains("true"));
+    }
+
+    #[test]
+    fn test_engine_info_includes_metadata() {
+        let info = engine_info();
+        let tess = info.iter().find(|e| e.name == "tesseract").unwrap();
+        assert_eq!(tess.speed, "fast");
+        assert!(!tess.gpu_accelerated);
+        assert!(tess.languages.contains("eng"));
+
+        let surya = info.iter().find(|e| e.name == "surya").unwrap();
+        assert_eq!(surya.speed, "slow");
+        assert!(surya.gpu_accelerated);
+
+        let paddle = info.iter().find(|e| e.name == "paddleocr").unwrap();
+        assert_eq!(paddle.speed, "medium");
+        assert!(paddle.gpu_accelerated);
+    }
+
+    #[test]
+    fn test_engine_catalog_matches_engine_info() {
+        assert_eq!(engine_catalog().len(), engine_info().len());
     }
 }

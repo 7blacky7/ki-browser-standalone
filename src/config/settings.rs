@@ -263,6 +263,17 @@ pub struct BrowserSettings {
     /// Set to None to disable CDP. Default: Some(9222).
     #[serde(default = "default_cdp_port")]
     pub cdp_port: Option<u16>,
+
+    /// Optional bearer token protecting the HTTP API. `None` disables auth
+    /// (default), preserving today's open-LAN behavior. When set, protected
+    /// routes require `Authorization: Bearer <token>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_token: Option<String>,
+
+    /// IP address the HTTP API server binds to. Defaults to "0.0.0.0"
+    /// (all interfaces). Must be a parseable `std::net::IpAddr`.
+    #[serde(default = "default_api_bind")]
+    pub api_bind: String,
 }
 
 // Default value functions for serde
@@ -294,6 +305,10 @@ fn default_cdp_port() -> Option<u16> {
     Some(9222)
 }
 
+fn default_api_bind() -> String {
+    "0.0.0.0".to_string()
+}
+
 impl Default for BrowserSettings {
     fn default() -> Self {
         Self {
@@ -309,6 +324,8 @@ impl Default for BrowserSettings {
             max_tabs: default_max_tabs(),
             default_timeout_ms: default_timeout_ms(),
             cdp_port: default_cdp_port(),
+            api_token: None,
+            api_bind: default_api_bind(),
         }
     }
 }
@@ -471,6 +488,14 @@ impl BrowserSettings {
             if let Ok(port) = val.parse::<u16>() {
                 self.cdp_port = if port == 0 { None } else { Some(port) };
             }
+        }
+
+        if let Ok(val) = env::var("KI_BROWSER_API_TOKEN") {
+            self.api_token = if val.is_empty() { None } else { Some(val) };
+        }
+
+        if let Ok(val) = env::var("KI_BROWSER_API_BIND") {
+            self.api_bind = val;
         }
 
         // Proxy configuration from environment
@@ -653,6 +678,14 @@ impl BrowserSettings {
             return Err(ConfigError::ValidationError(
                 "Default timeout cannot exceed 300000ms (5 minutes)".to_string(),
             ));
+        }
+
+        // Validate API bind address
+        if self.api_bind.parse::<std::net::IpAddr>().is_err() {
+            return Err(ConfigError::ValidationError(format!(
+                "API bind address is not a valid IP address: {}",
+                self.api_bind
+            )));
         }
 
         // Validate proxy if present

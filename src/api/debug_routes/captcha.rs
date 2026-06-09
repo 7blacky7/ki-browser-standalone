@@ -515,6 +515,7 @@ mod tests {
             position: Some(CaptchaPosition { x: 100, y: 200, width: 300, height: 80 }),
             iframe_url: Some("https://www.google.com/recaptcha/api2/anchor".to_string()),
             hint: "Click checkbox".to_string(),
+            steps: vec![],
         };
         let json = serde_json::to_string(&r).expect("serialize");
         assert!(json.contains("recaptcha_checkbox"));
