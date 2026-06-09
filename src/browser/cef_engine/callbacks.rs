@@ -437,6 +437,7 @@ cef::wrap_life_span_handler! {
                     let cmd = CefCommand::CreateBrowser {
                         url: url_str,
                         tab_id: new_tab_id,
+                        stealth: None, // popups inherit the engine default identity
                         response: response_tx,
                     };
                     let _ = tx.send(cmd);

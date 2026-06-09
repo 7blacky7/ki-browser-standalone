@@ -18,7 +18,7 @@ pub mod misc;
 pub use types::*;
 
 // Re-export all handler functions for use in create_router and external references
-pub use tabs::{list_tabs, create_tab, close_tab};
+pub use tabs::{list_tabs, create_tab, close_tab, get_tab_identity};
 pub use navigation::{navigate, click, drag, type_text, evaluate, screenshot, scroll};
 pub use dom::{find_element, annotate_elements, dom_snapshot, get_frames};
 pub use misc::{health_check, toggle_api, api_status, cdp_targets, cdp_target_by_tab, list_endpoints};
@@ -48,6 +48,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/tabs", get(list_tabs))
         .route("/tabs/new", post(create_tab))
         .route("/tabs/close", post(close_tab))
+        .route("/tabs/:tab_id/identity", get(get_tab_identity))
 
         // Navigation and interaction
         .route("/navigate", post(navigate))

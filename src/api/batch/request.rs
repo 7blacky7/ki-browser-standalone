@@ -145,6 +145,7 @@ impl BatchRequest {
                     BatchCommand::NewTab { url } => crate::api::ipc::IpcCommand::CreateTab {
                         url: url.clone().unwrap_or_else(|| "about:blank".to_string()),
                         active: true,
+                        identity: None,
                     },
                     BatchCommand::CloseTab { tab_id } => crate::api::ipc::IpcCommand::CloseTab {
                         tab_id: tab_id.clone(),

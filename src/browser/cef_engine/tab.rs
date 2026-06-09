@@ -11,6 +11,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::browser::tab::{Tab, TabStatus};
+use crate::stealth::StealthConfig;
 
 /// Internal representation of a CEF browser tab.
 ///
@@ -45,6 +46,9 @@ pub(crate) struct CefTab {
     /// Frame version counter, incremented on every on_paint callback.
     /// Used by the video stream encoder to detect new frames.
     pub(crate) frame_version: Arc<AtomicU64>,
+    /// The stealth identity assigned to this tab at creation time.
+    /// Single source of truth for all fingerprint spoofing of this tab.
+    pub(crate) stealth: Arc<StealthConfig>,
 }
 
 impl CefTab {
@@ -56,6 +60,7 @@ impl CefTab {
         frame_size: Arc<RwLock<(u32, u32)>>,
         viewport_size: Arc<RwLock<(u32, u32)>>,
         frame_version: Arc<AtomicU64>,
+        stealth: Arc<StealthConfig>,
     ) -> Self {
         Self {
             id,
@@ -71,6 +76,7 @@ impl CefTab {
             can_go_forward: AtomicBool::new(false),
             viewport_size,
             frame_version,
+            stealth,
         }
     }
 

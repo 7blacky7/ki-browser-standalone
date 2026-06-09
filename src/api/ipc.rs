@@ -24,6 +24,10 @@ pub enum IpcCommand {
     CreateTab {
         url: String,
         active: bool,
+        /// Optional per-tab stealth identity:
+        /// "random" (default) | "consistent:<seed>" | explicit object.
+        #[serde(default)]
+        identity: Option<crate::api::identity::IdentitySpec>,
     },
 
     /// Close a tab

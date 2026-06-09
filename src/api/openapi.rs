@@ -30,6 +30,7 @@ use crate::api::routes::{
         crate::api::routes::tabs::list_tabs,
         crate::api::routes::tabs::create_tab,
         crate::api::routes::tabs::close_tab,
+        crate::api::routes::tabs::get_tab_identity,
         crate::api::routes::navigation::navigate,
         crate::api::routes::navigation::click,
         crate::api::routes::navigation::type_text,

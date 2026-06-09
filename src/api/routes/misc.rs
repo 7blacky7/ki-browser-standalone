@@ -251,8 +251,9 @@ pub async fn list_endpoints() -> impl IntoResponse {
             name: "Tabs",
             endpoints: vec![
                 EndpointInfo { method: "GET", path: "/tabs", description: "Liste aller offenen Tabs" },
-                EndpointInfo { method: "POST", path: "/tabs/new", description: "Neuen Tab erstellen (optional: url)" },
+                EndpointInfo { method: "POST", path: "/tabs/new", description: "Neuen Tab erstellen (optional: url, active, identity: \"random\"|\"consistent:<seed>\"|{user_agent,platform,languages,hardware_concurrency,device_memory,webgl_vendor,webgl_renderer,screen,timezone}) — Antwort enthaelt die aufgeloeste Identitaet" },
                 EndpointInfo { method: "POST", path: "/tabs/close", description: "Tab schliessen (tab_id)" },
+                EndpointInfo { method: "GET", path: "/tabs/{tab_id}/identity", description: "Aktive Stealth-Identitaet des Tabs (UA, Accept-Language==navigator.languages, WebGL, Screen, Timezone)" },
             ],
         },
         EndpointCategory {

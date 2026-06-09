@@ -120,6 +120,8 @@ pub(crate) enum CefCommand {
     CreateBrowser {
         url: String,
         tab_id: Uuid,
+        /// Per-tab stealth identity; `None` = engine-wide default config.
+        stealth: Option<Arc<crate::stealth::StealthConfig>>,
         response: oneshot::Sender<Result<()>>,
     },
     CloseBrowser {

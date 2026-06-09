@@ -143,31 +143,7 @@ impl BrowserEngine for CefBrowserEngine {
     }
 
     async fn create_tab(&self, url: &str) -> Result<Tab> {
-        if !self.is_running.load(Ordering::SeqCst) {
-            return Err(anyhow!("Browser engine is not running"));
-        }
-
-        let tab_id = Uuid::new_v4();
-        let (response_tx, response_rx) = oneshot::channel();
-
-        self.command_tx
-            .send(CefCommand::CreateBrowser {
-                url: url.to_string(),
-                tab_id,
-                response: response_tx,
-            })
-            .map_err(|_| anyhow!("Failed to send create browser command"))?;
-
-        response_rx.await.context("Failed to receive create browser response")??;
-
-        // Wait for browser to be created
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-        // Return the tab info
-        let tabs = self.tabs.read();
-        tabs.get(&tab_id)
-            .map(|t| t.to_tab())
-            .ok_or_else(|| anyhow!("Failed to create tab"))
+        self.create_tab_with_identity(url, None).await
     }
 
     async fn close_tab(&self, tab_id: Uuid) -> Result<()> {
@@ -294,6 +270,51 @@ impl CefBrowserEngine {
         &self.stealth_config
     }
 
+    /// Creates a tab with an optional per-tab stealth identity.
+    ///
+    /// `None` falls back to the engine-wide default config. The assigned
+    /// config is the single identity of the tab: the CEF load handler
+    /// injects it on every document and it is queryable via
+    /// [`Self::get_tab_stealth`] (GET /tabs/{id}/identity).
+    pub async fn create_tab_with_identity(
+        &self,
+        url: &str,
+        stealth: Option<Arc<StealthConfig>>,
+    ) -> Result<Tab> {
+        if !self.is_running.load(Ordering::SeqCst) {
+            return Err(anyhow!("Browser engine is not running"));
+        }
+
+        let tab_id = Uuid::new_v4();
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(CefCommand::CreateBrowser {
+                url: url.to_string(),
+                tab_id,
+                stealth,
+                response: response_tx,
+            })
+            .map_err(|_| anyhow!("Failed to send create browser command"))?;
+
+        response_rx.await.context("Failed to receive create browser response")??;
+
+        // Wait for browser to be created
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        // Return the tab info
+        let tabs = self.tabs.read();
+        tabs.get(&tab_id)
+            .map(|t| t.to_tab())
+            .ok_or_else(|| anyhow!("Failed to create tab"))
+    }
+
+    /// Returns the stealth identity active for a tab (assigned at creation).
+    pub fn get_tab_stealth(&self, tab_id: &Uuid) -> Option<Arc<StealthConfig>> {
+        let tabs = self.tabs.read();
+        tabs.get(tab_id).map(|t| t.stealth.clone())
+    }
+
     /// Returns the frame buffer, size, and version Arcs for a tab.
     pub fn get_tab_frame_buffer(&self, tab_id: Uuid) -> Option<TabFrameBuffer> {
         let tabs = self.tabs.read();
@@ -333,6 +354,7 @@ impl CefBrowserEngine {
         let _ = self.command_tx.send(CefCommand::CreateBrowser {
             url: url.to_string(),
             tab_id,
+            stealth: None,
             response: response_tx,
         });
         tab_id

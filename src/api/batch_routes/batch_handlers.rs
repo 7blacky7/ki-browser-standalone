@@ -423,6 +423,7 @@ async fn process_url(
     let create_cmd = IpcCommand::CreateTab {
         url: url.clone(),
         active: false,
+        identity: None,
     };
     let tab_id = match ipc.send_command(IpcMessage::Command(create_cmd)).await {
         Ok(resp) if resp.success => {

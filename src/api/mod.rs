@@ -11,6 +11,7 @@ pub mod browser_handler;
 pub mod cdp_mapping;
 pub mod extraction_routes;
 pub mod gui_routes;
+pub mod identity;
 pub mod ipc;
 pub mod ocr_routes;
 pub mod openapi;
@@ -24,6 +25,7 @@ pub mod cdp_client;
 pub mod cdp_frames;
 pub mod debug_routes;
 pub mod guard_middleware;
+pub mod auth_middleware;
 
 pub use agent_registry::{AgentInfo, AgentRegistry};
 pub use agent_routes::agent_routes;
@@ -33,6 +35,7 @@ pub use batch::{
 };
 pub use browser_handler::{BrowserCommandHandler, BrowserEngineWrapper};
 pub use cdp_mapping::CdpTabMapping;
+pub use identity::{IdentityOverrides, IdentitySpec};
 pub use ipc::{IpcChannel, IpcCommand, IpcMessage, IpcProcessor, IpcResponse};
 pub use batch_routes::batch_session_routes;
 pub use extraction_routes::extraction_routes;

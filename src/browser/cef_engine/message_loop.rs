@@ -140,13 +140,15 @@ pub(crate) fn run_cef_message_loop(
                         CefCommand::CreateBrowser {
                             url,
                             tab_id,
+                            stealth,
                             response,
                         } => {
+                            // Per-tab identity wins; engine default is the fallback.
                             let result = create_browser_internal(
                                 &url,
                                 tab_id,
                                 &config,
-                                stealth_config.clone(),
+                                stealth.unwrap_or_else(|| stealth_config.clone()),
                                 tabs.clone(),
                                 browser_id_counter.clone(),
                             );
@@ -357,6 +359,10 @@ pub(crate) fn run_cef_message_loop(
 /// Sets up the off-screen rendering handlers, life span and load handlers,
 /// creates the CEF browser with the specified URL, and waits for the
 /// `on_after_created` callback to fire before returning.
+///
+/// `stealth_config` is the identity of THIS tab (per-tab config or the
+/// engine default) — it is stored on the [`CefTab`] and used by the load
+/// handler, so every tab has exactly one identity everywhere.
 fn create_browser_internal(
     url: &str,
     tab_id: Uuid,
@@ -448,7 +454,7 @@ fn create_browser_internal(
     }
 
     // Store tab BEFORE browser creation (browser will be set in on_after_created)
-    let cef_tab = CefTab::new(tab_id, url.to_string(), frame_buffer, frame_size, viewport_size, frame_version);
+    let cef_tab = CefTab::new(tab_id, url.to_string(), frame_buffer, frame_size, viewport_size, frame_version, stealth_config);
     tabs.write().insert(tab_id, cef_tab);
 
     // Wait for browser to be created (callback will be triggered)

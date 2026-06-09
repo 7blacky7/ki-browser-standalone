@@ -3,6 +3,7 @@
 //! This module provides a handler that processes IPC commands and forwards them
 //! to the appropriate browser engine. Returns errors when no engine is available.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -83,6 +84,13 @@ pub struct BrowserCommandHandler {
     stealth_init_script: Option<String>,
     /// Individual stealth section scripts for reliable per-section CDP injection
     stealth_section_scripts: Option<Vec<String>>,
+    /// CDP WebSocket URL per tab, stored at creation time. Presence means the
+    /// tab's stealth init-script + UA/Accept-Language override are registered
+    /// on exactly this target (deterministic binding, no URL guessing).
+    tab_ws_urls: Arc<RwLock<HashMap<Uuid, String>>>,
+    /// Serializes tab creation so the CDP target discovery (/json/list diff)
+    /// unambiguously identifies the target of the tab just created.
+    create_tab_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl BrowserCommandHandler {
@@ -93,6 +101,8 @@ impl BrowserCommandHandler {
             cdp_client: None,
             stealth_init_script: None,
             stealth_section_scripts: None,
+            tab_ws_urls: Arc::new(RwLock::new(HashMap::new())),
+            create_tab_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -119,6 +129,8 @@ impl BrowserCommandHandler {
             cdp_client: None,
             stealth_init_script: None,
             stealth_section_scripts: None,
+            tab_ws_urls: Arc::new(RwLock::new(HashMap::new())),
+            create_tab_lock: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
@@ -131,6 +143,8 @@ impl BrowserCommandHandler {
             cdp_client: None,
             stealth_init_script: None,
             stealth_section_scripts: None,
+            tab_ws_urls: Arc::new(RwLock::new(HashMap::new())),
+            create_tab_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -144,6 +158,8 @@ impl BrowserCommandHandler {
             cdp_client: None,
             stealth_init_script: None,
             stealth_section_scripts: None,
+            tab_ws_urls: Arc::new(RwLock::new(HashMap::new())),
+            create_tab_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -158,8 +174,8 @@ impl BrowserCommandHandler {
         let engine_guard = self.engine.read().await;
 
         match command {
-            IpcCommand::CreateTab { url, active } => {
-                self.handle_create_tab(&engine_guard, &url, active).await
+            IpcCommand::CreateTab { url, active, identity } => {
+                self.handle_create_tab(&engine_guard, &url, active, identity).await
             }
             IpcCommand::CloseTab { tab_id } => {
                 self.handle_close_tab(&engine_guard, &tab_id).await
@@ -242,7 +258,11 @@ impl BrowserCommandHandler {
         engine: &Option<BrowserEngineWrapper>,
         url: &str,
         _active: bool,
+        identity: Option<crate::api::identity::IdentitySpec>,
     ) -> IpcResponse {
+        #[cfg(not(feature = "cef-browser"))]
+        let _ = &identity;
+
         match engine {
             Some(BrowserEngineWrapper::Mock(e)) => {
                 match e.create_tab(url).await {
@@ -252,54 +272,150 @@ impl BrowserCommandHandler {
             }
             #[cfg(feature = "cef-browser")]
             Some(BrowserEngineWrapper::Cef(e)) => {
-                match e.create_tab(url).await {
-                    Ok(tab) => {
-                        let mut resp = IpcResponse::success_with_tab(tab.id.to_string());
-                        // Include CEF browser_id for CDP target mapping
-                        if let Some(bid) = e.get_browser_id(&tab.id) {
-                            resp.data = Some(serde_json::json!({ "browser_id": bid }));
-                        }
+                // Resolve the per-tab identity. Default: a fresh, internally
+                // consistent Chrome profile (random_chrome) — ONE identity per
+                // tab, used by JS overrides AND the HTTP layer.
+                let viewport = e.config().window_size;
+                let stealth = match crate::api::identity::resolve_identity(identity.as_ref(), viewport) {
+                    Ok(config) => Arc::new(config),
+                    Err(err) => return IpcResponse::error(format!("Invalid identity: {}", err)),
+                };
 
-                        // Phase 3: Inject stealth scripts via CDP before any page JS runs.
-                        // This uses Page.addScriptToEvaluateOnNewDocument which persists
-                        // across navigations and bypasses CSP/Trusted Types.
-                        if let Some(ref cdp) = self.cdp_client {
-                            let tab_url = tab.url.clone();
-                            let cdp = cdp.clone();
-                            let section_scripts = self.stealth_section_scripts.clone();
-                            tokio::spawn(async move {
-                                // Wait for CDP target to become available
-                                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                                if let Ok(ws_url) = cdp.find_target_ws_url(&tab_url).await {
-                                    // Inject each stealth section separately via CDP Runtime.evaluate.
-                                    // Per-section injection is more reliable than one giant script
-                                    // because individual try/catch errors don't cascade.
-                                    if let Some(sections) = section_scripts {
-                                        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-                                        let mut ok = 0;
-                                        let mut err = 0;
-                                        for (i, script) in sections.iter().enumerate() {
-                                            match cdp.evaluate(&ws_url, script).await {
-                                                Ok(_) => { ok += 1; }
-                                                Err(e) => {
-                                                    err += 1;
-                                                    warn!("Stealth section {} failed for new tab: {}", i, e);
-                                                }
-                                            }
-                                        }
-                                        debug!("CDP stealth: {}/{} sections injected for new tab", ok, ok + err);
-                                    }
-                                }
-                            });
-                        }
+                // Serialize creation so the CDP target diff below is unambiguous
+                // even when multiple tabs are created concurrently.
+                let create_guard = self.create_tab_lock.lock().await;
 
-                        resp
-                    }
-                    Err(e) => IpcResponse::error(e.to_string()),
+                // Snapshot CDP page targets BEFORE creation to identify the new one.
+                let targets_before: std::collections::HashSet<String> = match &self.cdp_client {
+                    Some(cdp) => cdp
+                        .list_page_target_ids()
+                        .await
+                        .unwrap_or_default()
+                        .into_iter()
+                        .collect(),
+                    None => Default::default(),
+                };
+
+                // TIMING FIX: always create at about:blank. The stealth init-script
+                // and the UA/Accept-Language override must be registered BEFORE the
+                // first real document loads — creating directly with the target URL
+                // left the first document unprotected (live-proven webdriver leak).
+                let tab = match e.create_tab_with_identity("about:blank", Some(stealth.clone())).await {
+                    Ok(tab) => tab,
+                    Err(err) => return IpcResponse::error(err.to_string()),
+                };
+
+                let mut resp = IpcResponse::success_with_tab(tab.id.to_string());
+                // Include CEF browser_id for CDP target mapping
+                if let Some(bid) = e.get_browser_id(&tab.id) {
+                    resp.data = Some(serde_json::json!({ "browser_id": bid }));
                 }
+
+                // Register the full identity on the tab's CDP target — synchronously,
+                // before any navigation happens.
+                if let Some(cdp) = self.cdp_client.clone() {
+                    match Self::find_new_target_ws_url(&cdp, &targets_before).await {
+                        Some(ws_url) => {
+                            self.init_tab_identity_via_cdp(&cdp, &ws_url, &stealth, tab.id).await;
+                        }
+                        None => {
+                            warn!(
+                                "No CDP target found for new tab {}; stealth falls back to CEF load-handler injection only",
+                                tab.id
+                            );
+                        }
+                    }
+                }
+
+                drop(create_guard);
+
+                // Now navigate to the requested URL — the first real document is
+                // already protected by Page.addScriptToEvaluateOnNewDocument and
+                // carries the correct HTTP User-Agent / Accept-Language.
+                if !url.is_empty() && url != "about:blank" {
+                    if let Err(err) = e.navigate(tab.id, url).await {
+                        warn!("Navigation to {} failed for new tab {}: {}", url, tab.id, err);
+                    }
+                }
+
+                resp
             }
             None => {
                 IpcResponse::error("No browser engine available for CreateTab")
+            }
+        }
+    }
+
+    /// Polls /json/list until a page target appears that was not present in
+    /// `targets_before`. Returns its WebSocket debugger URL.
+    #[cfg(feature = "cef-browser")]
+    async fn find_new_target_ws_url(
+        cdp: &Arc<crate::api::cdp_client::CdpClient>,
+        targets_before: &std::collections::HashSet<String>,
+    ) -> Option<String> {
+        for _ in 0..30 {
+            if let Ok(ids) = cdp.list_page_target_ids().await {
+                if let Some(new_id) = ids.iter().find(|id| !targets_before.contains(*id)) {
+                    return Some(cdp.page_ws_url(new_id));
+                }
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+        None
+    }
+
+    /// Registers the complete stealth identity of a tab on its CDP target:
+    /// 1. `Page.addScriptToEvaluateOnNewDocument` — JS layer, runs before any
+    ///    page script on every future document (persists across navigations).
+    /// 2. `Emulation.setUserAgentOverride` — HTTP `User-Agent` and
+    ///    `Accept-Language` headers + `navigator.platform`, matching the JS
+    ///    layer exactly (header == navigator.languages).
+    /// 3. One-time section injection into the CURRENT document (about:blank),
+    ///    so even pre-navigation evaluate() sees the spoofed identity.
+    #[cfg(feature = "cef-browser")]
+    async fn init_tab_identity_via_cdp(
+        &self,
+        cdp: &Arc<crate::api::cdp_client::CdpClient>,
+        ws_url: &str,
+        stealth: &crate::stealth::StealthConfig,
+        tab_id: Uuid,
+    ) {
+        match cdp.add_init_script(ws_url, &stealth.get_complete_override_script()).await {
+            Ok(_) => {
+                self.tab_ws_urls.write().await.insert(tab_id, ws_url.to_string());
+                debug!("Stealth init-script registered at creation for tab {}", tab_id);
+            }
+            Err(e) => {
+                warn!("Failed to register stealth init-script for tab {}: {}", tab_id, e);
+            }
+        }
+
+        let accept_language =
+            crate::api::identity::accept_language_header(&stealth.fingerprint.languages);
+        if let Err(e) = cdp
+            .set_user_agent_override(
+                ws_url,
+                &stealth.fingerprint.user_agent,
+                &accept_language,
+                &stealth.fingerprint.platform,
+            )
+            .await
+        {
+            warn!("Failed to set UA/Accept-Language override for tab {}: {}", tab_id, e);
+        } else {
+            debug!(
+                "HTTP identity set for tab {}: UA + Accept-Language '{}'",
+                tab_id, accept_language
+            );
+        }
+
+        // Protect the already-existing about:blank document too.
+        for (i, script) in stealth.get_section_scripts().iter().enumerate() {
+            if let Err(e) = cdp.evaluate(ws_url, script).await {
+                debug!(
+                    "Stealth section {} failed on initial document of tab {}: {}",
+                    i, tab_id, e
+                );
             }
         }
     }
@@ -324,7 +440,11 @@ impl BrowserCommandHandler {
             #[cfg(feature = "cef-browser")]
             Some(BrowserEngineWrapper::Cef(e)) => {
                 match e.close_tab(uuid).await {
-                    Ok(_) => IpcResponse::success(),
+                    Ok(_) => {
+                        // Drop the per-tab CDP binding so closed tabs don't leak.
+                        self.tab_ws_urls.write().await.remove(&uuid);
+                        IpcResponse::success()
+                    }
                     Err(e) => IpcResponse::error(e.to_string()),
                 }
             }
@@ -348,26 +468,63 @@ impl BrowserCommandHandler {
             return IpcResponse::error(format!("Invalid URL scheme: URL must start with http://, https://, about:, or data: — got: {}", url));
         }
 
-        // Before navigating: inject stealth init-script via CDP so it runs
-        // before any page JS on the new document.
+        // Before navigating: ensure the tab's stealth identity is registered on
+        // its CDP target. Tabs created via handle_create_tab were initialized
+        // synchronously at creation (deterministic ws_url stored). Legacy tabs
+        // (popups, GUI-created tabs) get a best-effort registration here using
+        // THEIR OWN per-tab identity — never a second, conflicting config.
         if let Some(ref cdp) = self.cdp_client {
-            if let Some(tab_url) = match engine {
-                #[cfg(feature = "cef-browser")]
-                Some(BrowserEngineWrapper::Cef(e)) => {
-                    e.get_tabs_sync().into_iter()
-                        .find(|t| t.id == uuid)
-                        .map(|t| t.url.clone())
-                }
-                _ => None,
-            } {
-                if let Ok(ws_url) = cdp.find_target_ws_url(&tab_url).await {
-                    // Inject complete stealth script via CDP (includes WebGL, navigator, etc.)
-                    let stealth_js = self.stealth_init_script.clone().unwrap_or_else(|| r#"
+            let already_initialized = self.tab_ws_urls.read().await.contains_key(&uuid);
+            if !already_initialized {
+                if let Some(tab_url) = match engine {
+                    #[cfg(feature = "cef-browser")]
+                    Some(BrowserEngineWrapper::Cef(e)) => {
+                        e.get_tabs_sync().into_iter()
+                            .find(|t| t.id == uuid)
+                            .map(|t| t.url.clone())
+                    }
+                    _ => None,
+                } {
+                    if let Ok(ws_url) = cdp.find_target_ws_url(&tab_url).await {
+                        // The tab's own identity (assigned at creation by the engine).
+                        #[cfg(feature = "cef-browser")]
+                        let tab_stealth = match engine {
+                            Some(BrowserEngineWrapper::Cef(e)) => e.get_tab_stealth(&uuid),
+                            _ => None,
+                        };
+                        #[cfg(not(feature = "cef-browser"))]
+                        let tab_stealth: Option<Arc<crate::stealth::StealthConfig>> = None;
+
+                        let stealth_js = tab_stealth
+                            .as_ref()
+                            .map(|s| s.get_complete_override_script())
+                            .or_else(|| self.stealth_init_script.clone())
+                            .unwrap_or_else(|| r#"
                         Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
                         Object.defineProperty(Navigator.prototype, 'webdriver', {get: () => undefined});
                     "#.to_string());
-                    let _ = cdp.add_init_script(&ws_url, &stealth_js).await;
-                    debug!("CDP stealth init-script set before navigation to {}", url);
+                        if cdp.add_init_script(&ws_url, &stealth_js).await.is_ok() {
+                            self.tab_ws_urls.write().await.insert(uuid, ws_url.clone());
+                        }
+                        // Keep the HTTP layer consistent with the JS layer.
+                        if let Some(ref s) = tab_stealth {
+                            let accept_language = crate::api::identity::accept_language_header(
+                                &s.fingerprint.languages,
+                            );
+                            if let Err(e) = cdp
+                                .set_user_agent_override(
+                                    &ws_url,
+                                    &s.fingerprint.user_agent,
+                                    &accept_language,
+                                    &s.fingerprint.platform,
+                                )
+                                .await
+                            {
+                                warn!("Failed to set UA/Accept-Language override before navigation: {}", e);
+                            }
+                        }
+                        debug!("CDP stealth identity registered before navigation to {}", url);
+                    }
                 }
             }
         }
@@ -377,24 +534,33 @@ impl BrowserCommandHandler {
             Some(BrowserEngineWrapper::Cef(e)) => {
                 match e.navigate(uuid, url).await {
                     Ok(_) => {
-                        // Re-inject stealth sections after navigation via CDP Runtime.evaluate.
-                        if let (Some(ref cdp), Some(ref sections)) = (&self.cdp_client, &self.stealth_section_scripts) {
-                            let cdp = cdp.clone();
-                            let sections = sections.clone();
-                            let url_clone = url.to_string();
-                            tokio::spawn(async move {
-                                tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-                                if let Ok(ws_url) = cdp.find_target_ws_url(&url_clone).await {
-                                    let mut ok = 0;
-                                    for (i, script) in sections.iter().enumerate() {
-                                        match cdp.evaluate(&ws_url, script).await {
-                                            Ok(_) => { ok += 1; }
-                                            Err(e) => warn!("Stealth section {} failed after nav to {}: {}", i, url_clone, e),
+                        // Fallback only: when no init-script could be registered for
+                        // this tab (no CDP target found), re-inject the tab's OWN
+                        // stealth sections after load. Initialized tabs are already
+                        // protected from document start — re-injection is redundant.
+                        let initialized = self.tab_ws_urls.read().await.contains_key(&uuid);
+                        if !initialized {
+                            let sections = e
+                                .get_tab_stealth(&uuid)
+                                .map(|s| s.get_section_scripts())
+                                .or_else(|| self.stealth_section_scripts.clone());
+                            if let (Some(ref cdp), Some(sections)) = (&self.cdp_client, sections) {
+                                let cdp = cdp.clone();
+                                let url_clone = url.to_string();
+                                tokio::spawn(async move {
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+                                    if let Ok(ws_url) = cdp.find_target_ws_url(&url_clone).await {
+                                        let mut ok = 0;
+                                        for (i, script) in sections.iter().enumerate() {
+                                            match cdp.evaluate(&ws_url, script).await {
+                                                Ok(_) => { ok += 1; }
+                                                Err(e) => warn!("Stealth section {} failed after nav to {}: {}", i, url_clone, e),
+                                            }
                                         }
+                                        debug!("Stealth: {}/{} sections re-injected after nav to {}", ok, sections.len(), url_clone);
                                     }
-                                    debug!("Stealth: {}/{} sections re-injected after nav to {}", ok, sections.len(), url_clone);
-                                }
-                            });
+                                });
+                            }
                         }
                         IpcResponse::success()
                     }

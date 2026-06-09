@@ -134,6 +134,57 @@ impl CdpClient {
         self.find_target_by_url(tab_url).await
     }
 
+    /// Lists the target ids of all page-type CDP targets (via /json/list).
+    ///
+    /// Used for deterministic discovery of a freshly created tab's target:
+    /// snapshot before creation, diff after creation.
+    pub async fn list_page_target_ids(&self) -> Result<Vec<String>, String> {
+        let list_url = format!("http://127.0.0.1:{}/json/list", self.port);
+        let resp = reqwest::get(&list_url)
+            .await
+            .map_err(|e| format!("CDP list failed: {}", e))?;
+
+        let targets: Vec<CdpTarget> = resp
+            .json()
+            .await
+            .map_err(|e| format!("CDP parse failed: {}", e))?;
+
+        Ok(targets
+            .into_iter()
+            .filter(|t| t.target_type == "page")
+            .map(|t| t.id)
+            .collect())
+    }
+
+    /// Builds the WebSocket debugger URL for a page target id.
+    pub fn page_ws_url(&self, target_id: &str) -> String {
+        format!("ws://127.0.0.1:{}/devtools/page/{}", self.port, target_id)
+    }
+
+    /// Overrides User-Agent, Accept-Language header and navigator.platform for
+    /// this target via CDP `Emulation.setUserAgentOverride`.
+    ///
+    /// This keeps the HTTP layer consistent with the JS layer per tab: the
+    /// network stack sends exactly this User-Agent and Accept-Language for all
+    /// requests of the target. The override stays active for the lifetime of
+    /// the attached DevTools session (connections are cached per target).
+    pub async fn set_user_agent_override(
+        &self,
+        ws_url: &str,
+        user_agent: &str,
+        accept_language: &str,
+        platform: &str,
+    ) -> Result<(), String> {
+        let params = serde_json::json!({
+            "userAgent": user_agent,
+            "acceptLanguage": accept_language,
+            "platform": platform,
+        });
+        self.send_command(ws_url, "Emulation.setUserAgentOverride", params)
+            .await?;
+        Ok(())
+    }
+
     // ========================================================================
     // WebSocket Connection Management
     // ========================================================================

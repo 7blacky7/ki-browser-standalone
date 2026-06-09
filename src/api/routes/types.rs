@@ -84,6 +84,15 @@ pub struct NewTabRequest {
     pub url: Option<String>,
     #[serde(default)]
     pub active: Option<bool>,
+    /// Stealth identity for this tab:
+    /// `"random"` (default, consistent random Chrome profile),
+    /// `"consistent:<seed>"` (deterministic), or an explicit object
+    /// `{user_agent, platform, languages, hardware_concurrency, device_memory,
+    ///   webgl_vendor, webgl_renderer, screen: {width, height}, timezone, seed}`.
+    /// Partial objects are filled consistently from the default profile.
+    #[serde(default)]
+    #[schema(value_type = Option<Object>)]
+    pub identity: Option<crate::api::identity::IdentitySpec>,
 }
 
 /// Create new tab response
@@ -91,6 +100,11 @@ pub struct NewTabRequest {
 pub struct NewTabResponse {
     pub tab_id: String,
     pub url: String,
+    /// The resolved stealth identity active for this tab
+    /// (also queryable via GET /tabs/{tab_id}/identity).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub identity: Option<serde_json::Value>,
 }
 
 /// Close tab request
