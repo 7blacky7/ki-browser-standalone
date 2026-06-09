@@ -163,32 +163,41 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# pip-Installation der OCR-Stacks.
-#   torch/torchvision: CUDA 12.1 Wheels (cu121). Diese Wheels sind
-#     self-contained und bringen ihre CUDA-Runtime-Libs selbst mit — es wird
-#     KEIN nvidia-cuda-toolkit benoetigt, nur der Host-NVIDIA-Treiber (per
-#     Unraid-Plugin durchgereicht). RTX2070 / Treiber 570 unterstuetzt CUDA 12.x.
-#   CPU-FALLBACK ist automatisch: faellt der CUDA-Treiber aus oder fehlt er,
-#     waehlt torch zur Laufzeit transparent die CPU — kein zusaetzlicher Code.
-#   paddlepaddle-gpu: CUDA-Variante. FALLS das GPU-Wheel im Build zickt
-#     (CUDA-Version-Matching ist fummelig), die GPU-Zeile auskommentieren und
-#     stattdessen die CPU-Alternative aktivieren (siehe unten).
+# pip-Installation der OCR-Stacks. PINS SIND VALIDIERT (Container-Tests
+# 2026-06-10 auf Unraid RTX2070 / Treiber 570 = max. CUDA 12.8):
+#   surya-ocr==0.14.5: LETZTE Version mit In-Process-torch-Inferenz.
+#     0.16+/0.20 brauchen einen externen Inference-Server (llama-server bzw.
+#     vLLM-im-Docker) — im Container nicht verfuegbar. surya.rs nutzt die
+#     0.14-Predictor-API (DetectionPredictor/RecognitionPredictor).
+#   transformers==4.53.3: surya 0.14.5 importiert QuantizedCacheConfig,
+#     das neuere transformers (>=4.54) entfernt haben.
+#   torch ZULETZT mit --force-reinstall als cu128-Pin: surya/paddle ziehen
+#     sonst das neueste torch (cu130-Build), dessen CUDA 13 der Treiber 570
+#     nicht kann (torch.cuda.is_available()=False). cu128-Wheels sind
+#     self-contained (keine CUDA-Toolkit-Installation noetig, nur Host-Treiber).
+#     --extra-index-url pypi.org noetig, da der pytorch-Index die transitiven
+#     Abhaengigkeiten (typing-extensions etc.) nicht vollstaendig hostet.
+#   CPU-FALLBACK bleibt automatisch: ohne CUDA waehlt torch transparent CPU;
+#     surya.rs setzt device entsprechend torch.cuda.is_available().
 RUN pip3 install --no-cache-dir --break-system-packages \
-        torch torchvision --index-url https://download.pytorch.org/whl/cu121 \
-    && pip3 install --no-cache-dir --break-system-packages \
         paddleocr \
         paddlepaddle-gpu \
-        surya-ocr
+        "surya-ocr==0.14.5" \
+        "transformers==4.53.3" \
+    && pip3 install --no-cache-dir --break-system-packages --force-reinstall \
+        "torch==2.11.0+cu128" torchvision \
+        --index-url https://download.pytorch.org/whl/cu128 \
+        --extra-index-url https://pypi.org/simple
 # --- CPU-Alternative fuer Paddle (nur falls paddlepaddle-gpu im Build scheitert):
 # RUN pip3 install --no-cache-dir --break-system-packages paddlepaddle
 
 # Modell-Pre-Download im Build, damit der erste Request nicht zur Laufzeit
 # Modelle uebers Netz ziehen muss (schnelle First-Response, deterministisch).
-# Nicht-fatal (|| true): ein fehlgeschlagener Warmup (z.B. API-Signatur-Drift
-# je nach paddleocr-Version, oder grosser Surya-Modell-Download) darf den
-# Build NICHT killen.
+# Nicht-fatal (|| true): ein fehlgeschlagener Warmup darf den Build NICHT
+# killen. device='cpu' beim Surya-Warmup: im Build gibt es keine GPU, der
+# Download der Gewichte ist deviceunabhaengig.
 RUN python3 -c "from paddleocr import PaddleOCR; PaddleOCR(use_angle_cls=True, lang='en')" || true
-RUN python3 -c "from surya.model.detection.model import load_model as d; from surya.model.recognition.model import load_model as r; d(); r()" || true
+RUN python3 -c "from surya.detection import DetectionPredictor; from surya.recognition import RecognitionPredictor; DetectionPredictor(device='cpu'); RecognitionPredictor(device='cpu')" || true
 
 # NVIDIA Container Runtime — GPU wird vom Host durchgereicht
 ENV NVIDIA_VISIBLE_DEVICES=all

@@ -31,9 +31,10 @@ impl SuryaEngine {
 
 /// Runs a quick Python import check to determine if surya is installed.
 fn check_surya_available() -> (bool, Option<String>) {
-    let output = Command::new("python3")
-        .args(["-c", "import surya; print(surya.__version__)"])
-        .output();
+    // surya >= 0.16 no longer exposes `surya.__version__`; read the installed
+    // package version via importlib.metadata and fall back to the attribute.
+    const PROBE: &str = "import surya, importlib.metadata\ntry:\n    print(importlib.metadata.version('surya-ocr'))\nexcept importlib.metadata.PackageNotFoundError:\n    print(getattr(surya, '__version__', ''))";
+    let output = Command::new("python3").args(["-c", PROBE]).output();
     match output {
         Ok(o) if o.status.success() => {
             let ver = String::from_utf8_lossy(&o.stdout).trim().to_string();
@@ -45,41 +46,27 @@ fn check_surya_available() -> (bool, Option<String>) {
 }
 
 /// Python script that runs Surya OCR on a given image file and outputs JSON.
-/// Wraps all imports in a try/except so version mismatches produce a structured
-/// error JSON rather than an unhandled traceback.
+/// Uses the surya 0.14 predictor API (DetectionPredictor/RecognitionPredictor,
+/// in-process torch inference — 0.16+ removed it in favour of external
+/// inference servers). Imports are wrapped in try/except so version mismatches
+/// produce a structured error JSON rather than an unhandled traceback.
 const SURYA_SCRIPT: &str = r#"
 import sys, json
 from PIL import Image
 
 try:
-    from surya.ocr import run_ocr
-    from surya.model.detection.model import load_model as load_det_model, load_processor as load_det_processor
-    from surya.model.recognition.model import load_model as load_rec_model
-    from surya.model.recognition.processor import load_processor as load_rec_processor
-    _USE_OCR_API = True
-except ImportError:
-    try:
-        from surya.recognition import run_recognition
-        from surya.detection import run_detection
-        from surya.model.detection.model import load_model as load_det_model, load_processor as load_det_processor
-        from surya.model.recognition.model import load_model as load_rec_model
-        from surya.model.recognition.processor import load_processor as load_rec_processor
-        _USE_OCR_API = False
-    except ImportError as e:
-        print(json.dumps({"error": f"Surya import failed: {e}. Install a compatible version."}))
-        sys.exit(0)
+    import torch
+    from surya.detection import DetectionPredictor
+    from surya.recognition import RecognitionPredictor
+except ImportError as e:
+    print(json.dumps({"error": f"Surya import failed: {e}. Install a compatible version."}))
+    sys.exit(0)
 
+device = "cuda" if torch.cuda.is_available() else "cpu"
 image = Image.open(sys.argv[1])
-det_model = load_det_model()
-det_processor = load_det_processor()
-rec_model = load_rec_model()
-rec_processor = load_rec_processor()
-
-if _USE_OCR_API:
-    rec_result = run_ocr([image], [["en"]], det_model, det_processor, rec_model, rec_processor)
-else:
-    det_result = run_detection([image], det_model, det_processor)
-    rec_result = run_recognition([image], rec_model, rec_processor, det_result)
+det_predictor = DetectionPredictor(device=device)
+rec_predictor = RecognitionPredictor(device=device)
+rec_result = rec_predictor([image], det_predictor=det_predictor)
 
 items = []
 full_parts = []
