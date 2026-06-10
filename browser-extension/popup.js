@@ -124,11 +124,20 @@ async function sendBundle(bundle) {
   const headers = { 'Content-Type': 'application/json' };
   if (cfg.kiBrowserToken) headers['Authorization'] = `Bearer ${cfg.kiBrowserToken}`;
 
-  const resp = await fetch(`${base}/login-session/import`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(bundle)
-  });
+  let resp;
+  try {
+    resp = await fetch(`${base}/login-session/import`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(bundle)
+    });
+  } catch (e) {
+    throw new Error(
+      `Konnte ki-browser unter ${base} nicht erreichen (${e.message}). ` +
+      `Laeuft ki-browser? URL korrekt? In Firefox ggf. about:addons -> diese ` +
+      `Erweiterung -> Berechtigungen -> Host-Zugriff erlauben. Alternativ: Download JSON.`
+    );
+  }
   const text = await resp.text();
   if (!resp.ok) {
     throw new Error(`Server ${resp.status}: ${text.slice(0, 200)}`);

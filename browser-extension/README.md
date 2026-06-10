@@ -53,6 +53,11 @@ The `fingerprint` field names are identical to the backend `IdentitySpec`
 
 (Temporary add-ons are removed on Firefox restart; reload the same way.)
 
+**Firefox host access:** if **An ki-browser senden** fails with a *NetworkError*,
+open `about:addons` -> this extension -> **Permissions** and enable the host
+access (Firefox MV3 treats `host_permissions` as opt-in). Alternatively just use
+**Download JSON** and import the file via `POST /login-session/import`.
+
 ## Usage
 
 1. Open and **log in** to the target site in your normal browser tab.
