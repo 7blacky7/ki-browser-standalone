@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # KI-Browser Standalone Docker Image with CEF (Chromium Embedded Framework)
 # Uses native CEF bindings for browser automation
 #
@@ -111,20 +112,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libatspi2.0-0 \
     # Printing
     libcups2 \
-    # Graphics — GPU-accelerated via NVIDIA + Mesa fallback
-    libdrm2 \
-    libgbm1 \
-    libgl1-mesa-glx \
-    libgl1-mesa-dri \
-    libegl1-mesa \
-    libgles2-mesa \
-    # libglvnd — vendor-neutral GL/EGL dispatcher. The NVIDIA container runtime
-    # mounts libEGL_nvidia.so/libGLX_nvidia.so but NOT a vendor JSON, so without
-    # glvnd + the NVIDIA vendor config below the dispatcher only ever sees Mesa
-    # (llvmpipe) and ANGLE's EGL context creation falls back to software.
-    libglvnd0 \
-    libopengl0 \
-    libvulkan1 \
     # Text rendering
     libpango-1.0-0 \
     libcairo2 \
@@ -197,13 +184,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #     (in numpy 2.0 entfernt) — Import crasht sonst. paddle 2.6 ist ohnehin
 #     gegen numpy 1.x gebaut. torch 2.11 + surya 0.14.5 mit numpy 1.26
 #     verifiziert (Container-Test 2026-06-10, beide conf 0.98).
-RUN pip3 install --no-cache-dir --break-system-packages \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install --break-system-packages \
         "numpy<2" \
         "paddleocr==2.8.1" \
         paddlepaddle-gpu \
         "surya-ocr==0.14.5" \
         "transformers==4.53.3" \
-    && pip3 install --no-cache-dir --break-system-packages --force-reinstall \
+    && pip3 install --break-system-packages --force-reinstall \
         "torch==2.11.0+cu128" torchvision "numpy<2" \
         --index-url https://download.pytorch.org/whl/cu128 \
         --extra-index-url https://pypi.org/simple
@@ -217,6 +205,28 @@ RUN pip3 install --no-cache-dir --break-system-packages \
 # Download der Gewichte ist deviceunabhaengig.
 RUN python3 -c "from paddleocr import PaddleOCR; PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False, show_log=False)" || true
 RUN python3 -c "from surya.detection import DetectionPredictor; from surya.recognition import RecognitionPredictor; DetectionPredictor(device='cpu'); RecognitionPredictor(device='cpu')" || true
+
+# =============================================================================
+# GPU graphics libraries (Mesa + glvnd + Vulkan) — SEPARATE post-pip layer.
+# Kept AFTER the expensive pip/torch/paddle/surya layer ON PURPOSE: GPU-infra
+# iterations (adding a Vulkan/EGL package, tweaking the vendor setup) must NOT
+# invalidate the multi-GB OCR pip layer above. Pairs with the pip cache-mount.
+# libglvnd0 is the vendor-neutral GL/EGL dispatcher: the NVIDIA container
+# runtime mounts libEGL_nvidia.so/libGLX_nvidia.so but NOT a vendor JSON, so
+# without glvnd + the NVIDIA vendor config below the dispatcher only ever sees
+# Mesa (llvmpipe) and ANGLE's EGL context creation falls back to software.
+# =============================================================================
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libdrm2 \
+    libgbm1 \
+    libgl1-mesa-glx \
+    libgl1-mesa-dri \
+    libegl1-mesa \
+    libgles2-mesa \
+    libglvnd0 \
+    libopengl0 \
+    libvulkan1 \
+    && rm -rf /var/lib/apt/lists/*
 
 # NVIDIA Container Runtime — GPU wird vom Host durchgereicht
 ENV NVIDIA_VISIBLE_DEVICES=all
