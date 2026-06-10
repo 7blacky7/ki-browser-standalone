@@ -67,6 +67,33 @@
     padding: 8px 14px; border-radius: 8px; font-size: 13px; z-index: 60;
     opacity: 0; pointer-events: none; transition: opacity .2s;
   }
+  /* Sessions-Panel */
+  #sessions-overlay {
+    position: fixed; inset: 0; z-index: 70; display: none;
+    background: rgba(0,0,0,.55); align-items: flex-start; justify-content: center;
+  }
+  #sessions-overlay.open { display: flex; }
+  #sessions-panel {
+    margin-top: 56px; width: 560px; max-width: calc(100vw - 24px); max-height: 80vh;
+    display: flex; flex-direction: column; background: #171922;
+    border: 1px solid #2c3140; border-radius: 10px; box-shadow: 0 12px 40px rgba(0,0,0,.6);
+  }
+  #sessions-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid #262a36; }
+  #sessions-head h2 { margin: 0; font-size: 14px; font-weight: 600; flex: 1 1 auto; }
+  #sessions-list { overflow-y: auto; padding: 8px; flex: 1 1 auto; }
+  .session-item {
+    display: flex; align-items: center; gap: 10px; padding: 9px 11px; margin-bottom: 6px;
+    background: #20232e; border: 1px solid #2c3140; border-radius: 8px;
+  }
+  .session-info { flex: 1 1 auto; min-width: 0; }
+  .session-origin { font-weight: 600; color: #e8eaee; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .session-meta { font-size: 11px; color: #8a909c; margin-top: 2px; }
+  .session-item button { font-size: 12px; padding: 5px 10px; }
+  .session-del { background: #3a1f23; border-color: #5a2a30; }
+  .session-del:hover { background: #4a2429; }
+  #sessions-msg { padding: 6px 14px; font-size: 12px; color: #d7706b; min-height: 0; }
+  #sessions-msg:empty { display: none; }
+  #sessions-empty { padding: 24px; text-align: center; color: #8a909c; }
 </style>
 </head>
 <body>
@@ -77,7 +104,19 @@
   <button class="nav" id="upload" title="Datei an Upload-Feld der Seite anhängen">📎</button>
   <input id="filepick" type="file" style="display:none">
   <input id="addr" type="text" placeholder="URL eingeben und Enter…" spellcheck="false" autocomplete="off">
+  <button class="nav" id="sessions-btn" title="Login-Sessions verwalten">🔑</button>
   <span id="status"><span id="dot" class="connecting"></span><span id="statusText">verbinde…</span></span>
+</div>
+<div id="sessions-overlay">
+  <div id="sessions-panel">
+    <div id="sessions-head">
+      <h2>Login-Sessions</h2>
+      <button id="sessions-refresh" title="Neu laden">⟳</button>
+      <button id="sessions-close" title="Schließen">×</button>
+    </div>
+    <div id="sessions-msg"></div>
+    <div id="sessions-list"></div>
+  </div>
 </div>
 <div id="tabbar">
   <div id="tabs" style="display:flex;gap:4px;"></div>
@@ -204,6 +243,86 @@
   $('fwd').onclick = () => send({ type: 'go_forward' });
   $('reload').onclick = () => { if (addr.value) send({ type: 'navigate', url: addr.value }); };
   $('newtab').onclick = () => send({ type: 'create_tab', url: 'about:blank' });
+
+  // ---- Sessions-Panel: verwaltet hochgeladene Login-Sessions ----
+  const sessOverlay = $('sessions-overlay'), sessList = $('sessions-list'), sessMsg = $('sessions-msg');
+  function sessShowError(m) { sessMsg.textContent = m || ''; }
+  function fmtDate(s) { try { return new Date(s).toLocaleString(); } catch (e) { return s || ''; } }
+
+  async function loadSessions() {
+    sessShowError('');
+    sessList.innerHTML = '<div id="sessions-empty">Lade…</div>';
+    try {
+      const r = await fetch('/login-session/list');
+      if (!r.ok) { sessList.innerHTML = ''; sessShowError('Laden fehlgeschlagen (HTTP ' + r.status + ')'); return; }
+      const body = await r.json();
+      const items = (body && body.data) || [];
+      renderSessions(items);
+    } catch (e) {
+      sessList.innerHTML = ''; sessShowError('Laden fehlgeschlagen: ' + e);
+    }
+  }
+
+  function renderSessions(items) {
+    sessList.innerHTML = '';
+    if (!items.length) { sessList.innerHTML = '<div id="sessions-empty">Keine gespeicherten Sessions.</div>'; return; }
+    items.forEach(it => {
+      const row = document.createElement('div');
+      row.className = 'session-item';
+      const info = document.createElement('div');
+      info.className = 'session-info';
+      const origin = document.createElement('div');
+      origin.className = 'session-origin'; origin.textContent = it.origin || it.id; origin.title = it.origin || '';
+      const meta = document.createElement('div');
+      meta.className = 'session-meta';
+      meta.textContent = fmtDate(it.created_at) + ' · ' + (it.cookie_count || 0) + ' Cookies';
+      info.appendChild(origin); info.appendChild(meta);
+      const openBtn = document.createElement('button');
+      openBtn.textContent = 'Öffnen';
+      openBtn.onclick = () => openSession(it);
+      const delBtn = document.createElement('button');
+      delBtn.className = 'session-del'; delBtn.textContent = 'Löschen';
+      delBtn.onclick = () => deleteSession(it);
+      row.appendChild(info); row.appendChild(openBtn); row.appendChild(delBtn);
+      sessList.appendChild(row);
+    });
+  }
+
+  async function openSession(it) {
+    sessShowError('');
+    try {
+      const r = await fetch('/tabs/new', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: it.origin, session_id: it.id }),
+      });
+      if (!r.ok) { sessShowError('Öffnen fehlgeschlagen (HTTP ' + r.status + ')'); return; }
+      // Frame-Stream zeigt den neuen Tab automatisch; KEINE create_tab-WS senden
+      // (würde einen doppelten Tab erzeugen).
+      closeSessions();
+      toast('Tab geöffnet');
+    } catch (e) {
+      sessShowError('Öffnen fehlgeschlagen: ' + e);
+    }
+  }
+
+  async function deleteSession(it) {
+    sessShowError('');
+    try {
+      const r = await fetch('/login-session/' + encodeURIComponent(it.id), { method: 'DELETE' });
+      if (!r.ok) { sessShowError('Löschen fehlgeschlagen (HTTP ' + r.status + ')'); return; }
+      loadSessions();
+    } catch (e) {
+      sessShowError('Löschen fehlgeschlagen: ' + e);
+    }
+  }
+
+  function openSessions() { sessOverlay.classList.add('open'); loadSessions(); }
+  function closeSessions() { sessOverlay.classList.remove('open'); }
+  $('sessions-btn').onclick = () => { sessOverlay.classList.contains('open') ? closeSessions() : openSessions(); };
+  $('sessions-close').onclick = closeSessions;
+  $('sessions-refresh').onclick = loadSessions;
+  sessOverlay.addEventListener('mousedown', (ev) => { if (ev.target === sessOverlay) closeSessions(); });
 
   // File upload bridge: pick a local file, POST it to /upload, the server
   // attaches it to the page's file input via CDP (no native dialog needed).

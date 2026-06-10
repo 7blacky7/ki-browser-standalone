@@ -333,18 +333,26 @@ async fn handle_client_message(
                     await_promise: false,
                     frame_id: None,
                 };
-                let (link, selection) = match state
-                    .ipc_channel
-                    .send_command(crate::api::ipc::IpcMessage::Command(cmd))
-                    .await
-                {
-                    Ok(resp) if resp.success => parse_page_context(resp.data),
-                    _ => (None, None),
-                };
-                let _ = tab_update_tx.send(ServerMessage::PageContext {
-                    request_id,
-                    link,
-                    selection,
+                // Non-blocking: run the IPC call in a spawned task so the WS
+                // input loop never stalls if the CEF render thread is saturated.
+                let ipc = state.ipc_channel.clone();
+                let tx = tab_update_tx.clone();
+                tokio::spawn(async move {
+                    let (link, selection) = match ipc
+                        .send_command_timeout(
+                            crate::api::ipc::IpcMessage::Command(cmd),
+                            std::time::Duration::from_secs(3),
+                        )
+                        .await
+                    {
+                        Ok(resp) if resp.success => parse_page_context(resp.data),
+                        _ => (None, None),
+                    };
+                    let _ = tx.send(ServerMessage::PageContext {
+                        request_id,
+                        link,
+                        selection,
+                    });
                 });
             }
         }
@@ -378,26 +386,42 @@ async fn handle_client_message(
             // navigation path runs (CDP/stealth setup, state stays consistent).
             if let Some(tab) = resolve_active() {
                 let cmd = crate::api::ipc::IpcCommand::Navigate { tab_id: tab_id_str(tab), url };
-                let _ = state.ipc_channel.send_command(crate::api::ipc::IpcMessage::Command(cmd)).await;
+                let ipc = state.ipc_channel.clone();
+                tokio::spawn(async move {
+                    let _ = ipc
+                        .send_command_timeout(
+                            crate::api::ipc::IpcMessage::Command(cmd),
+                            std::time::Duration::from_secs(5),
+                        )
+                        .await;
+                });
             }
         }
         ClientMessage::CreateTab { url } => {
             // Same path as /tabs/new so the tab is fully initialised (identity,
             // viewport) and tracked everywhere — not a bare engine tab.
             let cmd = crate::api::ipc::IpcCommand::CreateTab { url, active: true, identity: None, session_bundle: None };
-            if let Ok(resp) = state.ipc_channel.send_command(crate::api::ipc::IpcMessage::Command(cmd)).await {
-                if let Some(tid) = resp.tab_id {
-                    if let Ok(uuid) = Uuid::parse_str(&tid) {
-                        *active_tab_id.lock() = Some(uuid);
+            let ipc = state.ipc_channel.clone();
+            let active = active_tab_id.clone();
+            tokio::spawn(async move {
+                if let Ok(resp) = ipc
+                    .send_command_timeout(
+                        crate::api::ipc::IpcMessage::Command(cmd),
+                        std::time::Duration::from_secs(10),
+                    )
+                    .await
+                {
+                    if let Some(tid) = resp.tab_id {
+                        if let Ok(uuid) = Uuid::parse_str(&tid) {
+                            *active.lock() = Some(uuid);
+                        }
                     }
                 }
-            }
+            });
         }
         ClientMessage::CloseTab { tab_id } => {
             if let Ok(uuid) = Uuid::parse_str(&tab_id) {
-                let cmd = crate::api::ipc::IpcCommand::CloseTab { tab_id: tab_id.clone() };
-                let _ = state.ipc_channel.send_command(crate::api::ipc::IpcMessage::Command(cmd)).await;
-                // If closing the active tab, switch to first remaining tab.
+                // Tab-switch logic is non-blocking and can run synchronously first.
                 let next = {
                     let active = active_tab_id.lock();
                     *active == Some(uuid)
@@ -406,6 +430,17 @@ async fn handle_client_message(
                     let fallback = engine.get_tabs_sync().iter().find(|t| t.id != uuid).map(|t| t.id);
                     *active_tab_id.lock() = fallback;
                 }
+                // The IPC close goes into a spawned task so the WS loop never stalls.
+                let cmd = crate::api::ipc::IpcCommand::CloseTab { tab_id: tab_id.clone() };
+                let ipc = state.ipc_channel.clone();
+                tokio::spawn(async move {
+                    let _ = ipc
+                        .send_command_timeout(
+                            crate::api::ipc::IpcMessage::Command(cmd),
+                            std::time::Duration::from_secs(5),
+                        )
+                        .await;
+                });
             }
         }
         ClientMessage::Resize { width, height } => {
@@ -416,13 +451,29 @@ async fn handle_client_message(
         ClientMessage::GoBack => {
             if let Some(tab) = resolve_active() {
                 let cmd = crate::api::ipc::IpcCommand::GoBack { tab_id: tab_id_str(tab) };
-                let _ = state.ipc_channel.send_command(crate::api::ipc::IpcMessage::Command(cmd)).await;
+                let ipc = state.ipc_channel.clone();
+                tokio::spawn(async move {
+                    let _ = ipc
+                        .send_command_timeout(
+                            crate::api::ipc::IpcMessage::Command(cmd),
+                            std::time::Duration::from_secs(5),
+                        )
+                        .await;
+                });
             }
         }
         ClientMessage::GoForward => {
             if let Some(tab) = resolve_active() {
                 let cmd = crate::api::ipc::IpcCommand::GoForward { tab_id: tab_id_str(tab) };
-                let _ = state.ipc_channel.send_command(crate::api::ipc::IpcMessage::Command(cmd)).await;
+                let ipc = state.ipc_channel.clone();
+                tokio::spawn(async move {
+                    let _ = ipc
+                        .send_command_timeout(
+                            crate::api::ipc::IpcMessage::Command(cmd),
+                            std::time::Duration::from_secs(5),
+                        )
+                        .await;
+                });
             }
         }
     }
