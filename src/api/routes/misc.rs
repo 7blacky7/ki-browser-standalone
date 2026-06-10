@@ -279,9 +279,11 @@ pub async fn upload_file(
                 let safe = if safe.is_empty() { "upload".to_string() } else { safe };
                 match field.bytes().await {
                     Ok(data) => {
-                        let dir = "/tmp/ki-uploads";
-                        let _ = std::fs::create_dir_all(dir);
-                        let path = format!("{}/{}-{}", dir, uuid::Uuid::new_v4(), safe);
+                        // UUID as a sub-dir (not a filename prefix) so the page
+                        // sees the real filename, not "<uuid>-name.ext".
+                        let dir = format!("/tmp/ki-uploads/{}", uuid::Uuid::new_v4());
+                        let _ = std::fs::create_dir_all(&dir);
+                        let path = format!("{}/{}", dir, safe);
                         if std::fs::write(&path, &data).is_ok() { saved_path = Some(path); }
                     }
                     Err(e) => return (StatusCode::BAD_REQUEST, Json(ApiResponse::<()>::error(format!("Upload read failed: {}", e)))).into_response(),

@@ -162,16 +162,18 @@ async fn handle_viewer_socket(socket: WebSocket, state: AppState, force_jpeg: bo
         // Input receiving task: parse client messages and forward to CEF.
         let recv_engine = engine.clone();
         let recv_active = active_tab_id.clone();
+        let recv_state = state.clone();
         let recv_task = tokio::spawn(async move {
             while let Some(Ok(msg)) = ws_receiver.next().await {
                 match msg {
                     Message::Text(text) => {
                         handle_client_message(
                             &text,
+                            &recv_state,
                             &recv_engine,
                             &recv_active,
                             &tab_update_tx,
-                        );
+                        ).await;
                     }
                     Message::Close(_) => break,
                     _ => {}
@@ -247,8 +249,9 @@ fn encode_frame_if_new(
 /// Process a client input message and forward it to the CEF engine.
 /// Handles SetActiveTab by updating the shared active tab tracker.
 #[cfg(feature = "cef-browser")]
-fn handle_client_message(
+async fn handle_client_message(
     text: &str,
+    state: &AppState,
     engine: &Arc<CefBrowserEngine>,
     active_tab_id: &Arc<parking_lot::Mutex<Option<Uuid>>>,
     tab_update_tx: &tokio::sync::mpsc::UnboundedSender<ServerMessage>,
@@ -324,26 +327,37 @@ fn handle_client_message(
             }
         }
         ClientMessage::Navigate { url } => {
+            // Go through the API (IpcCommand) like /navigate so the full
+            // navigation path runs (CDP/stealth setup, state stays consistent).
             if let Some(tab) = resolve_active() {
-                engine.send_navigate(tab, &url);
+                let cmd = crate::api::ipc::IpcCommand::Navigate { tab_id: tab_id_str(tab), url };
+                let _ = state.ipc_channel.send_command(crate::api::ipc::IpcMessage::Command(cmd)).await;
             }
         }
         ClientMessage::CreateTab { url } => {
-            let new_id = engine.send_create_tab(&url);
-            // Auto-switch to the newly created tab.
-            *active_tab_id.lock() = Some(new_id);
+            // Same path as /tabs/new so the tab is fully initialised (identity,
+            // viewport) and tracked everywhere — not a bare engine tab.
+            let cmd = crate::api::ipc::IpcCommand::CreateTab { url, active: true, identity: None };
+            if let Ok(resp) = state.ipc_channel.send_command(crate::api::ipc::IpcMessage::Command(cmd)).await {
+                if let Some(tid) = resp.tab_id {
+                    if let Ok(uuid) = Uuid::parse_str(&tid) {
+                        *active_tab_id.lock() = Some(uuid);
+                    }
+                }
+            }
         }
         ClientMessage::CloseTab { tab_id } => {
             if let Ok(uuid) = Uuid::parse_str(&tab_id) {
-                engine.send_close_tab(uuid);
+                let cmd = crate::api::ipc::IpcCommand::CloseTab { tab_id: tab_id.clone() };
+                let _ = state.ipc_channel.send_command(crate::api::ipc::IpcMessage::Command(cmd)).await;
                 // If closing the active tab, switch to first remaining tab.
-                let mut active = active_tab_id.lock();
-                if *active == Some(uuid) {
-                    *active = engine
-                        .get_tabs_sync()
-                        .iter()
-                        .find(|t| t.id != uuid)
-                        .map(|t| t.id);
+                let next = {
+                    let active = active_tab_id.lock();
+                    *active == Some(uuid)
+                };
+                if next {
+                    let fallback = engine.get_tabs_sync().iter().find(|t| t.id != uuid).map(|t| t.id);
+                    *active_tab_id.lock() = fallback;
                 }
             }
         }
@@ -354,12 +368,14 @@ fn handle_client_message(
         }
         ClientMessage::GoBack => {
             if let Some(tab) = resolve_active() {
-                engine.send_go_back(tab);
+                let cmd = crate::api::ipc::IpcCommand::GoBack { tab_id: tab_id_str(tab) };
+                let _ = state.ipc_channel.send_command(crate::api::ipc::IpcMessage::Command(cmd)).await;
             }
         }
         ClientMessage::GoForward => {
             if let Some(tab) = resolve_active() {
-                engine.send_go_forward(tab);
+                let cmd = crate::api::ipc::IpcCommand::GoForward { tab_id: tab_id_str(tab) };
+                let _ = state.ipc_channel.send_command(crate::api::ipc::IpcMessage::Command(cmd)).await;
             }
         }
     }
