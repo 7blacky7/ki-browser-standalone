@@ -266,26 +266,46 @@ cef::wrap_app! {
                 // drives the real GPU. Override via KI_BROWSER_ANGLE_BACKEND
                 // (vulkan|gl-egl|swiftshader) for debugging.
                 let angle_backend = std::env::var("KI_BROWSER_ANGLE_BACKEND")
-                    .unwrap_or_else(|_| "vulkan".to_string());
+                    .unwrap_or_else(|_| "native-egl".to_string());
 
-                if self.use_egl {
-                    // Opt-in via KI_BROWSER_USE_EGL: force the real GPU through
-                    // ANGLE. Default backend is Vulkan (NVIDIA ICD). The spoofed
-                    // WebGL identity stays active either way.
-                    cmd.append_switch_with_value(
-                        Some(&CefString::from("use-gl")),
-                        Some(&CefString::from("angle")),
-                    );
-                    cmd.append_switch_with_value(
-                        Some(&CefString::from("use-angle")),
-                        Some(&CefString::from(angle_backend.as_str())),
-                    );
+                // Helper: apply the GL backend switches. "native-egl" drives
+                // Chromium's native EGL/desktop-GL path (no ANGLE) — the only
+                // working real-GPU path on NVIDIA in this container, because the
+                // NVIDIA driver does NOT expose VK_EXT_headless_surface, so
+                // ANGLE's Vulkan backend aborts at vk_renderer init (verified via
+                // logs: vk_renderer.cpp:2303 VK_ERROR_INITIALIZATION_FAILED).
+                // Native EGL surfaceless reaches the NVIDIA GPU directly
+                // (verified: GL_RENDERER "NVIDIA GeForce RTX 2070"). Other values
+                // map to ANGLE backends (vulkan|gl-egl|swiftshader).
+                let apply_gl = |cmd: &mut cef::CommandLine, backend: &str| {
+                    if backend == "native-egl" || backend == "egl" {
+                        cmd.append_switch_with_value(
+                            Some(&CefString::from("use-gl")),
+                            Some(&CefString::from("egl")),
+                        );
+                    } else {
+                        cmd.append_switch_with_value(
+                            Some(&CefString::from("use-gl")),
+                            Some(&CefString::from("angle")),
+                        );
+                        cmd.append_switch_with_value(
+                            Some(&CefString::from("use-angle")),
+                            Some(&CefString::from(backend)),
+                        );
+                    }
                     cmd.append_switch(Some(&CefString::from("enable-webgl")));
                     cmd.append_switch(Some(&CefString::from("in-process-gpu")));
                     cmd.append_switch(Some(&CefString::from("enable-gpu")));
                     cmd.append_switch(Some(&CefString::from("ignore-gpu-blocklist")));
                     cmd.append_switch(Some(&CefString::from("ignore-gpu-blacklist")));
-                    debug!("CEF: KI_BROWSER_USE_EGL active — ANGLE backend '{}' for real GPU GL", angle_backend);
+                };
+
+                if self.use_egl {
+                    // Opt-in via KI_BROWSER_USE_EGL: force the real GPU.
+                    // Default backend is native-egl (NVIDIA). The spoofed WebGL
+                    // identity stays active either way.
+                    apply_gl(cmd, angle_backend.as_str());
+                    debug!("CEF: KI_BROWSER_USE_EGL active — GL backend '{}' for real GPU GL", angle_backend);
                 } else if self.headless {
                     // Headless: prefer real GPU if available, fall back to SwiftShader.
                     // A real GPU avoids the "SwiftShader" WebGL renderer string which
@@ -293,21 +313,9 @@ cef::wrap_app! {
                     let has_real_gpu = std::path::Path::new("/dev/dri/renderD128").exists();
 
                     if has_real_gpu {
-                        // Real GPU available — hardware ANGLE (Vulkan/NVIDIA by default)
-                        cmd.append_switch_with_value(
-                            Some(&CefString::from("use-gl")),
-                            Some(&CefString::from("angle")),
-                        );
-                        cmd.append_switch_with_value(
-                            Some(&CefString::from("use-angle")),
-                            Some(&CefString::from(angle_backend.as_str())),
-                        );
-                        cmd.append_switch(Some(&CefString::from("enable-webgl")));
-                        cmd.append_switch(Some(&CefString::from("in-process-gpu")));
-                        cmd.append_switch(Some(&CefString::from("enable-gpu")));
-                        cmd.append_switch(Some(&CefString::from("ignore-gpu-blocklist")));
-                        cmd.append_switch(Some(&CefString::from("ignore-gpu-blacklist")));
-                        debug!("CEF: Real GPU detected (/dev/dri/renderD128), ANGLE backend '{}' (headless mode)", angle_backend);
+                        // Real GPU available — hardware GL (native-egl/NVIDIA by default)
+                        apply_gl(cmd, angle_backend.as_str());
+                        debug!("CEF: Real GPU detected (/dev/dri/renderD128), GL backend '{}' (headless mode)", angle_backend);
                     } else {
                         // No real GPU — fall back to SwiftShader for software-based WebGL
                         cmd.append_switch_with_value(
