@@ -54,6 +54,8 @@ COPY Cargo.toml ./
 COPY build.rs ./
 COPY src/ ./src/
 COPY crates/ ./crates/
+# static/ holds the live-viewer HTML embedded via include_str! in the API
+COPY static/ ./static/
 
 # Build with ALL features: cef-browser + h264 (NVENC) + ocr (Tesseract)
 # The cef-dll-sys crate will download CEF binaries automatically
