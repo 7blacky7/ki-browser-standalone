@@ -13,6 +13,9 @@
   "host_permissions": [
     "<all_urls>"
   ],
+  "optional_host_permissions": [
+    "<all_urls>"
+  ],
   "action": {
     "default_popup": "popup.html",
     "default_title": "ki-browser Session Grabber"
