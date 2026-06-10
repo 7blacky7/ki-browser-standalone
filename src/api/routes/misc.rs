@@ -334,9 +334,9 @@ pub async fn list_endpoints() -> impl IntoResponse {
         EndpointCategory {
             name: "Session-Login erben",
             endpoints: vec![
-                EndpointInfo { method: "POST", path: "/session/import", description: "Session-Bundle (cookies+storage+fingerprint) verschluesselt speichern -> session_id. Token-geschuetzt wenn Auth aktiv." },
-                EndpointInfo { method: "POST", path: "/session/export", description: "Aus laufendem Tab (tab_id) ein Bundle bauen (Cookies via CDP, Storage via evaluate, aktuelle Identitaet) und speichern -> session_id" },
-                EndpointInfo { method: "GET", path: "/session/list", description: "Gespeicherte Sessions auflisten (id, origin, created_at, cookie_count) - KEINE Cookie-Werte" },
+                EndpointInfo { method: "POST", path: "/login-session/import", description: "Session-Bundle (cookies+storage+fingerprint) verschluesselt speichern -> session_id. Token-geschuetzt wenn Auth aktiv." },
+                EndpointInfo { method: "POST", path: "/login-session/export", description: "Aus laufendem Tab (tab_id) ein Bundle bauen (Cookies via CDP, Storage via evaluate, aktuelle Identitaet) und speichern -> session_id" },
+                EndpointInfo { method: "GET", path: "/login-session/list", description: "Gespeicherte Sessions auflisten (id, origin, created_at, cookie_count) - KEINE Cookie-Werte" },
                 EndpointInfo { method: "DELETE", path: "/session/{id}", description: "Gespeicherte Session loeschen" },
             ],
         },

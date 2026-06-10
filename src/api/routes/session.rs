@@ -45,7 +45,7 @@ fn store_or_503(state: &AppState) -> Result<&crate::api::session_store::SessionS
 /// POST /session/import — persist a session bundle (encrypted), return its id.
 #[utoipa::path(
     post,
-    path = "/session/import",
+    path = "/login-session/import",
     tag = "session",
     request_body = Object,
     responses(
@@ -87,7 +87,7 @@ pub async fn import_session(
 /// GET /session/list — metadata for all stored sessions (no cookie values).
 #[utoipa::path(
     get,
-    path = "/session/list",
+    path = "/login-session/list",
     tag = "session",
     responses(
         (status = 200, description = "List of stored sessions (no secrets)"),
@@ -114,7 +114,7 @@ pub async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
 /// DELETE /session/{id} — delete a stored session.
 #[utoipa::path(
     delete,
-    path = "/session/{id}",
+    path = "/login-session/{id}",
     tag = "session",
     params(("id" = String, Path, description = "Session id")),
     responses(
@@ -150,7 +150,7 @@ pub async fn delete_session(
 /// POST /session/export — build a bundle from a running tab and store it.
 #[utoipa::path(
     post,
-    path = "/session/export",
+    path = "/login-session/export",
     tag = "session",
     request_body = ExportSessionRequest,
     responses(

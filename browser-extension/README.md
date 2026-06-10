@@ -59,7 +59,7 @@ The `fingerprint` field names are identical to the backend `IdentitySpec`
 2. Open the extension popup and click **Session sichern**.
 3. Export the bundle:
    - **Download JSON** — saves `<host>-session.json`.
-   - **An ki-browser senden** — POSTs to `POST /session/import` on the configured
+   - **An ki-browser senden** — POSTs to `POST /login-session/import` on the configured
      ki-browser instance.
 4. Configure the ki-browser URL (and optional Bearer token) under
    **Einstellungen** / the extension options page.

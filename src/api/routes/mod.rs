@@ -75,10 +75,10 @@ pub fn create_router(state: AppState) -> Router {
 
         // Session inheritance (login-erben): import/export/list/delete.
         // NOT in the auth whitelist — token-protected when auth is enabled.
-        .route("/session/import", post(crate::api::routes::session::import_session))
-        .route("/session/export", post(crate::api::routes::session::export_session))
-        .route("/session/list", get(crate::api::routes::session::list_sessions))
-        .route("/session/:id", delete(crate::api::routes::session::delete_session))
+        .route("/login-session/import", post(crate::api::routes::session::import_session))
+        .route("/login-session/export", post(crate::api::routes::session::export_session))
+        .route("/login-session/list", get(crate::api::routes::session::list_sessions))
+        .route("/login-session/:id", delete(crate::api::routes::session::delete_session))
 
         // API management
         .route("/api/toggle", post(toggle_api))

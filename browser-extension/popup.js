@@ -1,6 +1,6 @@
 // Popup logic: grab cookies + storage + fingerprint for the active tab's origin,
 // build a bundle in the exact format expected by the ki-browser backend, and
-// export it (download and/or POST /session/import).
+// export it (download and/or POST /login-session/import).
 
 const statusEl = document.getElementById('status');
 const originEl = document.getElementById('origin');
@@ -124,7 +124,7 @@ async function sendBundle(bundle) {
   const headers = { 'Content-Type': 'application/json' };
   if (cfg.kiBrowserToken) headers['Authorization'] = `Bearer ${cfg.kiBrowserToken}`;
 
-  const resp = await fetch(`${base}/session/import`, {
+  const resp = await fetch(`${base}/login-session/import`, {
     method: 'POST',
     headers,
     body: JSON.stringify({ bundle })
