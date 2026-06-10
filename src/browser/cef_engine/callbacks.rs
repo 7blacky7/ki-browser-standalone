@@ -275,34 +275,31 @@ cef::wrap_app! {
                 //   - gl-egl: works but goes through Xvfb GLX = Mesa/llvmpipe.
                 // The hardware path is a REAL Xorg server with the NVIDIA X
                 // driver (started by docker-entrypoint-cef.sh when a GPU is
-                // present) + desktop GL. The entrypoint exports
-                // KI_BROWSER_ANGLE_BACKEND=desktop in that case; under Xvfb the
-                // stable software default gl-egl stays active. The stealth WebGL
-                // identity is spoofed regardless of the backend.
+                // present) + ANGLE's OpenGL backend. The entrypoint exports
+                // KI_BROWSER_ANGLE_BACKEND=gl in that case (verified live
+                // 2026-06-10: hardware RTX 2070, nvidia-smi shows the process);
+                // under Xvfb the stable software default gl-egl stays active.
+                // The stealth WebGL identity is spoofed regardless of the backend.
                 let angle_backend = std::env::var("KI_BROWSER_ANGLE_BACKEND")
                     .unwrap_or_else(|_| "gl-egl".to_string());
 
                 // Helper: apply the GL backend switches.
-                //   desktop       — Chromium desktop GL via GLX (hardware on
-                //                   Xorg+NVIDIA, llvmpipe on Xvfb).
-                //   gl            — ANGLE OpenGL backend (use-angle=gl): desktop
-                //                   GL through ANGLE; alternative if CEF rejects
-                //                   use-gl=desktop.
+                //   gl / desktop  — ANGLE OpenGL backend (use-angle=gl): desktop
+                //                   GL through ANGLE. Reaches NVIDIA GLX on a
+                //                   real Xorg server (verified live 2026-06-10:
+                //                   GL_RENDERER "NVIDIA GeForce RTX 2070").
+                //                   "desktop" is only an ALIAS: CEF 144 REJECTS
+                //                   --use-gl=desktop ("not found in allowed
+                //                   implementations: [(gl=egl-angle)]") and the
+                //                   process dies with SIGTRAP (exit 133) —
+                //                   mapping it to ANGLE-gl is the crash guard
+                //                   against stale configs.
                 //   native-egl    — Chromium native EGL (no ANGLE); CEF 144
                 //                   rejects it today, kept for re-testing.
                 //   anything else — ANGLE backend value (gl-egl|vulkan|swiftshader).
                 let apply_gl = |cmd: &mut cef::CommandLine, backend: &str| {
                     match backend {
-                        "desktop" => {
-                            cmd.append_switch_with_value(
-                                Some(&CefString::from("use-gl")),
-                                Some(&CefString::from("desktop")),
-                            );
-                            // Real-GPU GLX path: turn on hardware rasterization.
-                            cmd.append_switch(Some(&CefString::from("enable-gpu-rasterization")));
-                            cmd.append_switch(Some(&CefString::from("enable-zero-copy")));
-                        }
-                        "gl" => {
+                        "gl" | "desktop" => {
                             cmd.append_switch_with_value(
                                 Some(&CefString::from("use-gl")),
                                 Some(&CefString::from("angle")),
@@ -311,6 +308,7 @@ cef::wrap_app! {
                                 Some(&CefString::from("use-angle")),
                                 Some(&CefString::from("gl")),
                             );
+                            // Real-GPU GLX path: turn on hardware rasterization.
                             cmd.append_switch(Some(&CefString::from("enable-gpu-rasterization")));
                             cmd.append_switch(Some(&CefString::from("enable-zero-copy")));
                         }

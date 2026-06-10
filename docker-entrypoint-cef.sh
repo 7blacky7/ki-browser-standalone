@@ -4,7 +4,7 @@
 #
 # X server selection (KI_BROWSER_X_SERVER=auto|xorg|xvfb, default: auto):
 #   xorg - real Xorg with the NVIDIA X driver: hardware-backed GLX, required
-#          for real GPU WebGL (CEF --use-gl=desktop). Falls back to Xvfb when
+#          for real GPU WebGL (CEF ANGLE-gl backend). Falls back to Xvfb when
 #          GPU/driver/X server are unavailable.
 #   xvfb - software X server (no NVIDIA GLX, GL lands on Mesa/llvmpipe).
 #   auto - xorg when an NVIDIA GPU is visible, else xvfb.
@@ -18,7 +18,7 @@
 #   DISPLAY                  - X11 display (default: :99)
 #   XVFB_RESOLUTION          - Virtual display resolution (default: 1920x1080x24)
 #   KI_BROWSER_X_SERVER      - auto|xorg|xvfb (default: auto)
-#   KI_BROWSER_ANGLE_BACKEND - CEF GL backend; exported as "desktop" by this
+#   KI_BROWSER_ANGLE_BACKEND - CEF GL backend; exported as "gl" by this
 #                              script when Xorg+NVIDIA runs (unless preset)
 #   KI_BROWSER_*             - Browser configuration options
 
@@ -246,10 +246,11 @@ if [ -z "$X_SERVER_KIND" ]; then
 fi
 
 # Match the CEF GL backend to the X server: a real Xorg+NVIDIA server exposes
-# hardware GLX which CEF reaches via desktop GL (--use-gl=desktop). Under
-# Xvfb the stable ANGLE gl-egl (software) default stays active.
+# hardware GLX which CEF reaches via ANGLE's OpenGL backend (use-angle=gl —
+# verified: hardware RTX 2070; CEF 144 rejects --use-gl=desktop with SIGTRAP).
+# Under Xvfb the stable ANGLE gl-egl (software) default stays active.
 if [ "$X_SERVER_KIND" = "xorg" ] && [ -z "$KI_BROWSER_ANGLE_BACKEND" ]; then
-    export KI_BROWSER_ANGLE_BACKEND=desktop
+    export KI_BROWSER_ANGLE_BACKEND=gl
 fi
 echo "X server: ${X_SERVER_KIND} | CEF GL backend: ${KI_BROWSER_ANGLE_BACKEND:-gl-egl (default)}"
 

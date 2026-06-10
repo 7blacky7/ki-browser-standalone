@@ -261,7 +261,7 @@ ENV __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json:
 # VK_EXT_headless_surface, so ANGLE vk_renderer aborts with
 # VK_ERROR_INITIALIZATION_FAILED (verified 2026-06-10). Hardware WebGL under
 # XVFB is not achievable; the supported hardware path is a real Xorg server
-# with the NVIDIA X driver + --use-gl=desktop (see Xorg layer + entrypoint).
+# with the NVIDIA X driver + ANGLE's OpenGL backend (Xorg layer + entrypoint).
 # The EGL vendor JSON above is kept (harmless, correct) for any future driver
 # that does expose headless rendering.
 
@@ -270,7 +270,8 @@ ENV __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json:
 # Xvfb is a software X server without NVIDIA GLX: every GL context under it
 # lands on Mesa/llvmpipe no matter which ANGLE backend is used (verified
 # 2026-06-10). A REAL Xorg server with the NVIDIA X driver exposes
-# hardware-backed GLX, which CEF reaches via --use-gl=desktop. The NVIDIA X
+# hardware-backed GLX, which CEF reaches via ANGLE's OpenGL backend
+# (--use-angle=gl — CEF 144 rejects --use-gl=desktop). The NVIDIA X
 # modules themselves (nvidia_drv.so, libglxserver_nvidia.so) must match the
 # HOST driver version exactly and are therefore fetched and cached by
 # docker-entrypoint-cef.sh at container start — the packages below are only
