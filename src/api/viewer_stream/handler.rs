@@ -13,7 +13,8 @@ use crate::api::viewer_stream::encoder::{self, FrameEncoder};
 use crate::api::viewer_stream::protocol::{ClientMessage, ServerMessage, TabInfo, tab_id_str};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::State;
+use axum::extract::{Query, State};
+use std::collections::HashMap;
 use axum::response::IntoResponse;
 use futures::{SinkExt, StreamExt};
 use std::sync::atomic::Ordering;
@@ -25,13 +26,17 @@ use uuid::Uuid;
 /// Axum handler for WebSocket upgrade on /ws/viewer.
 pub async fn viewer_ws_handler(
     ws: WebSocketUpgrade,
+    Query(params): Query<HashMap<String, String>>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(|socket| handle_viewer_socket(socket, state))
+    // Browser viewers request ?codec=jpeg (no in-browser H.264 decoder needed);
+    // Rust/native clients omit it and get the H.264 stream when available.
+    let force_jpeg = params.get("codec").map(|c| c == "jpeg").unwrap_or(false);
+    ws.on_upgrade(move |socket| handle_viewer_socket(socket, state, force_jpeg))
 }
 
 /// Main viewer WebSocket loop: frame streaming + input forwarding.
-async fn handle_viewer_socket(socket: WebSocket, state: AppState) {
+async fn handle_viewer_socket(socket: WebSocket, state: AppState, force_jpeg: bool) {
     #[cfg(not(feature = "cef-browser"))]
     {
         let err = ServerMessage::Error {
@@ -137,6 +142,7 @@ async fn handle_viewer_socket(socket: WebSocket, state: AppState) {
                     &mut last_version,
                     &mut frame_encoder,
                     force_refresh,
+                    force_jpeg,
                 );
                 if !messages.is_empty() && force_refresh {
                     last_force_sent = Instant::now();
@@ -196,6 +202,7 @@ fn encode_frame_if_new(
     last_version: &mut u64,
     frame_encoder: &mut Option<Box<dyn FrameEncoder>>,
     force: bool,
+    force_jpeg: bool,
 ) -> Vec<Vec<u8>> {
     let tab_id = match active_tab.or_else(|| engine.get_tabs_sync().first().map(|t| t.id)) {
         Some(id) => id,
@@ -221,7 +228,7 @@ fn encode_frame_if_new(
 
     // Lazily create encoder with actual frame dimensions.
     if frame_encoder.is_none() {
-        let enc = encoder::create_encoder(w, h);
+        let enc = encoder::create_encoder(w, h, force_jpeg);
         // Send codec config if available (e.g., H.264 SPS/PPS).
         let config = enc.codec_config();
         *frame_encoder = Some(enc);

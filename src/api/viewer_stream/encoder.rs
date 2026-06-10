@@ -261,9 +261,9 @@ impl FrameEncoder for H264NvencEncoder {
 
 /// Create the best available encoder for the given dimensions.
 #[allow(unused_variables)]
-pub fn create_encoder(width: u32, height: u32) -> Box<dyn FrameEncoder> {
+pub fn create_encoder(width: u32, height: u32, force_jpeg: bool) -> Box<dyn FrameEncoder> {
     #[cfg(feature = "h264")]
-    {
+    if !force_jpeg {
         match H264NvencEncoder::new(width, height) {
             Ok(enc) => {
                 info!("Using H.264 hardware encoder");

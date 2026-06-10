@@ -98,6 +98,9 @@ pub fn create_router(state: AppState) -> Router {
         // Debug/DevTools endpoints (console, cookies, CSS, network, performance)
         .merge(debug_routes())
 
+        // Live viewer web UI (interactive remote browser view)
+        .route("/viewer", get(crate::api::routes::misc::viewer_page))
+
         // WebSocket endpoints
         .route("/ws", get(websocket::ws_handler))
         .route("/ws/viewer", get(crate::api::viewer_stream::viewer_ws_handler))

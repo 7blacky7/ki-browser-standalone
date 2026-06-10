@@ -236,6 +236,16 @@ struct EndpointsData {
         (status = 200, description = "List of all available API endpoints")
     )
 )]
+/// GET /viewer - interactive live viewer web UI.
+///
+/// Serves a self-contained HTML page that streams the active tab via
+/// /ws/viewer?codec=jpeg and forwards mouse/keyboard back to the browser.
+/// Point an Unraid WebUI button at http://[IP]:[PORT]/viewer to watch and
+/// drive the browser live, exactly like an AI agent does.
+pub async fn viewer_page() -> impl IntoResponse {
+    axum::response::Html(include_str!("../../../static/viewer.html"))
+}
+
 pub async fn list_endpoints() -> impl IntoResponse {
     let categories = vec![
         EndpointCategory {
