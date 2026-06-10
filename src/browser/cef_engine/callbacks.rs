@@ -264,53 +264,72 @@ cef::wrap_app! {
                 cmd.append_switch(Some(&CefString::from("no-first-run")));
                 cmd.append_switch(Some(&CefString::from("no-default-browser-check")));
 
-                // ANGLE backend selection for the real-GPU paths. The ANGLE
-                // OpenGL backend (use-angle=gl-egl) goes through Xvfb's GLX and
-                // lands on Mesa/llvmpipe (software) even with NVIDIA EGL present
-                // (verified via CDP SystemInfo: GL_RENDERER "ANGLE (Mesa/X.org,
-                // llvmpipe)", nvidia-smi 0%). ANGLE's Vulkan backend instead
-                // talks to the NVIDIA Vulkan ICD directly (no X needed) and
-                // drives the real GPU. Override via KI_BROWSER_ANGLE_BACKEND
-                // (vulkan|gl-egl|swiftshader) for debugging.
-                // GPU-WebGL on NVIDIA in this headless/Xvfb container is NOT
-                // achievable (verified 2026-06-10, all paths excluded by logs):
+                // GL backend selection (KI_BROWSER_ANGLE_BACKEND). Verified
+                // 2026-06-10 (memo gpu-recherche-ergebnis-2026-06-10): under
+                // XVFB no backend reaches the NVIDIA GPU — Xvfb is a software
+                // X server without NVIDIA GLX, and the alternatives fail:
                 //   - native-egl (--use-gl=egl): CEF rejects it
                 //     ("not found in allowed implementations: [(gl=egl-angle)]").
                 //   - vulkan: NVIDIA driver 570.86 lacks VK_EXT_headless_surface,
                 //     ANGLE vk_renderer init aborts (VK_ERROR_INITIALIZATION_FAILED).
-                //   - gl-egl: works but ANGLE's GL backend goes through Xvfb GLX =
-                //     Mesa/llvmpipe (software). nvidia-smi stays at 0%.
-                // gl-egl is therefore the only stable backend; WebGL still works
-                // (software) and the stealth WebGL identity is spoofed regardless.
-                // KI_BROWSER_ANGLE_BACKEND can force vulkan|native-egl|swiftshader
-                // for re-testing on a different CEF/driver combo (both crash today).
+                //   - gl-egl: works but goes through Xvfb GLX = Mesa/llvmpipe.
+                // The hardware path is a REAL Xorg server with the NVIDIA X
+                // driver (started by docker-entrypoint-cef.sh when a GPU is
+                // present) + desktop GL. The entrypoint exports
+                // KI_BROWSER_ANGLE_BACKEND=desktop in that case; under Xvfb the
+                // stable software default gl-egl stays active. The stealth WebGL
+                // identity is spoofed regardless of the backend.
                 let angle_backend = std::env::var("KI_BROWSER_ANGLE_BACKEND")
                     .unwrap_or_else(|_| "gl-egl".to_string());
 
-                // Helper: apply the GL backend switches. "native-egl" drives
-                // Chromium's native EGL/desktop-GL path (no ANGLE) — the only
-                // working real-GPU path on NVIDIA in this container, because the
-                // NVIDIA driver does NOT expose VK_EXT_headless_surface, so
-                // ANGLE's Vulkan backend aborts at vk_renderer init (verified via
-                // logs: vk_renderer.cpp:2303 VK_ERROR_INITIALIZATION_FAILED).
-                // Native EGL surfaceless reaches the NVIDIA GPU directly
-                // (verified: GL_RENDERER "NVIDIA GeForce RTX 2070"). Other values
-                // map to ANGLE backends (vulkan|gl-egl|swiftshader).
+                // Helper: apply the GL backend switches.
+                //   desktop       — Chromium desktop GL via GLX (hardware on
+                //                   Xorg+NVIDIA, llvmpipe on Xvfb).
+                //   gl            — ANGLE OpenGL backend (use-angle=gl): desktop
+                //                   GL through ANGLE; alternative if CEF rejects
+                //                   use-gl=desktop.
+                //   native-egl    — Chromium native EGL (no ANGLE); CEF 144
+                //                   rejects it today, kept for re-testing.
+                //   anything else — ANGLE backend value (gl-egl|vulkan|swiftshader).
                 let apply_gl = |cmd: &mut cef::CommandLine, backend: &str| {
-                    if backend == "native-egl" || backend == "egl" {
-                        cmd.append_switch_with_value(
-                            Some(&CefString::from("use-gl")),
-                            Some(&CefString::from("egl")),
-                        );
-                    } else {
-                        cmd.append_switch_with_value(
-                            Some(&CefString::from("use-gl")),
-                            Some(&CefString::from("angle")),
-                        );
-                        cmd.append_switch_with_value(
-                            Some(&CefString::from("use-angle")),
-                            Some(&CefString::from(backend)),
-                        );
+                    match backend {
+                        "desktop" => {
+                            cmd.append_switch_with_value(
+                                Some(&CefString::from("use-gl")),
+                                Some(&CefString::from("desktop")),
+                            );
+                            // Real-GPU GLX path: turn on hardware rasterization.
+                            cmd.append_switch(Some(&CefString::from("enable-gpu-rasterization")));
+                            cmd.append_switch(Some(&CefString::from("enable-zero-copy")));
+                        }
+                        "gl" => {
+                            cmd.append_switch_with_value(
+                                Some(&CefString::from("use-gl")),
+                                Some(&CefString::from("angle")),
+                            );
+                            cmd.append_switch_with_value(
+                                Some(&CefString::from("use-angle")),
+                                Some(&CefString::from("gl")),
+                            );
+                            cmd.append_switch(Some(&CefString::from("enable-gpu-rasterization")));
+                            cmd.append_switch(Some(&CefString::from("enable-zero-copy")));
+                        }
+                        "native-egl" | "egl" => {
+                            cmd.append_switch_with_value(
+                                Some(&CefString::from("use-gl")),
+                                Some(&CefString::from("egl")),
+                            );
+                        }
+                        other => {
+                            cmd.append_switch_with_value(
+                                Some(&CefString::from("use-gl")),
+                                Some(&CefString::from("angle")),
+                            );
+                            cmd.append_switch_with_value(
+                                Some(&CefString::from("use-angle")),
+                                Some(&CefString::from(other)),
+                            );
+                        }
                     }
                     cmd.append_switch(Some(&CefString::from("enable-webgl")));
                     cmd.append_switch(Some(&CefString::from("in-process-gpu")));
@@ -320,16 +339,19 @@ cef::wrap_app! {
                 };
 
                 if self.use_egl {
-                    // Opt-in via KI_BROWSER_USE_EGL: force the real GPU.
-                    // Default backend is native-egl (NVIDIA). The spoofed WebGL
-                    // identity stays active either way.
+                    // Opt-in via KI_BROWSER_USE_EGL: force a GPU GL backend.
+                    // Backend comes from KI_BROWSER_ANGLE_BACKEND (default
+                    // gl-egl). The spoofed WebGL identity stays active either way.
                     apply_gl(cmd, angle_backend.as_str());
                     debug!("CEF: KI_BROWSER_USE_EGL active — GL backend '{}' for real GPU GL", angle_backend);
                 } else if self.headless {
                     // Headless: prefer real GPU if available, fall back to SwiftShader.
                     // A real GPU avoids the "SwiftShader" WebGL renderer string which
                     // is a strong bot-detection signal on sites like bot.sannysoft.com.
-                    let has_real_gpu = std::path::Path::new("/dev/dri/renderD128").exists();
+                    // NVIDIA container runtime exposes /dev/nvidia0 (not DRM);
+                    // /dev/dri/renderD128 covers --device /dev/dri setups.
+                    let has_real_gpu = std::path::Path::new("/dev/dri/renderD128").exists()
+                        || std::path::Path::new("/dev/nvidia0").exists();
 
                     if has_real_gpu {
                         // Real GPU available — hardware GL (native-egl/NVIDIA by default)

@@ -71,7 +71,7 @@ RUN mkdir -p /cef && \
     cp -r "$CEF_DIR"/locales /cef/locales
 
 # =============================================================================
-# Stage 2: Runtime with CEF + Xvfb + NVIDIA GPU
+# Stage 2: Runtime with CEF + X server (Xorg/Xvfb) + NVIDIA GPU
 # =============================================================================
 FROM debian:bookworm-slim
 
@@ -228,9 +228,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libvulkan1 \
     && rm -rf /var/lib/apt/lists/*
 
-# NVIDIA Container Runtime — GPU wird vom Host durchgereicht
+# NVIDIA Container Runtime — GPU wird vom Host durchgereicht.
+# "display" is required for running a real Xorg server against the NVIDIA GPU
+# (the container runtime gates the X11-related driver libs behind it).
 ENV NVIDIA_VISIBLE_DEVICES=all
-ENV NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility,display
 
 # NVIDIA EGL vendor registration (THE GPU-WebGL fix).
 # --runtime=nvidia mounts libEGL_nvidia.so.0 / libGLX_nvidia.so.0 +
@@ -257,10 +259,29 @@ ENV __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json:
 # /usr/share/vulkan/icd.d causes the RTX 2070 to enumerate twice. Either way,
 # ANGLE's Vulkan backend cannot init headless on this NVIDIA driver: it lacks
 # VK_EXT_headless_surface, so ANGLE vk_renderer aborts with
-# VK_ERROR_INITIALIZATION_FAILED (verified 2026-06-10). Hardware WebGL is not
-# achievable in this CEF+NVIDIA+Xvfb setup; gl-egl (software) is the stable path.
+# VK_ERROR_INITIALIZATION_FAILED (verified 2026-06-10). Hardware WebGL under
+# XVFB is not achievable; the supported hardware path is a real Xorg server
+# with the NVIDIA X driver + --use-gl=desktop (see Xorg layer + entrypoint).
 # The EGL vendor JSON above is kept (harmless, correct) for any future driver
 # that does expose headless rendering.
+
+# =============================================================================
+# Xorg core for real NVIDIA GLX (hardware WebGL) — separate post-pip layer.
+# Xvfb is a software X server without NVIDIA GLX: every GL context under it
+# lands on Mesa/llvmpipe no matter which ANGLE backend is used (verified
+# 2026-06-10). A REAL Xorg server with the NVIDIA X driver exposes
+# hardware-backed GLX, which CEF reaches via --use-gl=desktop. The NVIDIA X
+# modules themselves (nvidia_drv.so, libglxserver_nvidia.so) must match the
+# HOST driver version exactly and are therefore fetched and cached by
+# docker-entrypoint-cef.sh at container start — the packages below are only
+# the version-independent X server core. Xvfb stays as automatic fallback.
+# =============================================================================
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    xserver-xorg-core \
+    xserver-xorg-input-libinput \
+    x11-utils \
+    xauth \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy CEF runtime libraries
 COPY --from=builder /cef/ /opt/cef/
@@ -286,9 +307,11 @@ ENV CEF_RESOURCES_DIR=/opt/cef
 ENV CEF_FRAMEWORK_DIR=/opt/cef
 ENV CEF_PATH=/opt/cef
 
-# Xvfb display configuration
+# X server configuration. KI_BROWSER_X_SERVER: auto (Xorg+NVIDIA when a GPU is
+# present, else Xvfb) | xorg (force, falls back to Xvfb on failure) | xvfb.
 ENV DISPLAY=:99
 ENV XVFB_RESOLUTION=1920x1080x24
+ENV KI_BROWSER_X_SERVER=auto
 
 # KI-Browser configuration
 ENV RUST_LOG=info
@@ -304,6 +327,6 @@ EXPOSE 9222
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:9222/health || exit 1
 
-# Run with entrypoint (starts Xvfb + ki-browser)
+# Run with entrypoint (starts X server + ki-browser)
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["--config", "/app/config/config.toml"]
