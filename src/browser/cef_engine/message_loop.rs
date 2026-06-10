@@ -24,6 +24,7 @@ use crate::stealth::StealthConfig;
 use super::callbacks::{
     KiBrowserApp, KiBrowserClient, KiBrowserLifeSpanHandlerImpl, KiBrowserLoadHandlerImpl,
     KiBrowserRenderHandlerImpl, KiBrowserDisplayHandlerImpl, KiBrowserRenderProcessHandler,
+    KiBrowserJsDialogHandlerImpl, KiBrowserDialogHandlerImpl,
 };
 use super::tab::CefTab;
 use super::{CefCommand, CEF_MESSAGE_LOOP_DELAY_MS, DEFAULT_FRAME_RATE};
@@ -431,6 +432,11 @@ fn create_browser_internal(
     // Create display handler (captures console.log for JS result communication)
     let display_handler = KiBrowserDisplayHandlerImpl::new(tab_id, tabs.clone());
 
+    // Dialog handlers: auto-answer modal JS/file dialogs so a click can never
+    // freeze the single-process message loop waiting for a native dialog.
+    let jsdialog_handler = KiBrowserJsDialogHandlerImpl::new();
+    let dialog_handler = KiBrowserDialogHandlerImpl::new();
+
     // Create client using v144 API
     let mut client = KiBrowserClient::new(
         tab_id,
@@ -440,6 +446,8 @@ fn create_browser_internal(
         life_span_handler,
         load_handler,
         display_handler,
+        jsdialog_handler,
+        dialog_handler,
     );
 
     // Browser settings

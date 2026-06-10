@@ -13,10 +13,17 @@ use cef::{
     RenderProcessHandler, ScreenInfo, TransitionType, WindowInfo,
     WindowOpenDisposition, PopupFeatures, DictionaryValue, DisplayHandler,
     LogSeverity,
+    // dialog handler wrap macros (must be imported by name, unlike the older wrap_*!)
+    wrap_jsdialog_handler, wrap_dialog_handler,
+    JsdialogHandler, JsdialogCallback, JsdialogType,
+    DialogHandler, FileDialogMode, FileDialogCallback, CefStringList,
     // Traits needed by wrap_*! macro expansions
     ImplApp, WrapApp,
     ImplClient, WrapClient,
     ImplDisplayHandler, WrapDisplayHandler,
+    ImplJsdialogHandler, WrapJsdialogHandler,
+    ImplDialogHandler, WrapDialogHandler,
+    ImplJsdialogCallback, ImplFileDialogCallback,
     ImplRenderHandler, WrapRenderHandler,
     ImplLifeSpanHandler, WrapLifeSpanHandler,
     ImplLoadHandler, WrapLoadHandler,
@@ -384,6 +391,8 @@ cef::wrap_client! {
         life_span_handler_val: LifeSpanHandler,
         load_handler_val: LoadHandler,
         display_handler_val: DisplayHandler,
+        jsdialog_handler_val: JsdialogHandler,
+        dialog_handler_val: DialogHandler,
     }
 
     impl Client {
@@ -401,6 +410,14 @@ cef::wrap_client! {
 
         fn display_handler(&self) -> Option<DisplayHandler> {
             Some(self.display_handler_val.clone())
+        }
+
+        fn jsdialog_handler(&self) -> Option<JsdialogHandler> {
+            Some(self.jsdialog_handler_val.clone())
+        }
+
+        fn dialog_handler(&self) -> Option<DialogHandler> {
+            Some(self.dialog_handler_val.clone())
         }
 
         fn on_process_message_received(
@@ -796,6 +813,84 @@ cef::wrap_display_handler! {
                 }
             }
             0 // Don't suppress normal console messages
+        }
+    }
+}
+
+// ============================================================================
+// JsDialogHandler: auto-answer modal JS dialogs (alert/confirm/prompt/beforeunload)
+// ============================================================================
+
+/// In single-process headless CEF a native modal dialog would enter a nested
+/// message loop inside do_message_loop_work() that never returns (there is no
+/// UI to answer it), freezing the entire browser (all IPC commands time out).
+/// We answer every dialog immediately so the message loop is never blocked.
+/// Convention (matches Puppeteer/Playwright): dismiss normal dialogs; allow
+/// beforeunload so navigation/close is never blocked.
+wrap_jsdialog_handler! {
+    pub(crate) struct KiBrowserJsDialogHandlerImpl;
+
+    impl JsdialogHandler {
+        fn on_jsdialog(
+            &self,
+            _browser: Option<&mut Browser>,
+            _origin_url: Option<&CefString>,
+            _dialog_type: JsdialogType,
+            _message_text: Option<&CefString>,
+            _default_prompt_text: Option<&CefString>,
+            callback: Option<&mut JsdialogCallback>,
+            _suppress_message: Option<&mut ::std::os::raw::c_int>,
+        ) -> ::std::os::raw::c_int {
+            // Dismiss immediately (alert->ok, confirm->false, prompt->cancelled).
+            if let Some(cb) = callback {
+                cb.cont(0, None);
+            }
+            1 // handled — never show a native modal dialog
+        }
+
+        fn on_before_unload_dialog(
+            &self,
+            _browser: Option<&mut Browser>,
+            _message_text: Option<&CefString>,
+            _is_reload: ::std::os::raw::c_int,
+            callback: Option<&mut JsdialogCallback>,
+        ) -> ::std::os::raw::c_int {
+            // Always allow leaving the page — never block navigation/close.
+            if let Some(cb) = callback {
+                cb.cont(1, None);
+            }
+            1 // handled
+        }
+    }
+}
+
+// ============================================================================
+// DialogHandler: auto-cancel native file dialogs
+// ============================================================================
+
+/// Headless has no native file picker, so a click on <input type=file> would
+/// otherwise block the message loop waiting for an OS dialog that never
+/// appears. Cancel immediately. Programmatic upload uses CDP
+/// DOM.setFileInputFiles, not this native path.
+wrap_dialog_handler! {
+    pub(crate) struct KiBrowserDialogHandlerImpl;
+
+    impl DialogHandler {
+        fn on_file_dialog(
+            &self,
+            _browser: Option<&mut Browser>,
+            _mode: FileDialogMode,
+            _title: Option<&CefString>,
+            _default_file_path: Option<&CefString>,
+            _accept_filters: Option<&mut CefStringList>,
+            _accept_extensions: Option<&mut CefStringList>,
+            _accept_descriptions: Option<&mut CefStringList>,
+            callback: Option<&mut FileDialogCallback>,
+        ) -> ::std::os::raw::c_int {
+            if let Some(cb) = callback {
+                cb.cancel();
+            }
+            1 // handled — no native file picker
         }
     }
 }

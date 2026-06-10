@@ -505,7 +505,7 @@ impl IpcChannel {
         Self {
             command_tx,
             command_rx: std::sync::Arc::new(RwLock::new(Some(command_rx))),
-            default_timeout: Duration::from_secs(120),
+            default_timeout: Duration::from_secs(30),
         }
     }
 
@@ -516,7 +516,7 @@ impl IpcChannel {
         Self {
             command_tx,
             command_rx: std::sync::Arc::new(RwLock::new(Some(command_rx))),
-            default_timeout: Duration::from_secs(120),
+            default_timeout: Duration::from_secs(30),
         }
     }
 
