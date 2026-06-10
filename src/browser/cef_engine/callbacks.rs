@@ -265,8 +265,20 @@ cef::wrap_app! {
                 // talks to the NVIDIA Vulkan ICD directly (no X needed) and
                 // drives the real GPU. Override via KI_BROWSER_ANGLE_BACKEND
                 // (vulkan|gl-egl|swiftshader) for debugging.
+                // GPU-WebGL on NVIDIA in this headless/Xvfb container is NOT
+                // achievable (verified 2026-06-10, all paths excluded by logs):
+                //   - native-egl (--use-gl=egl): CEF rejects it
+                //     ("not found in allowed implementations: [(gl=egl-angle)]").
+                //   - vulkan: NVIDIA driver 570.86 lacks VK_EXT_headless_surface,
+                //     ANGLE vk_renderer init aborts (VK_ERROR_INITIALIZATION_FAILED).
+                //   - gl-egl: works but ANGLE's GL backend goes through Xvfb GLX =
+                //     Mesa/llvmpipe (software). nvidia-smi stays at 0%.
+                // gl-egl is therefore the only stable backend; WebGL still works
+                // (software) and the stealth WebGL identity is spoofed regardless.
+                // KI_BROWSER_ANGLE_BACKEND can force vulkan|native-egl|swiftshader
+                // for re-testing on a different CEF/driver combo (both crash today).
                 let angle_backend = std::env::var("KI_BROWSER_ANGLE_BACKEND")
-                    .unwrap_or_else(|_| "native-egl".to_string());
+                    .unwrap_or_else(|_| "gl-egl".to_string());
 
                 // Helper: apply the GL backend switches. "native-egl" drives
                 // Chromium's native EGL/desktop-GL path (no ANGLE) — the only

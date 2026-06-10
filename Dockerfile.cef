@@ -242,23 +242,15 @@ RUN mkdir -p /usr/share/glvnd/egl_vendor.d && \
 # init (verified: container SIGSEGV/exit). ANGLE picks its own platform.
 ENV __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json:/usr/share/glvnd/egl_vendor.d/50_mesa.json
 
-# NVIDIA Vulkan ICD registration — the ACTUAL hardware-WebGL enabler.
-# ANGLE's OpenGL backend (use-angle=gl-egl) goes through Xvfb's GLX and lands on
-# Mesa/llvmpipe (software) even with NVIDIA EGL present. ANGLE's Vulkan backend
-# instead drives the NVIDIA GPU directly via the Vulkan ICD. The NVIDIA runtime
-# mounts libGLX_nvidia.so (the Vulkan ICD lib) + libnvidia-glvkspirv but NOT the
-# ICD JSON, so without this Vulkan finds no device. Verified live: with this JSON
-# Vulkan enumerates "NVIDIA GeForce RTX 2070" (discrete). callbacks.rs defaults
-# KI_BROWSER_ANGLE_BACKEND=vulkan.
-RUN mkdir -p /usr/share/vulkan/icd.d && \
-    printf '%s\n' \
-      '{' \
-      '    "file_format_version" : "1.0.0",' \
-      '    "ICD" : {' \
-      '        "library_path" : "libGLX_nvidia.so.0",' \
-      '        "api_version" : "1.3.239"' \
-      '    }' \
-      '}' > /usr/share/vulkan/icd.d/nvidia_icd.json
+# NOTE: do NOT add a NVIDIA Vulkan ICD here — the NVIDIA container runtime
+# already injects /etc/vulkan/icd.d/nvidia_icd.json at runtime. A second ICD in
+# /usr/share/vulkan/icd.d causes the RTX 2070 to enumerate twice. Either way,
+# ANGLE's Vulkan backend cannot init headless on this NVIDIA driver: it lacks
+# VK_EXT_headless_surface, so ANGLE vk_renderer aborts with
+# VK_ERROR_INITIALIZATION_FAILED (verified 2026-06-10). Hardware WebGL is not
+# achievable in this CEF+NVIDIA+Xvfb setup; gl-egl (software) is the stable path.
+# The EGL vendor JSON above is kept (harmless, correct) for any future driver
+# that does expose headless rendering.
 
 # Copy CEF runtime libraries
 COPY --from=builder /cef/ /opt/cef/
