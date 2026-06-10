@@ -282,25 +282,13 @@ impl ApiServer {
         &mut self.state
     }
 
-    /// Configure CORS for localhost development
+    /// Configure CORS. Uses `very_permissive` (mirror request origin/methods/
+    /// headers) so the CORS **preflight** (OPTIONS) is answered correctly — the
+    /// previous manual `allow_origin(Any)` config returned the actual response
+    /// header but failed the browser preflight, which surfaced as a NetworkError
+    /// in browser/extension clients (curl worked because it sends no preflight).
     fn configure_cors() -> CorsLayer {
-        CorsLayer::new()
-            // Allow requests from localhost on common development ports
-            .allow_origin(Any)
-            .allow_methods([
-                Method::GET,
-                Method::POST,
-                Method::PUT,
-                Method::DELETE,
-                Method::OPTIONS,
-            ])
-            .allow_headers([
-                header::CONTENT_TYPE,
-                header::AUTHORIZATION,
-                header::ACCEPT,
-                header::ORIGIN,
-            ])
-            .max_age(Duration::from_secs(3600))
+        CorsLayer::very_permissive().max_age(Duration::from_secs(3600))
     }
 
     /// Build the router with all middleware, Swagger UI, and OpenAPI JSON endpoint
