@@ -277,8 +277,19 @@ fn generate_solving_steps(result: &CaptchaDetectResult, tab_id: &str) -> Vec<Str
             } else {
                 "3x3"
             };
-            let cell_w = w / if grid_hint == "4x4" { 4 } else { 3 };
-            let cell_h = h / if grid_hint == "4x4" { 4 } else { 3 };
+            // The detected box (x,y,w,h) includes the blue instruction header at
+            // the top (~70px) and the button bar at the bottom (~70px). The image
+            // grid sits between them — compute cell size from the grid area only,
+            // and offset the first row past the header, or tile clicks land ~1 row
+            // too high (verified live 2026-06-10).
+            let header_px = 70;
+            let footer_px = 70;
+            let cols = if grid_hint == "4x4" { 4 } else { 3 };
+            let rows = cols;
+            let grid_top = y + header_px;
+            let grid_h = (h - header_px - footer_px).max(rows);
+            let cell_w = w / cols;
+            let cell_h = grid_h / rows;
 
             vec![
                 format!("Image-Grid CAPTCHA erkannt (vermutlich {} Grid, Position: {},{}  {}x{}).", grid_hint, x, y, w, h),
@@ -286,7 +297,7 @@ fn generate_solving_steps(result: &CaptchaDetectResult, tab_id: &str) -> Vec<Str
                 format!("  GET /screenshot?tab_id={}&clip_x={}&clip_y={}&clip_width={}&clip_height={}&clip_scale={}&format=jpeg&quality=95&raw=true", tab_id, x, y, w, h, clip_scale),
                 "Schritt 2: Analysiere das Bild mit deiner Vision — lies den Aufgabentext oben (z.B. 'Select all squares with traffic lights').".to_string(),
                 format!("Schritt 3: Klicke auf die richtigen Zellen. Jede Zelle ist ~{}x{}px. Berechne die Mitte jeder Zelle:", cell_w, cell_h),
-                format!("  Zelle (Reihe, Spalte) = POST /click mit x={} + spalte*{} + {}, y={} + reihe*{} + {}", x, cell_w, cell_w/2, y, cell_h, cell_h/2),
+                format!("  Zelle (Reihe, Spalte) = POST /click mit x={} + spalte*{} + {}, y={} + reihe*{} + {} (y startet UNTER dem Header!)", x, cell_w, cell_w/2, grid_top, cell_h, cell_h/2),
                 "Schritt 4: Klicke den 'Verify'/'Bestätigen' Button (meist unter dem Grid).".to_string(),
                 "Schritt 5: Warte 2s, dann POST /debug/captcha/detect — neue Challenge oder geloest?".to_string(),
                 "TIPP: Bei 'Select all images' koennen nach Klick neue Bilder nachladen — warte 1s nach jedem Klick und pruefe ob sich Zellen aendern.".to_string(),
