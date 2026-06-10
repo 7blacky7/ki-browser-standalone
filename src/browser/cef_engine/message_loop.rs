@@ -43,6 +43,8 @@ pub(crate) fn run_cef_message_loop(
     browser_id_counter: Arc<AtomicI32>,
     cef_initialized: Arc<AtomicBool>,
     mut command_rx: mpsc::UnboundedReceiver<CefCommand>,
+    command_tx: mpsc::UnboundedSender<CefCommand>,
+    mut input_rx: mpsc::UnboundedReceiver<CefCommand>,
 ) -> Result<()> {
     // Find CEF directory (build output or ./cef/)
     let cef_dir = super::engine::CefBrowserEngine::find_cef_dir_static();
@@ -155,10 +157,18 @@ pub(crate) fn run_cef_message_loop(
         // Process CEF work
         cef::do_message_loop_work();
 
+        // Viewer input first: latency-critical, tiny and coalescable. Without
+        // this priority pass, mouse/key events queue behind heavy API commands
+        // on the shared channel and the viewer feels laggy under load.
+        let mut did_work = drain_viewer_input(&mut input_rx, &tabs);
+
         // Drain ALL pending commands (not just one per iteration)
         loop {
+            // Keep viewer input flowing between queued API commands.
+            did_work |= drain_viewer_input(&mut input_rx, &tabs);
             match command_rx.try_recv() {
                 Ok(command) => {
+                    did_work = true;
                     match command {
                         CefCommand::CreateBrowser {
                             url,
@@ -174,6 +184,7 @@ pub(crate) fn run_cef_message_loop(
                                 stealth.unwrap_or_else(|| stealth_config.clone()),
                                 tabs.clone(),
                                 browser_id_counter.clone(),
+                                command_tx.clone(),
                             );
                             let _ = response.send(result);
                         }
@@ -366,8 +377,11 @@ pub(crate) fn run_cef_message_loop(
             }
         }
 
-        // Small delay to prevent CPU spinning
-        std::thread::sleep(std::time::Duration::from_millis(CEF_MESSAGE_LOOP_DELAY_MS));
+        // Small delay to prevent CPU spinning — skipped while work is flowing
+        // so queued commands and fresh input are handled with minimal latency.
+        if !did_work {
+            std::thread::sleep(std::time::Duration::from_millis(CEF_MESSAGE_LOOP_DELAY_MS));
+        }
     }
 
     // Shutdown CEF
@@ -375,6 +389,68 @@ pub(crate) fn run_cef_message_loop(
     cef::shutdown();
 
     Ok(())
+}
+
+/// Drains the high-priority viewer-input channel.
+///
+/// Only lightweight input events travel on this channel (mouse, wheel, key,
+/// text). Consecutive mouse moves are coalesced to the latest position per
+/// drain pass, so a backlog can never build up under load. Returns whether
+/// any event was processed.
+fn drain_viewer_input(
+    input_rx: &mut mpsc::UnboundedReceiver<CefCommand>,
+    tabs: &Arc<RwLock<HashMap<Uuid, CefTab>>>,
+) -> bool {
+    let mut processed = false;
+    // Pending coalesced mouse move: only the latest position per tab survives.
+    let mut pending_move: Option<(Uuid, i32, i32)> = None;
+    let flush_move = |mv: &mut Option<(Uuid, i32, i32)>, tabs: &Arc<RwLock<HashMap<Uuid, CefTab>>>| {
+        if let Some((tab_id, x, y)) = mv.take() {
+            let _ = super::input::mouse_move_internal(tab_id, x, y, tabs.clone());
+        }
+    };
+    while let Ok(command) = input_rx.try_recv() {
+        processed = true;
+        match command {
+            CefCommand::MouseMove { tab_id, x, y, response } => {
+                if let Some((pending_tab, _, _)) = pending_move {
+                    if pending_tab != tab_id {
+                        flush_move(&mut pending_move, tabs);
+                    }
+                }
+                pending_move = Some((tab_id, x, y));
+                let _ = response.send(Ok(()));
+            }
+            CefCommand::MouseClick { tab_id, x, y, button, click_count, response } => {
+                // Order matters: deliver any pending move before the click.
+                flush_move(&mut pending_move, tabs);
+                let _ = response.send(super::input::mouse_click_internal(
+                    tab_id, x, y, button, click_count, tabs.clone(),
+                ));
+            }
+            CefCommand::MouseWheel { tab_id, x, y, delta_x, delta_y, response } => {
+                flush_move(&mut pending_move, tabs);
+                let _ = response.send(super::input::mouse_wheel_internal(
+                    tab_id, x, y, delta_x, delta_y, tabs.clone(),
+                ));
+            }
+            CefCommand::KeyEvent { tab_id, event_type, modifiers, windows_key_code, character, response } => {
+                flush_move(&mut pending_move, tabs);
+                let _ = response.send(super::input::key_event_internal(
+                    tab_id, event_type, modifiers, windows_key_code, character, tabs.clone(),
+                ));
+            }
+            CefCommand::TypeText { tab_id, text, response } => {
+                flush_move(&mut pending_move, tabs);
+                let _ = response.send(super::input::type_text_internal(tab_id, &text, tabs.clone()));
+            }
+            _ => {
+                warn!("Non-input command on the viewer-input channel — ignored");
+            }
+        }
+    }
+    flush_move(&mut pending_move, tabs);
+    processed
 }
 
 /// Creates a browser instance internally on the CEF thread.
@@ -393,6 +469,7 @@ fn create_browser_internal(
     stealth_config: Arc<StealthConfig>,
     tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
     browser_id_counter: Arc<AtomicI32>,
+    popup_tx: mpsc::UnboundedSender<CefCommand>,
 ) -> Result<()> {
     let viewport_dims = config.window_size;
     let viewport_size = Arc::new(RwLock::new(viewport_dims));
@@ -414,12 +491,14 @@ fn create_browser_internal(
         frame_version.clone(),
     );
 
-    // Create life span handler with popup_tx for popup interception
+    // Create life span handler with popup_tx for popup interception:
+    // window.open()/middle-click popups become regular tabs via the command
+    // channel instead of dead native windows the viewer cannot show.
     let life_span_handler = KiBrowserLifeSpanHandlerImpl::new(
         tab_id,
         tabs.clone(),
         browser_created.clone(),
-        None, // popup_tx set later if needed
+        Some(popup_tx),
     );
 
     // Create load handler
@@ -450,9 +529,15 @@ fn create_browser_internal(
         dialog_handler,
     );
 
-    // Browser settings
+    // Browser settings. The OSR frame rate is tunable via env: higher values
+    // make the live viewer smoother at the cost of encode/CPU time.
+    let frame_rate = std::env::var("KI_BROWSER_FRAME_RATE")
+        .ok()
+        .and_then(|v| v.parse::<i32>().ok())
+        .map(|v| v.clamp(5, 60))
+        .unwrap_or(DEFAULT_FRAME_RATE);
     let browser_settings = BrowserSettings {
-        windowless_frame_rate: DEFAULT_FRAME_RATE,
+        windowless_frame_rate: frame_rate,
         ..Default::default()
     };
 

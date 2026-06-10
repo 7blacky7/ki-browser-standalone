@@ -26,11 +26,14 @@ pub trait FrameEncoder: Send {
 /// JPEG encoder (existing behavior, no external dependencies).
 pub struct JpegEncoder {
     quality: u8,
+    /// Scratch buffer for the BGRA→RGB conversion, reused across frames to
+    /// avoid a multi-MB allocation per frame (1080p = ~6 MB each).
+    rgb: Vec<u8>,
 }
 
 impl JpegEncoder {
     pub fn new(quality: u8) -> Self {
-        Self { quality }
+        Self { quality, rgb: Vec::new() }
     }
 }
 
@@ -40,15 +43,16 @@ impl FrameEncoder for JpegEncoder {
         let expected = pixel_count * 4;
         let len = bgra.len().min(expected);
 
-        // BGRA → RGB
-        let mut rgb = Vec::with_capacity(pixel_count * 3);
+        // BGRA → RGB (into the reused scratch buffer)
+        self.rgb.clear();
+        self.rgb.reserve(pixel_count * 3);
         for chunk in bgra[..len].chunks_exact(4) {
-            rgb.push(chunk[2]); // R
-            rgb.push(chunk[1]); // G
-            rgb.push(chunk[0]); // B
+            self.rgb.push(chunk[2]); // R
+            self.rgb.push(chunk[1]); // G
+            self.rgb.push(chunk[0]); // B
         }
 
-        let img = match image::ImageBuffer::<image::Rgb<u8>, _>::from_raw(width, height, rgb) {
+        let img = match image::ImageBuffer::<image::Rgb<u8>, &[u8]>::from_raw(width, height, self.rgb.as_slice()) {
             Some(img) => img,
             None => return Vec::new(),
         };
@@ -275,6 +279,13 @@ pub fn create_encoder(width: u32, height: u32, force_jpeg: bool) -> Box<dyn Fram
         }
     }
 
-    info!("Using JPEG encoder (quality 75)");
-    Box::new(JpegEncoder::new(75))
+    // Quality/latency tradeoff tunable at deploy time (lower = smaller frames,
+    // less encode time and bandwidth, softer image).
+    let quality = std::env::var("KI_BROWSER_VIEWER_JPEG_QUALITY")
+        .ok()
+        .and_then(|v| v.parse::<u8>().ok())
+        .map(|v| v.clamp(30, 95))
+        .unwrap_or(75);
+    info!("Using JPEG encoder (quality {quality})");
+    Box::new(JpegEncoder::new(quality))
 }

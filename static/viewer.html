@@ -42,6 +42,31 @@
   #stage { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; overflow: hidden; background: #000; position: relative; }
   #screen { max-width: 100%; max-height: 100%; display: block; cursor: crosshair; background: #000; }
   #overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #8a909c; pointer-events: none; font-size: 14px; }
+  /* Versteckte Textarea: hält den Fokus für Tastatur + Clipboard (paste-Event
+     liefert das User-Clipboard auch über HTTP, execCommand('copy') ebenso). */
+  #kbd {
+    position: fixed; top: -100px; left: -100px; width: 60px; height: 24px;
+    opacity: 0; border: 0; padding: 0; resize: none; overflow: hidden;
+  }
+  #ctxmenu {
+    position: fixed; z-index: 50; display: none; min-width: 230px;
+    background: #1b1e27; border: 1px solid #2c3140; border-radius: 8px;
+    padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,.5); font-size: 13px;
+  }
+  .ctx-item {
+    display: block; width: 100%; text-align: left; background: none;
+    border: 0; border-radius: 5px; padding: 7px 10px; color: #d7dae0; cursor: pointer;
+  }
+  .ctx-item:hover { background: #2d6cdf; color: #fff; }
+  .ctx-item[disabled] { opacity: .4; cursor: default; }
+  .ctx-item[disabled]:hover { background: none; color: #d7dae0; }
+  .ctx-sep { height: 1px; background: #2c3140; margin: 4px 6px; }
+  #toast {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+    background: #1b1e27; border: 1px solid #2c3140; color: #d7dae0;
+    padding: 8px 14px; border-radius: 8px; font-size: 13px; z-index: 60;
+    opacity: 0; pointer-events: none; transition: opacity .2s;
+  }
 </style>
 </head>
 <body>
@@ -59,22 +84,64 @@
   <button id="newtab" title="Neuer Tab">+</button>
 </div>
 <div id="stage">
-  <canvas id="screen" width="1920" height="1080" tabindex="0"></canvas>
+  <canvas id="screen" width="1920" height="1080"></canvas>
   <div id="overlay">Warte auf erstes Bild…</div>
 </div>
+<textarea id="kbd" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
+<div id="ctxmenu">
+  <button class="ctx-item" id="cm-open-link">Link in neuem Tab öffnen</button>
+  <button class="ctx-item" id="cm-copy-link">Link-Adresse kopieren</button>
+  <button class="ctx-item" id="cm-copy">Kopieren</button>
+  <button class="ctx-item" id="cm-paste">Einfügen</button>
+  <div class="ctx-sep"></div>
+  <button class="ctx-item" id="cm-back">← Zurück</button>
+  <button class="ctx-item" id="cm-fwd">→ Vorwärts</button>
+  <button class="ctx-item" id="cm-reload">⟳ Neu laden</button>
+  <button class="ctx-item" id="cm-copy-url">Seiten-URL kopieren</button>
+</div>
+<div id="toast"></div>
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
   const canvas = $('screen'), ctx = canvas.getContext('2d', { alpha: false });
   const dot = $('dot'), statusText = $('statusText'), tabsEl = $('tabs'), overlay = $('overlay'), addr = $('addr');
+  const kbd = $('kbd'), menu = $('ctxmenu'), toastEl = $('toast');
 
   let frameW = 1920, frameH = 1080;
   let ws = null, reconnectTimer = null, gotFrame = false;
   let activeTab = null, addrFocused = false;
+  // Selektion/Link-Cache für Kontextmenü + Clipboard-Brücke
+  let lastSelection = '', menuLink = null, menuSelection = '';
+  let ctxReqId = 0, pendingMenuReq = 0;
+  let toastTimer = null;
 
   const setStatus = (s, t) => { dot.className = s; statusText.textContent = t; };
   const send = (o) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); };
   const wsUrl = () => `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/viewer?codec=jpeg`;
+
+  function toast(msg) {
+    toastEl.textContent = msg; toastEl.style.opacity = '1';
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => { toastEl.style.opacity = '0'; }, 1600);
+  }
+
+  // Clipboard-Brücke: navigator.clipboard verlangt HTTPS — über HTTP im LAN
+  // übernimmt die versteckte Textarea + execCommand (braucht eine User-Geste,
+  // die haben wir: Menü-Klick bzw. Strg+C).
+  function copyText(t) {
+    if (!t) { toast('Nichts zum Kopieren'); return; }
+    const done = () => toast('Kopiert');
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(t).then(done).catch(() => copyViaTextarea(t, done));
+    } else {
+      copyViaTextarea(t, done);
+    }
+  }
+  function copyViaTextarea(t, done) {
+    const old = kbd.value;
+    kbd.value = t; kbd.focus({ preventScroll: true }); kbd.select();
+    try { document.execCommand('copy'); done(); } catch (e) { toast('Kopieren fehlgeschlagen'); }
+    kbd.value = old;
+  }
 
   function connect() {
     setStatus('connecting', 'verbinde…');
@@ -106,6 +173,13 @@
       renderTabs(m.tabs || [], m.active_tab);
       const at = (m.tabs || []).find(t => t.id === m.active_tab);
       if (at && !addrFocused) addr.value = at.url || '';
+    } else if (m.type === 'page_context') {
+      if (m.selection) lastSelection = m.selection;
+      if (m.request_id === pendingMenuReq && menu.style.display === 'block') {
+        menuLink = m.link || null;
+        menuSelection = m.selection || '';
+        updateMenuItems();
+      }
     } else if (m.type === 'error') setStatus('', 'Fehler: ' + (m.message || ''));
   }
 
@@ -158,25 +232,165 @@
       let u = addr.value.trim();
       if (u && !/^[a-z]+:\/\//i.test(u) && !u.startsWith('about:')) u = 'https://' + u;
       send({ type: 'navigate', url: u });
-      canvas.focus();
+      kbd.focus({ preventScroll: true });
     }
   });
 
-  // ---- Input forwarding ----
-  const toVp = (ev) => { const r = canvas.getBoundingClientRect(); return { x: Math.round((ev.clientX - r.left) / r.width * frameW), y: Math.round((ev.clientY - r.top) / r.height * frameH) }; };
-  let lastMove = 0;
-  canvas.addEventListener('mousemove', (ev) => { const n = performance.now(); if (n - lastMove < 40) return; lastMove = n; const p = toVp(ev); send({ type: 'mouse_move', x: p.x, y: p.y }); });
-  canvas.addEventListener('mousedown', (ev) => { canvas.focus(); const p = toVp(ev); send({ type: 'mouse_click', x: p.x, y: p.y, button: ev.button }); ev.preventDefault(); });
-  canvas.addEventListener('contextmenu', (ev) => ev.preventDefault());
-  canvas.addEventListener('wheel', (ev) => { const p = toVp(ev); send({ type: 'mouse_wheel', x: p.x, y: p.y, delta_x: -ev.deltaX | 0, delta_y: -ev.deltaY | 0 }); ev.preventDefault(); }, { passive: false });
+  // ---- Kontextmenü ----
+  function requestPageContext(p, forMenu) {
+    ctxReqId++;
+    if (forMenu) pendingMenuReq = ctxReqId;
+    send({ type: 'get_page_context', x: p.x, y: p.y, request_id: ctxReqId });
+  }
+  function updateMenuItems() {
+    $('cm-open-link').style.display = menuLink ? 'block' : 'none';
+    $('cm-copy-link').style.display = menuLink ? 'block' : 'none';
+    const copyBtn = $('cm-copy');
+    if (menuSelection || lastSelection) copyBtn.removeAttribute('disabled');
+    else copyBtn.setAttribute('disabled', '');
+  }
+  function openMenu(clientX, clientY) {
+    menuLink = null; menuSelection = '';
+    updateMenuItems();
+    menu.style.display = 'block';
+    const mw = menu.offsetWidth, mh = menu.offsetHeight;
+    menu.style.left = Math.min(clientX, window.innerWidth - mw - 6) + 'px';
+    menu.style.top = Math.min(clientY, window.innerHeight - mh - 6) + 'px';
+  }
+  function hideMenu() { menu.style.display = 'none'; }
+  document.addEventListener('mousedown', (ev) => { if (!menu.contains(ev.target)) hideMenu(); });
 
+  $('cm-open-link').onclick = () => { if (menuLink) { send({ type: 'create_tab', url: menuLink }); } hideMenu(); };
+  $('cm-copy-link').onclick = () => { const l = menuLink; hideMenu(); copyText(l); };
+  $('cm-copy').onclick = () => { const s = menuSelection || lastSelection; hideMenu(); copyText(s); };
+  $('cm-paste').onclick = () => {
+    hideMenu();
+    if (navigator.clipboard && navigator.clipboard.readText && window.isSecureContext) {
+      navigator.clipboard.readText().then(t => { if (t) { send({ type: 'type_text', text: t }); toast('Eingefügt'); } });
+    } else {
+      kbd.focus({ preventScroll: true });
+      toast('Strg+V drücken zum Einfügen');
+    }
+  };
+  $('cm-back').onclick = () => { send({ type: 'go_back' }); hideMenu(); };
+  $('cm-fwd').onclick = () => { send({ type: 'go_forward' }); hideMenu(); };
+  $('cm-reload').onclick = () => { if (addr.value) send({ type: 'navigate', url: addr.value }); hideMenu(); };
+  $('cm-copy-url').onclick = () => { const u = addr.value; hideMenu(); copyText(u); };
+
+  // ---- Maus: echtes down/move/up (Drag + Text-Selektion möglich) ----
+  const clampNum = (v, min, max) => Math.max(min, Math.min(max, v));
+  const toVp = (ev) => {
+    const r = canvas.getBoundingClientRect();
+    return {
+      x: clampNum(Math.round((ev.clientX - r.left) / r.width * frameW), 0, frameW - 1),
+      y: clampNum(Math.round((ev.clientY - r.top) / r.height * frameH), 0, frameH - 1),
+    };
+  };
+  let dragging = false, dragMoved = false;
+
+  // mouse_move: 60Hz leading+trailing — flüssig ohne Event-Flut
+  let pendingMove = null, moveTimer = null;
+  function flushMove() { if (pendingMove) { send({ type: 'mouse_move', x: pendingMove.x, y: pendingMove.y }); pendingMove = null; } }
+  function queueMove(p) {
+    pendingMove = p;
+    if (!moveTimer) {
+      flushMove();
+      moveTimer = setTimeout(() => { moveTimer = null; flushMove(); }, 16);
+    }
+  }
+
+  // wheel: Deltas akkumulieren, 60Hz flush
+  let wheelAcc = null, wheelTimer = null;
+  function flushWheel() { if (wheelAcc) { send({ type: 'mouse_wheel', ...wheelAcc }); wheelAcc = null; } }
+
+  // mousemove/mouseup auf window: Drags laufen auch über den Canvas-Rand hinaus
+  window.addEventListener('mousemove', (ev) => {
+    if (!dragging && ev.target !== canvas) return;
+    const p = toVp(ev);
+    queueMove(p);
+    if (dragging) dragMoved = true;
+  });
+  canvas.addEventListener('mousedown', (ev) => {
+    hideMenu();
+    kbd.focus({ preventScroll: true });
+    if (ev.button === 2) return; // Rechtsklick → eigenes Kontextmenü (contextmenu-Event)
+    const p = toVp(ev), detail = Math.min(ev.detail || 1, 3);
+    send({ type: 'mouse_down', x: p.x, y: p.y, button: ev.button, click_count: detail });
+    if (ev.button === 0) { dragging = true; dragMoved = false; }
+    ev.preventDefault();
+  });
+  window.addEventListener('mouseup', (ev) => {
+    if (ev.button === 2) return;
+    if (!dragging && ev.target !== canvas) return;
+    const p = toVp(ev), detail = Math.min(ev.detail || 1, 3);
+    flushMove();
+    send({ type: 'mouse_up', x: p.x, y: p.y, button: ev.button, click_count: detail });
+    if (ev.button === 0) {
+      if (dragMoved || detail >= 2) {
+        // Selektion in den Cache holen (für Strg+C / Kontextmenü-Kopieren)
+        requestPageContext(p, false);
+      } else {
+        lastSelection = ''; // einfacher Klick kollabiert die Selektion
+      }
+      dragging = false;
+    }
+  });
+  canvas.addEventListener('auxclick', (ev) => ev.preventDefault());
+  canvas.addEventListener('contextmenu', (ev) => {
+    ev.preventDefault();
+    const p = toVp(ev);
+    if (ev.shiftKey) {
+      // Shift+Rechtsklick: an die Seite durchreichen (Seiten mit eigenem Menü)
+      send({ type: 'mouse_down', x: p.x, y: p.y, button: 2, click_count: 1 });
+      send({ type: 'mouse_up', x: p.x, y: p.y, button: 2, click_count: 1 });
+      return;
+    }
+    openMenu(ev.clientX, ev.clientY);
+    requestPageContext(p, true);
+  });
+  canvas.addEventListener('wheel', (ev) => {
+    const p = toVp(ev);
+    if (!wheelAcc) wheelAcc = { x: p.x, y: p.y, delta_x: 0, delta_y: 0 };
+    wheelAcc.x = p.x; wheelAcc.y = p.y;
+    wheelAcc.delta_x += -ev.deltaX | 0;
+    wheelAcc.delta_y += -ev.deltaY | 0;
+    if (!wheelTimer) { flushWheel(); wheelTimer = setTimeout(() => { wheelTimer = null; flushWheel(); }, 16); }
+    ev.preventDefault();
+  }, { passive: false });
+
+  // ---- Tastatur über die versteckte Textarea (Clipboard-fähig) ----
   const mods = (e) => { let m = 0; if (e.shiftKey) m |= 2; if (e.ctrlKey) m |= 4; if (e.altKey) m |= 8; return m; };
-  canvas.addEventListener('keydown', (e) => {
+  kbd.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    const ctrl = e.ctrlKey || e.metaKey;
+    if (ctrl && e.key.toLowerCase() === 'c') {
+      // Seiten-Selektion ins User-Clipboard bringen
+      if (lastSelection) { e.preventDefault(); copyText(lastSelection); }
+      return;
+    }
+    if (ctrl && e.key.toLowerCase() === 'v') {
+      return; // nicht weiterleiten — der native paste-Event (unten) übernimmt
+    }
     send({ type: 'key_event', event_type: 0, modifiers: mods(e), windows_key_code: e.keyCode, character: 0 });
-    if (e.key && e.key.length === 1) send({ type: 'key_event', event_type: 3, modifiers: mods(e), windows_key_code: e.keyCode, character: e.key.charCodeAt(0) });
+    if (e.key && e.key.length === 1 && !ctrl && !e.altKey) {
+      send({ type: 'key_event', event_type: 3, modifiers: mods(e), windows_key_code: e.keyCode, character: e.key.charCodeAt(0) });
+    }
     if (['Tab', 'Backspace', ' ', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) e.preventDefault();
   });
-  canvas.addEventListener('keyup', (e) => send({ type: 'key_event', event_type: 2, modifiers: mods(e), windows_key_code: e.keyCode, character: 0 }));
+  kbd.addEventListener('keyup', (e) => {
+    e.stopPropagation();
+    const ctrl = e.ctrlKey || e.metaKey;
+    if (ctrl && (e.key.toLowerCase() === 'c' || e.key.toLowerCase() === 'v')) return;
+    send({ type: 'key_event', event_type: 2, modifiers: mods(e), windows_key_code: e.keyCode, character: 0 });
+  });
+  // Einfügen: der native paste-Event liefert das User-Clipboard auch über HTTP
+  kbd.addEventListener('paste', (e) => {
+    e.preventDefault();
+    const t = (e.clipboardData || window.clipboardData).getData('text');
+    if (t) { send({ type: 'type_text', text: t }); toast('Eingefügt'); }
+  });
+  // Getipptes nicht in der Textarea ansammeln
+  kbd.addEventListener('input', () => { kbd.value = ''; });
 
   connect();
 })();

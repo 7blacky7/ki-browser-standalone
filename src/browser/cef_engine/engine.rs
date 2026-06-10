@@ -38,6 +38,10 @@ pub struct CefBrowserEngine {
     pub(crate) tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
     /// Command sender for the CEF message loop thread (unbounded = never drops).
     pub(crate) command_tx: mpsc::UnboundedSender<CefCommand>,
+    /// High-priority channel for interactive input (viewer mouse/keyboard).
+    /// Drained BEFORE queued API commands by the message loop so user input
+    /// stays responsive while heavy API work is pending.
+    pub(crate) input_tx: mpsc::UnboundedSender<CefCommand>,
     /// Whether the engine is running.
     pub(crate) is_running: Arc<AtomicBool>,
     /// CEF initialized flag (v144 doesn't have CefContext).
@@ -79,6 +83,8 @@ impl BrowserEngine for CefBrowserEngine {
 
         // Create command channel for CEF thread communication
         let (command_tx, command_rx) = mpsc::unbounded_channel::<CefCommand>();
+        // Separate high-priority channel for interactive input events.
+        let (input_tx, input_rx) = mpsc::unbounded_channel::<CefCommand>();
 
         // Clone references for the CEF thread
         let tabs_clone = tabs.clone();
@@ -86,6 +92,7 @@ impl BrowserEngine for CefBrowserEngine {
         let config_clone = config.clone();
         let stealth_config_clone = stealth_config.clone();
         let browser_id_counter_clone = browser_id_counter.clone();
+        let command_tx_clone = command_tx.clone();
 
         // CEF initialized flag (v144 doesn't have CefContext)
         let cef_initialized = Arc::new(AtomicBool::new(false));
@@ -101,6 +108,8 @@ impl BrowserEngine for CefBrowserEngine {
                 browser_id_counter_clone,
                 cef_initialized_clone,
                 command_rx,
+                command_tx_clone,
+                input_rx,
             );
 
             if let Err(e) = result {
@@ -122,6 +131,7 @@ impl BrowserEngine for CefBrowserEngine {
             stealth_config,
             tabs,
             command_tx,
+            input_tx,
             is_running,
             _cef_initialized: cef_initialized,
             _browser_id_counter: browser_id_counter,
@@ -379,10 +389,10 @@ impl CefBrowserEngine {
         });
     }
 
-    /// Sends a mouse move event without blocking.
+    /// Sends a mouse move event without blocking (high-priority input channel).
     pub fn send_mouse_move(&self, tab_id: Uuid, x: i32, y: i32) {
         let (response_tx, _) = oneshot::channel();
-        let _ = self.command_tx.send(CefCommand::MouseMove {
+        let _ = self.input_tx.send(CefCommand::MouseMove {
             tab_id,
             x,
             y,
@@ -396,7 +406,7 @@ impl CefBrowserEngine {
     pub fn send_mouse_click(&self, tab_id: Uuid, x: i32, y: i32, button: i32) {
         // Move cursor to click position first (CEF needs hover state)
         let (response_tx, _) = oneshot::channel();
-        let _ = self.command_tx.send(CefCommand::MouseMove {
+        let _ = self.input_tx.send(CefCommand::MouseMove {
             tab_id,
             x,
             y,
@@ -404,7 +414,7 @@ impl CefBrowserEngine {
         });
         // Mouse down
         let (response_tx, _) = oneshot::channel();
-        let _ = self.command_tx.send(CefCommand::MouseClick {
+        let _ = self.input_tx.send(CefCommand::MouseClick {
             tab_id,
             x,
             y,
@@ -414,7 +424,7 @@ impl CefBrowserEngine {
         });
         // Mouse up (CEF thread processes commands in order, no delay needed)
         let (response_tx, _) = oneshot::channel();
-        let _ = self.command_tx.send(CefCommand::MouseClick {
+        let _ = self.input_tx.send(CefCommand::MouseClick {
             tab_id,
             x,
             y,
@@ -424,10 +434,27 @@ impl CefBrowserEngine {
         });
     }
 
-    /// Sends a mouse wheel event without blocking.
+    /// Sends a single mouse button transition (down OR up) without blocking.
+    /// Used by the live viewer for real press/drag/release sequences (text
+    /// selection, drag & drop). `click_count` carries the click detail
+    /// (1 = single, 2 = double click) for both the down and the up event.
+    pub fn send_mouse_button(&self, tab_id: Uuid, x: i32, y: i32, button: i32, down: bool, click_count: i32) {
+        let count = click_count.max(1);
+        let (response_tx, _) = oneshot::channel();
+        let _ = self.input_tx.send(CefCommand::MouseClick {
+            tab_id,
+            x,
+            y,
+            button,
+            click_count: if down { count } else { -count },
+            response: response_tx,
+        });
+    }
+
+    /// Sends a mouse wheel event without blocking (high-priority input channel).
     pub fn send_mouse_wheel(&self, tab_id: Uuid, x: i32, y: i32, delta_x: i32, delta_y: i32) {
         let (response_tx, _) = oneshot::channel();
-        let _ = self.command_tx.send(CefCommand::MouseWheel {
+        let _ = self.input_tx.send(CefCommand::MouseWheel {
             tab_id,
             x,
             y,
@@ -437,10 +464,10 @@ impl CefBrowserEngine {
         });
     }
 
-    /// Sends a key event without blocking.
+    /// Sends a key event without blocking (high-priority input channel).
     pub fn send_key_event(&self, tab_id: Uuid, event_type: i32, modifiers: u32, windows_key_code: i32, character: u16) {
         let (response_tx, _) = oneshot::channel();
-        let _ = self.command_tx.send(CefCommand::KeyEvent {
+        let _ = self.input_tx.send(CefCommand::KeyEvent {
             tab_id,
             event_type,
             modifiers,
@@ -450,10 +477,10 @@ impl CefBrowserEngine {
         });
     }
 
-    /// Sends a type text command without blocking.
+    /// Sends a type text command without blocking (high-priority input channel).
     pub fn send_type_text(&self, tab_id: Uuid, text: &str) {
         let (response_tx, _) = oneshot::channel();
-        let _ = self.command_tx.send(CefCommand::TypeText {
+        let _ = self.input_tx.send(CefCommand::TypeText {
             tab_id,
             text: text.to_string(),
             response: response_tx,

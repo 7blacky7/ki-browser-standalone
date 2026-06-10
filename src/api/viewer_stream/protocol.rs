@@ -25,6 +25,14 @@ pub enum ServerMessage {
     /// Server-side error.
     #[serde(rename = "error")]
     Error { message: String },
+    /// Answer to `ClientMessage::GetPageContext`: link under the queried
+    /// point and the page's current text selection (both optional).
+    #[serde(rename = "page_context")]
+    PageContext {
+        request_id: u32,
+        link: Option<String>,
+        selection: Option<String>,
+    },
 }
 
 /// Minimal tab info sent to the viewer client.
@@ -43,6 +51,35 @@ pub enum ClientMessage {
     MouseMove { x: i32, y: i32 },
     #[serde(rename = "mouse_click")]
     MouseClick { x: i32, y: i32, button: i32 },
+    /// Single button transition for real press/drag/release sequences
+    /// (text selection, drag & drop). `click_count` carries the click detail
+    /// (1 = single, 2 = double click).
+    #[serde(rename = "mouse_down")]
+    MouseDown {
+        x: i32,
+        y: i32,
+        button: i32,
+        #[serde(default = "default_click_count")]
+        click_count: i32,
+    },
+    #[serde(rename = "mouse_up")]
+    MouseUp {
+        x: i32,
+        y: i32,
+        button: i32,
+        #[serde(default = "default_click_count")]
+        click_count: i32,
+    },
+    /// Ask the server what is at a viewport point (link under the cursor,
+    /// current text selection). Answered with `ServerMessage::PageContext`;
+    /// used for the viewer context menu and the copy-to-clipboard bridge.
+    #[serde(rename = "get_page_context")]
+    GetPageContext {
+        x: i32,
+        y: i32,
+        #[serde(default)]
+        request_id: u32,
+    },
     #[serde(rename = "mouse_wheel")]
     MouseWheel {
         x: i32,
@@ -74,6 +111,10 @@ pub enum ClientMessage {
     GoBack,
     #[serde(rename = "go_forward")]
     GoForward,
+}
+
+fn default_click_count() -> i32 {
+    1
 }
 
 /// Convert a Uuid to the string format used in TabInfo.
@@ -113,6 +154,31 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn test_client_message_deserialize_mouse_down_defaults() {
+        let json = r#"{"type":"mouse_down","x":5,"y":6,"button":0}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::MouseDown { click_count, button, .. } => {
+                assert_eq!(click_count, 1);
+                assert_eq!(button, 0);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_serialize_page_context() {
+        let msg = ServerMessage::PageContext {
+            request_id: 7,
+            link: Some("https://example.com".into()),
+            selection: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"page_context\""));
+        assert!(json.contains("\"request_id\":7"));
     }
 
     #[test]

@@ -101,6 +101,9 @@ async fn handle_viewer_socket(socket: WebSocket, state: AppState, force_jpeg: bo
             let mut last_tab_snapshot = build_tab_snapshot(&send_engine);
             let mut frame_encoder: Option<Box<dyn FrameEncoder>> = None;
             let mut interval = tokio::time::interval(Duration::from_millis(33)); // ~30fps
+            // If an encode pass takes longer than one tick, skip the missed
+            // ticks instead of bursting to catch up (burst = visible jank).
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut last_force_sent = Instant::now();
             loop {
                 // Check for pending tab-update messages first (non-blocking).
@@ -136,14 +139,19 @@ async fn handle_viewer_socket(socket: WebSocket, state: AppState, force_jpeg: bo
 
                 // Read frame buffer from active tab.
                 let current_active = *send_active.lock();
-                let messages = encode_frame_if_new(
-                    &send_engine,
-                    current_active,
-                    &mut last_version,
-                    &mut frame_encoder,
-                    force_refresh,
-                    force_jpeg,
-                );
+                // JPEG/H.264 encoding is CPU-heavy (tens of ms at 1080p) —
+                // run it as blocking work so it cannot stall other tasks on
+                // this tokio worker (API handlers, input forwarding).
+                let messages = tokio::task::block_in_place(|| {
+                    encode_frame_if_new(
+                        &send_engine,
+                        current_active,
+                        &mut last_version,
+                        &mut frame_encoder,
+                        force_refresh,
+                        force_jpeg,
+                    )
+                });
                 if !messages.is_empty() && force_refresh {
                     last_force_sent = Instant::now();
                 }
@@ -301,6 +309,45 @@ async fn handle_client_message(
                 engine.send_mouse_click(tab, x, y, button);
             }
         }
+        ClientMessage::MouseDown { x, y, button, click_count } => {
+            if let Some(tab) = resolve_active() {
+                engine.send_mouse_button(tab, x, y, button, true, click_count);
+            }
+        }
+        ClientMessage::MouseUp { x, y, button, click_count } => {
+            if let Some(tab) = resolve_active() {
+                engine.send_mouse_button(tab, x, y, button, false, click_count);
+            }
+        }
+        ClientMessage::GetPageContext { x, y, request_id } => {
+            if let Some(tab) = resolve_active() {
+                let script = format!(
+                    "(() => {{ const el = document.elementFromPoint({x}, {y}); \
+                     const a = el && el.closest ? el.closest('a[href]') : null; \
+                     const s = window.getSelection ? String(window.getSelection()) : ''; \
+                     return JSON.stringify({{ link: a ? a.href : null, selection: s || null }}); }})()"
+                );
+                let cmd = crate::api::ipc::IpcCommand::EvaluateScript {
+                    tab_id: tab_id_str(tab),
+                    script,
+                    await_promise: false,
+                    frame_id: None,
+                };
+                let (link, selection) = match state
+                    .ipc_channel
+                    .send_command(crate::api::ipc::IpcMessage::Command(cmd))
+                    .await
+                {
+                    Ok(resp) if resp.success => parse_page_context(resp.data),
+                    _ => (None, None),
+                };
+                let _ = tab_update_tx.send(ServerMessage::PageContext {
+                    request_id,
+                    link,
+                    selection,
+                });
+            }
+        }
         ClientMessage::MouseWheel {
             x,
             y,
@@ -420,4 +467,31 @@ fn build_tab_list(engine: &Arc<CefBrowserEngine>) -> Vec<TabInfo> {
             title: t.title.clone(),
         })
         .collect()
+}
+
+/// Extract `{link, selection}` from an EvaluateScript IPC response.
+/// The evaluate path may wrap the value in `{"result": ...}` and returns the
+/// script's JSON as a string — unwrap both layers tolerantly.
+#[cfg(feature = "cef-browser")]
+fn parse_page_context(data: Option<serde_json::Value>) -> (Option<String>, Option<String>) {
+    let Some(mut value) = data else {
+        return (None, None);
+    };
+    if let Some(inner) = value.get("result") {
+        value = inner.clone();
+    }
+    if let Some(s) = value.as_str() {
+        match serde_json::from_str::<serde_json::Value>(s) {
+            Ok(parsed) => value = parsed,
+            Err(_) => return (None, None),
+        }
+    }
+    let get = |key: &str| {
+        value
+            .get(key)
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    };
+    (get("link"), get("selection"))
 }
