@@ -127,14 +127,15 @@ async function sendBundle(bundle) {
   const resp = await fetch(`${base}/login-session/import`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ bundle })
+    body: JSON.stringify(bundle)
   });
   const text = await resp.text();
   if (!resp.ok) {
     throw new Error(`Server ${resp.status}: ${text.slice(0, 200)}`);
   }
   let sessionId = '';
-  try { sessionId = JSON.parse(text).session_id || ''; } catch {}
+  // Backend wraps payloads in ApiResponse: { success, data: { session_id, origin } }.
+  try { const j = JSON.parse(text); sessionId = (j.data && j.data.session_id) || j.session_id || ''; } catch {}
   return sessionId;
 }
 

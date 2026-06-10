@@ -69,13 +69,18 @@ pub fn local_storage_init_script(entry: &StorageEntry) -> String {
     )
 }
 
-/// JS that seeds sessionStorage for the current document. Run via
-/// `Runtime.evaluate` AFTER navigating to the entry's origin.
-pub fn session_storage_script(entry: &StorageEntry) -> String {
-    let pairs = serde_json::to_string(&entry.session).unwrap_or_else(|_| "{}".to_string());
+/// JS that seeds BOTH localStorage and sessionStorage for the current document.
+/// Run via `Runtime.evaluate` AFTER navigating to the entry's origin. This is the
+/// reliable restore path in CEF single-process, where
+/// `Page.addScriptToEvaluateOnNewDocument` does not consistently fire before the
+/// page's own scripts (so the init-script localStorage seeding can be missed).
+pub fn post_nav_storage_script(entry: &StorageEntry) -> String {
+    let local = serde_json::to_string(&entry.local).unwrap_or_else(|_| "{}".to_string());
+    let session = serde_json::to_string(&entry.session).unwrap_or_else(|_| "{}".to_string());
     format!(
-        r#"(function(){{try{{var d={pairs};for(var k in d){{try{{window.sessionStorage.setItem(k,d[k]);}}catch(e){{}}}}return true;}}catch(e){{return false;}}}})();"#,
-        pairs = pairs
+        r#"(function(){{try{{var l={local};for(var k in l){{try{{window.localStorage.setItem(k,l[k]);}}catch(e){{}}}}var s={session};for(var k2 in s){{try{{window.sessionStorage.setItem(k2,s[k2]);}}catch(e){{}}}}return true;}}catch(e){{return false;}}}})();"#,
+        local = local,
+        session = session
     )
 }
 
@@ -197,14 +202,16 @@ mod tests {
     }
 
     #[test]
-    fn test_session_storage_script_contains_pairs() {
+    fn test_post_nav_storage_script_contains_both() {
         let entry = StorageEntry {
             origin: "https://x.test".into(),
-            local: Default::default(),
+            local: [("lk".to_string(), "lv".to_string())].into_iter().collect(),
             session: [("s".to_string(), "1".to_string())].into_iter().collect(),
         };
-        let s = session_storage_script(&entry);
+        let s = post_nav_storage_script(&entry);
+        assert!(s.contains("localStorage.setItem"));
         assert!(s.contains("sessionStorage.setItem"));
+        assert!(s.contains("\"lk\""));
         assert!(s.contains("\"s\""));
     }
 

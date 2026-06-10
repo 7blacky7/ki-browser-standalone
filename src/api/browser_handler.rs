@@ -373,21 +373,26 @@ impl BrowserCommandHandler {
                     }
                 }
 
-                // sessionStorage cannot be pre-seeded before navigation, so apply
-                // it now (best effort) on the target origin's document.
+                // localStorage init-scripts (addScriptToEvaluateOnNewDocument) are
+                // unreliable in CEF single-process, and sessionStorage cannot be
+                // pre-seeded at all — so (re)apply BOTH now (best effort) on the
+                // target origin's document after navigation.
                 if let (Some(ws_url), Some(bundle), Some(cdp)) =
                     (restore_ws_url.as_ref(), session_bundle.as_ref(), self.cdp_client.clone())
                 {
                     use crate::api::session_store::restore;
-                    let has_session = bundle.storage.iter().any(|s| !s.session.is_empty());
-                    if has_session {
+                    let has_storage = bundle
+                        .storage
+                        .iter()
+                        .any(|s| !s.session.is_empty() || !s.local.is_empty());
+                    if has_storage {
                         // Give the document a moment to settle after navigation.
                         tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
                         for entry in &bundle.storage {
-                            if entry.session.is_empty() {
+                            if entry.session.is_empty() && entry.local.is_empty() {
                                 continue;
                             }
-                            let script = restore::session_storage_script(entry);
+                            let script = restore::post_nav_storage_script(entry);
                             if let Err(e) = cdp.evaluate(ws_url, &script).await {
                                 debug!("sessionStorage restore failed for tab {}: {}", tab.id, e);
                             }
