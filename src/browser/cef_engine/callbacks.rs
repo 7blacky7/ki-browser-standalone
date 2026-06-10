@@ -263,16 +263,25 @@ cef::wrap_app! {
                     // of ANGLE on llvmpipe under Xvfb. May break rendering on hosts
                     // without a working EGL stack — default is OFF, the spoofed
                     // WebGL identity stays active either way.
+                    // CEF/Chromium only allows the ANGLE-over-EGL backend
+                    // (gl=egl-angle); the bare "egl" value maps to egl-gles2
+                    // which CEF rejects with "not found in allowed
+                    // implementations" and aborts. Drive the real GPU through
+                    // ANGLE's gl-egl backend instead.
                     cmd.append_switch_with_value(
                         Some(&CefString::from("use-gl")),
-                        Some(&CefString::from("egl")),
+                        Some(&CefString::from("angle")),
+                    );
+                    cmd.append_switch_with_value(
+                        Some(&CefString::from("use-angle")),
+                        Some(&CefString::from("gl-egl")),
                     );
                     cmd.append_switch(Some(&CefString::from("enable-webgl")));
                     cmd.append_switch(Some(&CefString::from("in-process-gpu")));
                     cmd.append_switch(Some(&CefString::from("enable-gpu")));
                     cmd.append_switch(Some(&CefString::from("ignore-gpu-blocklist")));
                     cmd.append_switch(Some(&CefString::from("ignore-gpu-blacklist")));
-                    debug!("CEF: KI_BROWSER_USE_EGL active — using native EGL for GPU GL");
+                    debug!("CEF: KI_BROWSER_USE_EGL active — using ANGLE gl-egl for real GPU GL");
                 } else if self.headless {
                     // Headless: prefer real GPU if available, fall back to SwiftShader.
                     // A real GPU avoids the "SwiftShader" WebGL renderer string which

@@ -35,7 +35,9 @@ impl FingerprintGenerator {
             .unwrap()
             .as_nanos() as u64;
 
-        let profiles = FingerprintProfile::all_standard();
+        // Chromium-only: the engine is CEF, so a Firefox/Safari fingerprint
+        // would be internally inconsistent (see all_chromium docs).
+        let profiles = FingerprintProfile::all_chromium();
         let profile_index = (seed as usize) % profiles.len();
         let profile = profiles[profile_index].clone();
 
@@ -51,7 +53,9 @@ impl FingerprintGenerator {
         seed.hash(&mut hasher);
         let hash = hasher.finish();
 
-        let profiles = FingerprintProfile::all_standard();
+        // Chromium-only (see all_chromium docs) — keeps seed-based identities
+        // internally consistent on the CEF engine.
+        let profiles = FingerprintProfile::all_chromium();
         let profile_index = (hash as usize) % profiles.len();
         let profile = profiles[profile_index].clone();
 

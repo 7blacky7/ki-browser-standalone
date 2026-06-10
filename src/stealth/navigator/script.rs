@@ -394,7 +394,10 @@ mod tests {
         let js = overrides.get_override_script();
 
         assert!(js.contains("webdriver"));
-        assert!(js.contains("return false"));
+        // The webdriver spoof deletes the property from the prototype rather
+        // than returning a faked value (an instance data property was itself
+        // the sannysoft tell — see the delete-based fix).
+        assert!(js.contains("delete Navigator.prototype.webdriver"));
         assert!(js.contains("Navigator.prototype"));
     }
 

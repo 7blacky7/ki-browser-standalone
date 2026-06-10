@@ -42,6 +42,25 @@ impl FingerprintProfile {
         ]
     }
 
+    /// Get only the Chromium-based profiles (Chrome + Edge).
+    ///
+    /// The engine is CEF (Chromium), so a Firefox or Safari fingerprint is
+    /// inherently inconsistent: Chrome-only JS APIs, the PluginArray shape and
+    /// the WebGL/ANGLE stack all leak through and contradict a Gecko/WebKit
+    /// user agent (e.g. an empty plugin list under a Chrome UA fails
+    /// sannysoft's "Plugins is of type PluginArray" check). Random and
+    /// seed-based identities pick from this set so every generated profile is
+    /// internally consistent. Explicit profiles via generate_from_profile()
+    /// can still request any profile.
+    pub fn all_chromium() -> Vec<FingerprintProfile> {
+        vec![
+            FingerprintProfile::WindowsChrome,
+            FingerprintProfile::WindowsEdge,
+            FingerprintProfile::MacChrome,
+            FingerprintProfile::LinuxChrome,
+        ]
+    }
+
     /// Get the platform string for this profile
     pub fn platform(&self) -> &'static str {
         match self {
