@@ -260,9 +260,9 @@ pub async fn list_endpoints() -> impl IntoResponse {
             name: "Navigation & Interaction",
             endpoints: vec![
                 EndpointInfo { method: "POST", path: "/navigate", description: "Zu URL navigieren (tab_id, url)" },
-                EndpointInfo { method: "POST", path: "/click", description: "Klick auf Element oder Koordinaten (tab_id, selector|x+y)" },
+                EndpointInfo { method: "POST", path: "/click", description: "Klick auf Element oder Koordinaten (tab_id, selector|x+y). Feuert ECHTE Maus-Events (mousedown/up) — funktioniert mit React/Vue-Tabs und -Buttons. NICHT element.click() via /evaluate nutzen (synthetisch, von Frameworks oft ignoriert). Bei mehrdeutigem selector wird das erste Element getroffen — spezifisch waehlen." },
                 EndpointInfo { method: "POST", path: "/drag", description: "Drag-Operation (tab_id, from_x/y, to_x/y)" },
-                EndpointInfo { method: "POST", path: "/type", description: "Text eingeben (tab_id, selector, text)" },
+                EndpointInfo { method: "POST", path: "/type", description: "Text eingeben (tab_id, selector, text, clear_first=true). Default ERSETZT den Feldinhalt (selektiert + ueberschreibt) und feuert korrekte input-Events fuer React/Vue. clear_first:false haengt am Cursor an. Tippe in das SICHTBARE Feld des aktiven Tabs — mehrdeutige Selektoren (z.B. zwei email-Felder fuer Login+Registrieren) treffen sonst das falsche." },
                 EndpointInfo { method: "POST", path: "/evaluate", description: "JavaScript ausfuehren (tab_id, script)" },
                 EndpointInfo { method: "POST", path: "/scroll", description: "Seite scrollen (tab_id, direction, amount)" },
                 EndpointInfo { method: "GET", path: "/screenshot", description: "Screenshot als PNG/JPEG binary (?tab_id, ?format, ?raw=false fuer JSON)" },

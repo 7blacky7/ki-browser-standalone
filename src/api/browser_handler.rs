@@ -196,8 +196,8 @@ impl BrowserCommandHandler {
             IpcCommand::ClickElement { tab_id, selector, button: _, modifiers: _, frame_id } => {
                 self.handle_click_element(&engine_guard, &tab_id, &selector, frame_id.as_deref()).await
             }
-            IpcCommand::TypeText { tab_id, text, selector, clear_first: _, frame_id } => {
-                self.handle_type_text(&engine_guard, &tab_id, &text, selector.as_deref(), frame_id.as_deref()).await
+            IpcCommand::TypeText { tab_id, text, selector, clear_first, frame_id } => {
+                self.handle_type_text(&engine_guard, &tab_id, &text, selector.as_deref(), clear_first, frame_id.as_deref()).await
             }
             IpcCommand::Scroll { tab_id, x, y, delta_x, delta_y, selector, behavior, frame_id } => {
                 self.handle_scroll(&engine_guard, &tab_id, x, y, delta_x, delta_y, selector, behavior, frame_id.as_deref()).await
@@ -792,6 +792,7 @@ impl BrowserCommandHandler {
         tab_id: &str,
         text: &str,
         selector: Option<&str>,
+        clear_first: bool,
         frame_id: Option<&str>,
     ) -> IpcResponse {
         let uuid = match Uuid::parse_str(tab_id) {
@@ -821,6 +822,15 @@ impl BrowserCommandHandler {
                                 r#"(()=>{{var el=document.querySelector('{}');if(!el)return 'not_found';el.focus();return 'focused'}})()"#,
                                 escaped
                             );
+                            // Select existing content first when clearing so insertText replaces it.
+                            let focus_js = if clear_first {
+                                format!(
+                                    r#"(()=>{{var el=document.querySelector('{}');if(!el)return 'not_found';el.focus();if(typeof el.select==='function'){{el.select();}}else{{try{{document.execCommand('selectAll',false,null);}}catch(e){{}}}}return 'focused'}})()"#,
+                                    sel.replace('\'', "\\'")
+                                )
+                            } else {
+                                focus_js
+                            };
                             match crate::api::cdp_frames::evaluate_in_frame(cdp, &ws_url, fid, &focus_js, false).await {
                                 Ok(result) if !result.contains("not_found") => {
                                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -845,7 +855,7 @@ impl BrowserCommandHandler {
                     } else {
                         // No frame_id — original main-context logic
                         if let Some(sel) = selector {
-                            match cdp.focus_and_type(&ws_url, sel, text).await {
+                            match cdp.focus_and_type(&ws_url, sel, text, clear_first).await {
                                 Ok(_) => {
                                     debug!("CDP focus_and_type succeeded for selector '{}'", sel);
                                     return IpcResponse::success();

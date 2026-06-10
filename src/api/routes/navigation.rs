@@ -228,7 +228,14 @@ pub async fn drag(
     }
 }
 
-/// POST /type - Type text into focused element or specified selector
+/// POST /type - Type text into the focused element or a given selector.
+///
+/// clear_first (default TRUE) selects and replaces the field's current value so
+/// repeated calls don't append; the replacement fires proper input events so
+/// React/Vue-controlled inputs update their state. Pass clear_first:false to
+/// append at the caret. With an ambiguous selector the first match wins — pick
+/// the visible field of the active tab/form (e.g. a login page may carry a
+/// separate hidden registration email field).
 ///
 /// Unterstuetzt frame_id fuer iFrame-Isolation via CDP. Cross-Origin Frames benoetigen CDP.
 #[utoipa::path(
@@ -270,7 +277,9 @@ pub async fn type_text(
         tab_id,
         text: request.text,
         selector: request.selector,
-        clear_first: request.clear_first.unwrap_or(false),
+        // Default true: typing into a field almost always means "replace its
+        // value", not append. Pass clear_first:false explicitly to append.
+        clear_first: request.clear_first.unwrap_or(true),
         frame_id: request.frame_id,
     };
 

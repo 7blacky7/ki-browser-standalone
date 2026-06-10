@@ -170,6 +170,10 @@ pub struct TypeRequest {
     pub text: String,
     #[serde(default)]
     pub selector: Option<String>,
+    /// Clear the field before typing. Default TRUE — the field's existing
+    /// value is selected and replaced so repeated type() calls don't append
+    /// (appending a half-typed value is a common cause of "wrong credentials").
+    /// Set false to append at the caret instead.
     #[serde(default)]
     pub clear_first: Option<bool>,
     /// Frame-ID fuer iFrame-Isolation. Aendert sich bei Navigation — /frames muss danach neu

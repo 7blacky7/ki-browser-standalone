@@ -385,17 +385,30 @@ impl CdpClient {
     }
 
     /// Focus an element by selector via CDP Runtime.evaluate, then insert text.
-    /// Combines element focus + text insertion for contenteditable fields.
+    /// Combines element focus + text insertion for input, textarea and
+    /// contenteditable fields.
+    ///
+    /// When `clear_first` is true the existing field content is selected before
+    /// insertion so `Input.insertText` REPLACES it instead of appending. This
+    /// matters because `insertText` writes at the caret: without clearing, a
+    /// second type() call on the same field concatenates onto the old value
+    /// (e.g. a half-typed password), which the page then submits verbatim — a
+    /// frequent cause of bogus "wrong credentials" errors. Selecting the text
+    /// (via `select()` / `selectAll`) and replacing it also fires the proper
+    /// input events, so React/Vue-controlled inputs update their internal state.
     pub async fn focus_and_type(
         &self,
         ws_url: &str,
         selector: &str,
         text: &str,
+        clear_first: bool,
     ) -> Result<(), String> {
-        // Focus the element
+        // Focus the element and, when requested, select its current content so
+        // the insert below replaces rather than appends.
         let focus_script = format!(
-            r#"(()=>{{var el=document.querySelector('{}');if(!el)return 'not_found';el.focus();return 'focused'}})()"#,
-            selector.replace('\'', "\\'")
+            r#"(()=>{{var el=document.querySelector('{}');if(!el)return 'not_found';el.focus();if({}){{if(typeof el.select==='function'){{el.select();}}else{{try{{document.execCommand('selectAll',false,null);}}catch(e){{}}}}}}return 'focused'}})()"#,
+            selector.replace('\'', "\\'"),
+            if clear_first { "true" } else { "false" }
         );
         let focus_result = self.evaluate(ws_url, &focus_script).await?;
         if focus_result.contains("not_found") {
@@ -405,7 +418,7 @@ impl CdpClient {
         // Small delay for focus to take effect
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-        // Insert text via CDP
+        // Insert text via CDP (replaces the selection when clear_first selected it)
         self.insert_text(ws_url, text).await
     }
 
