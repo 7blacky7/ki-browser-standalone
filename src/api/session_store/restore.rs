@@ -18,16 +18,32 @@ use super::types::{Bundle, CookieSpec, StorageEntry};
 
 /// Builds the CDP `Network.setCookie` param object for one cookie.
 pub fn cookie_to_cdp_param(c: &CookieSpec) -> Value {
+    // `__Host-`/`__Secure-` prefixed cookies are rejected by `Network.setCookie`
+    // when addressed via `domain`: the prefix contract requires a concrete secure
+    // origin (`__Host-` additionally forbids a `domain` attribute and demands
+    // `secure`). Bind them via `url` (`https://<host><path>`) instead of `domain`.
+    let is_prefixed = c.name.starts_with("__Host-") || c.name.starts_with("__Secure-");
+
     let mut obj = json!({
         "name": c.name,
         "value": c.value,
-        "domain": c.domain,
         "path": c.path,
-        "secure": c.secure,
         "httpOnly": c.http_only,
     });
+
+    if is_prefixed {
+        let host = c.domain.trim_start_matches('.');
+        obj["url"] = json!(format!("https://{}{}", host, c.path));
+        obj["secure"] = json!(true);
+    } else {
+        obj["domain"] = json!(c.domain);
+        obj["secure"] = json!(c.secure);
+    }
+
     if let Some(ss) = &c.same_site {
-        // CDP expects "Strict" | "Lax" | "None".
+        // CDP accepts only "Strict" | "Lax" | "None". For "unspecified" or any
+        // unknown value, omit the field entirely so CDP applies its default
+        // instead of forcing "Lax".
         let normalized = match ss.to_ascii_lowercase().as_str() {
             "strict" => Some("Strict"),
             "lax" => Some("Lax"),
@@ -172,6 +188,61 @@ mod tests {
         assert_eq!(p["secure"], json!(true));
         assert_eq!(p["sameSite"], json!("None"));
         assert_eq!(p["expires"], json!(123.0));
+    }
+
+    #[test]
+    fn test_cookie_to_cdp_param_host_prefix_uses_url_not_domain() {
+        let c = CookieSpec {
+            name: "__Host-sid".into(),
+            value: "v".into(),
+            domain: "x.test".into(),
+            path: "/".into(),
+            secure: false, // even if stored false, prefix forces secure=true
+            http_only: true,
+            same_site: Some("lax".into()),
+            expires: None,
+        };
+        let p = cookie_to_cdp_param(&c);
+        assert_eq!(p["url"], json!("https://x.test/"));
+        assert!(p.get("domain").is_none(), "prefixed cookie must not carry domain");
+        assert_eq!(p["secure"], json!(true));
+        assert_eq!(p["sameSite"], json!("Lax"));
+    }
+
+    #[test]
+    fn test_cookie_to_cdp_param_secure_prefix_strips_leading_dot() {
+        let c = CookieSpec {
+            name: "__Secure-tok".into(),
+            value: "v".into(),
+            domain: ".x.test".into(),
+            path: "/app".into(),
+            secure: true,
+            http_only: false,
+            same_site: None,
+            expires: None,
+        };
+        let p = cookie_to_cdp_param(&c);
+        assert_eq!(p["url"], json!("https://x.test/app"));
+        assert!(p.get("domain").is_none());
+        assert_eq!(p["secure"], json!(true));
+    }
+
+    #[test]
+    fn test_cookie_to_cdp_param_unspecified_samesite_omitted() {
+        let c = CookieSpec {
+            name: "sid".into(),
+            value: "v".into(),
+            domain: "x.test".into(),
+            path: "/".into(),
+            secure: false,
+            http_only: false,
+            same_site: Some("unspecified".into()),
+            expires: None,
+        };
+        let p = cookie_to_cdp_param(&c);
+        assert!(p.get("sameSite").is_none(), "unspecified sameSite must be omitted");
+        assert_eq!(p["domain"], json!("x.test"));
+        assert_eq!(p["secure"], json!(false));
     }
 
     #[test]
