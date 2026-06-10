@@ -179,19 +179,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #     Abhaengigkeiten (typing-extensions etc.) nicht vollstaendig hostet.
 #   CPU-FALLBACK bleibt automatisch: ohne CUDA waehlt torch transparent CPU;
 #     surya.rs setzt device entsprechend torch.cuda.is_available().
-#   paddleocr==2.8.1: paddleocr 3.x braucht paddlepaddle>=3.0, aber PyPIs
+#   paddleocr==2.10.0: paddleocr 3.x braucht paddlepaddle>=3.0, aber PyPIs
 #     paddlepaddle-gpu endet bei 2.6.2 (3.x-GPU-Wheels nur ueber den
-#     Paddle-eigenen Index). 2.8.1 passt zu paddle 2.6 und zur
+#     Paddle-eigenen Index). 2.10.0 passt zu paddle 2.6 und zur
 #     .ocr(cls=True)-API in paddleocr.rs. GPU-Init scheitert an fehlendem
 #     System-cuDNN -> Script faellt automatisch auf CPU zurueck (verifiziert,
 #     conf 0.98). Surya nutzt die GPU, Paddle-CPU ist schnell genug.
+#   numpy<2: paddleocr 2.x zieht imgaug (unmaintained), das np.sctypes nutzt
+#     (in numpy 2.0 entfernt) — Import crasht sonst. paddle 2.6 ist ohnehin
+#     gegen numpy 1.x gebaut. torch 2.11 + surya 0.14.5 mit numpy 1.26
+#     verifiziert (Container-Test 2026-06-10, beide conf 0.98).
 RUN pip3 install --no-cache-dir --break-system-packages \
-        "paddleocr==2.8.1" \
+        "numpy<2" \
+        "paddleocr==2.10.0" \
         paddlepaddle-gpu \
         "surya-ocr==0.14.5" \
         "transformers==4.53.3" \
     && pip3 install --no-cache-dir --break-system-packages --force-reinstall \
-        "torch==2.11.0+cu128" torchvision \
+        "torch==2.11.0+cu128" torchvision "numpy<2" \
         --index-url https://download.pytorch.org/whl/cu128 \
         --extra-index-url https://pypi.org/simple
 # --- CPU-Alternative fuer Paddle (nur falls paddlepaddle-gpu im Build scheitert):
