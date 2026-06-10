@@ -80,6 +80,9 @@ utoipa-swagger-ui = { version = "7.1.0", features = ["axum"] }
 # Temporary files (used by OCR Python subprocess engines)
 tempfile = "3"
 
+# At-rest encryption for persisted session bundles (AES-256-GCM, pure Rust)
+aes-gcm = "0.10"
+
 # Platform-specific dependencies
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

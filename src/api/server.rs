@@ -117,6 +117,9 @@ pub struct AppState {
     pub api_token: Option<Arc<String>>,
     /// Runtime OCR engine enable/disable configuration (global + per-tab).
     pub ocr_config: Arc<RwLock<crate::ocr::OcrRuntimeConfig>>,
+    /// Encrypted, persistent store for inheritable session bundles.
+    /// `None` when the store could not be opened (sessions disabled).
+    pub session_store: Option<crate::api::session_store::SessionStore>,
 }
 
 impl AppState {
@@ -138,6 +141,7 @@ impl AppState {
             cdp_client: None,
             api_token: None,
             ocr_config: Arc::new(RwLock::new(crate::ocr::OcrRuntimeConfig::with_all_enabled())),
+            session_store: None,
         }
     }
 
@@ -163,7 +167,13 @@ impl AppState {
             cdp_client,
             api_token: None,
             ocr_config: Arc::new(RwLock::new(crate::ocr::OcrRuntimeConfig::with_all_enabled())),
+            session_store: None,
         }
+    }
+
+    /// Attach a persistent session store (encrypted bundles under data_dir).
+    pub fn set_session_store(&mut self, store: crate::api::session_store::SessionStore) {
+        self.session_store = Some(store);
     }
 
     /// Attach a GUI handle for window visibility control from REST endpoints.

@@ -28,6 +28,11 @@ pub enum IpcCommand {
         /// "random" (default) | "consistent:<seed>" | explicit object.
         #[serde(default)]
         identity: Option<crate::api::identity::IdentitySpec>,
+        /// Optional session bundle to inherit (cookies + storage + fingerprint).
+        /// When present, its fingerprint drives the tab identity and its
+        /// cookies/storage are restored before the target URL is navigated.
+        #[serde(default)]
+        session_bundle: Option<Box<crate::api::session_store::Bundle>>,
     },
 
     /// Close a tab

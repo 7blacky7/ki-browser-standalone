@@ -637,6 +637,19 @@ async fn main() -> Result<()> {
         // Apply configurable bind address (KI_BROWSER_API_BIND / api_bind).
         server.set_bind(settings.api_bind.clone());
 
+        // Open the encrypted, persistent session store for login-inheritance.
+        // Path: <profile_path-parent or /app/data>/sessions/ (survives restart
+        // when /app/data is a volume). Failure is non-fatal — sessions disabled.
+        match ki_browser_standalone::api::session_store::SessionStore::open_from_profile(
+            settings.profile_path.as_deref(),
+        ) {
+            Ok(store) => {
+                server.state_mut().set_session_store(store);
+                info!("Session store ready (encrypted login inheritance enabled)");
+            }
+            Err(e) => warn!("Session store unavailable (login inheritance disabled): {}", e),
+        }
+
         // Enable opt-in Bearer-token auth when a token is configured.
         // No token => pass-through (default, unchanged LAN behaviour).
         if let Some(ref token) = settings.api_token {

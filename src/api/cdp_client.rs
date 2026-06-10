@@ -461,6 +461,70 @@ impl CdpClient {
         self.insert_text(ws_url, text).await
     }
 
+    /// Restores cookies on a target via CDP `Network.setCookie`.
+    ///
+    /// Unlike `document.cookie`, this can set httpOnly/secure/sameSite cookies
+    /// with explicit domain/path/expiry — required to inherit a real login
+    /// session. `Network.enable` is sent first (idempotent). `cookies` is a
+    /// JSON array of CDP cookie param objects. Cookie values are never logged.
+    pub async fn set_cookies(
+        &self,
+        ws_url: &str,
+        cookies: &[serde_json::Value],
+    ) -> Result<usize, String> {
+        // Network.enable is required before setCookie takes effect.
+        let _ = self
+            .send_command(ws_url, "Network.enable", serde_json::json!({}))
+            .await;
+
+        let mut ok = 0usize;
+        for cookie in cookies {
+            match self
+                .send_command(ws_url, "Network.setCookie", cookie.clone())
+                .await
+            {
+                Ok(result) => {
+                    // Network.setCookie returns { success: bool }.
+                    let success = result
+                        .get("success")
+                        .and_then(|s| s.as_bool())
+                        .unwrap_or(true);
+                    if success {
+                        ok += 1;
+                    } else {
+                        // Log without the value (only the name).
+                        let name = cookie.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+                        warn!("CDP setCookie rejected cookie '{}'", name);
+                    }
+                }
+                Err(e) => {
+                    let name = cookie.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+                    warn!("CDP setCookie failed for '{}': {}", name, e);
+                }
+            }
+        }
+        Ok(ok)
+    }
+
+    /// Returns all browser cookies via CDP `Network.getAllCookies`.
+    ///
+    /// The result is the raw `cookies` array (each entry has name/value/domain/
+    /// path/secure/httpOnly/sameSite/expires). Callers filter by domain/origin.
+    pub async fn get_all_cookies(&self, ws_url: &str) -> Result<Vec<serde_json::Value>, String> {
+        let _ = self
+            .send_command(ws_url, "Network.enable", serde_json::json!({}))
+            .await;
+        let result = self
+            .send_command(ws_url, "Network.getAllCookies", serde_json::json!({}))
+            .await?;
+        let cookies = result
+            .get("cookies")
+            .and_then(|c| c.as_array())
+            .cloned()
+            .unwrap_or_default();
+        Ok(cookies)
+    }
+
     /// Close all cached WebSocket connections.
     pub async fn close_all(&self) {
         let mut conns = self.connections.write().await;

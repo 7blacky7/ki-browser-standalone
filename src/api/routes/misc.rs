@@ -326,9 +326,18 @@ pub async fn list_endpoints() -> impl IntoResponse {
             name: "Tabs",
             endpoints: vec![
                 EndpointInfo { method: "GET", path: "/tabs", description: "Liste aller offenen Tabs" },
-                EndpointInfo { method: "POST", path: "/tabs/new", description: "Neuen Tab erstellen (optional: url, active, identity: \"random\"|\"consistent:<seed>\"|{user_agent,platform,languages,hardware_concurrency,device_memory,webgl_vendor,webgl_renderer,screen,timezone}) — Antwort enthaelt die aufgeloeste Identitaet" },
+                EndpointInfo { method: "POST", path: "/tabs/new", description: "Neuen Tab erstellen (optional: url, active, identity: \"random\"|\"consistent:<seed>\"|{user_agent,platform,languages,hardware_concurrency,device_memory,webgl_vendor,webgl_renderer,screen,timezone}) — optional session_bundle (inline) oder session_id (gespeichert) zum Login-Erben; Antwort enthaelt die aufgeloeste Identitaet" },
                 EndpointInfo { method: "POST", path: "/tabs/close", description: "Tab schliessen (tab_id)" },
                 EndpointInfo { method: "GET", path: "/tabs/{tab_id}/identity", description: "Aktive Stealth-Identitaet des Tabs (UA, Accept-Language==navigator.languages, WebGL, Screen, Timezone)" },
+            ],
+        },
+        EndpointCategory {
+            name: "Session-Login erben",
+            endpoints: vec![
+                EndpointInfo { method: "POST", path: "/session/import", description: "Session-Bundle (cookies+storage+fingerprint) verschluesselt speichern -> session_id. Token-geschuetzt wenn Auth aktiv." },
+                EndpointInfo { method: "POST", path: "/session/export", description: "Aus laufendem Tab (tab_id) ein Bundle bauen (Cookies via CDP, Storage via evaluate, aktuelle Identitaet) und speichern -> session_id" },
+                EndpointInfo { method: "GET", path: "/session/list", description: "Gespeicherte Sessions auflisten (id, origin, created_at, cookie_count) - KEINE Cookie-Werte" },
+                EndpointInfo { method: "DELETE", path: "/session/{id}", description: "Gespeicherte Session loeschen" },
             ],
         },
         EndpointCategory {

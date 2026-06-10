@@ -93,6 +93,16 @@ pub struct NewTabRequest {
     #[serde(default)]
     #[schema(value_type = Option<Object>)]
     pub identity: Option<crate::api::identity::IdentitySpec>,
+    /// Inherit a login session by inlining a full bundle (cookies + storage +
+    /// fingerprint). The bundle's fingerprint overrides `identity`. Cookies and
+    /// localStorage are restored before the target URL is navigated.
+    #[serde(default)]
+    #[schema(value_type = Option<Object>)]
+    pub session_bundle: Option<crate::api::session_store::Bundle>,
+    /// Inherit a previously stored session by id (see `POST /session/import`).
+    /// Mutually combinable with `url`; takes effect like `session_bundle`.
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 /// Create new tab response

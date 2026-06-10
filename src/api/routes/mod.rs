@@ -13,6 +13,7 @@ pub mod tabs;
 pub mod navigation;
 pub mod dom;
 pub mod misc;
+pub mod session;
 
 // Re-export all types for backward compatibility
 pub use types::*;
@@ -25,7 +26,7 @@ pub use misc::{health_check, toggle_api, api_status, cdp_targets, cdp_target_by_
 pub(crate) use misc::cdp_info;
 
 use axum::{
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 
@@ -71,6 +72,13 @@ pub fn create_router(state: AppState) -> Router {
         // CDP tab mapping
         .route("/cdp/targets", get(cdp_targets))
         .route("/cdp/target/:tab_id", get(cdp_target_by_tab))
+
+        // Session inheritance (login-erben): import/export/list/delete.
+        // NOT in the auth whitelist — token-protected when auth is enabled.
+        .route("/session/import", post(crate::api::routes::session::import_session))
+        .route("/session/export", post(crate::api::routes::session::export_session))
+        .route("/session/list", get(crate::api::routes::session::list_sessions))
+        .route("/session/:id", delete(crate::api::routes::session::delete_session))
 
         // API management
         .route("/api/toggle", post(toggle_api))

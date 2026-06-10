@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "ki-browser Session Grabber",
+  "version": "1.0.0",
+  "description": "Grabs cookies, storage and fingerprint of the active site and exports a session bundle for ki-browser (inherit a logged-in, fingerprint-consistent session).",
+  "permissions": [
+    "cookies",
+    "storage",
+    "activeTab",
+    "scripting",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "ki-browser Session Grabber"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "ki-browser-session-grabber@ki-browser.local",
+      "strict_min_version": "115.0"
+    }
+  }
+}

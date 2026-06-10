@@ -18,6 +18,7 @@ pub mod openapi;
 pub mod routes;
 pub mod server;
 pub mod session;
+pub mod session_store;
 pub mod vision_routes;
 pub mod viewer_stream;
 pub mod websocket;
@@ -42,6 +43,7 @@ pub use extraction_routes::extraction_routes;
 pub use ocr_routes::ocr_routes;
 pub use routes::create_router;
 pub use server::{ApiServer, AppState};
+pub use session_store::{Bundle, CookieSpec, FingerprintSpec, SessionMeta, SessionStore, StorageEntry};
 pub use session::{
     CookieInfo, HistoryEntry, Session, SessionManager, SessionSnapshot, TabSnapshot,
 };

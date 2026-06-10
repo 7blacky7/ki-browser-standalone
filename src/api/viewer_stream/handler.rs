@@ -384,7 +384,7 @@ async fn handle_client_message(
         ClientMessage::CreateTab { url } => {
             // Same path as /tabs/new so the tab is fully initialised (identity,
             // viewport) and tracked everywhere — not a bare engine tab.
-            let cmd = crate::api::ipc::IpcCommand::CreateTab { url, active: true, identity: None };
+            let cmd = crate::api::ipc::IpcCommand::CreateTab { url, active: true, identity: None, session_bundle: None };
             if let Ok(resp) = state.ipc_channel.send_command(crate::api::ipc::IpcMessage::Command(cmd)).await {
                 if let Some(tid) = resp.tab_id {
                     if let Ok(uuid) = Uuid::parse_str(&tid) {

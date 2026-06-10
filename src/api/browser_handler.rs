@@ -174,8 +174,8 @@ impl BrowserCommandHandler {
         let engine_guard = self.engine.read().await;
 
         match command {
-            IpcCommand::CreateTab { url, active, identity } => {
-                self.handle_create_tab(&engine_guard, &url, active, identity).await
+            IpcCommand::CreateTab { url, active, identity, session_bundle } => {
+                self.handle_create_tab(&engine_guard, &url, active, identity, session_bundle.map(|b| *b)).await
             }
             IpcCommand::CloseTab { tab_id } => {
                 self.handle_close_tab(&engine_guard, &tab_id).await
@@ -262,9 +262,18 @@ impl BrowserCommandHandler {
         url: &str,
         _active: bool,
         identity: Option<crate::api::identity::IdentitySpec>,
+        session_bundle: Option<crate::api::session_store::Bundle>,
     ) -> IpcResponse {
         #[cfg(not(feature = "cef-browser"))]
-        let _ = &identity;
+        let _ = (&identity, &session_bundle);
+
+        // A session bundle's fingerprint takes precedence over an explicitly
+        // requested identity (it must be consistent with the inherited session).
+        #[cfg(feature = "cef-browser")]
+        let identity = match session_bundle.as_ref().and_then(|b| b.fingerprint.as_ref()) {
+            Some(fp) => fp.to_identity_spec().or(identity),
+            None => identity,
+        };
 
         match engine {
             Some(BrowserEngineWrapper::Mock(e)) => {
@@ -316,6 +325,9 @@ impl BrowserCommandHandler {
 
                 // Register the full identity on the tab's CDP target — synchronously,
                 // before any navigation happens.
+                // `restore_ws_url` is set when a session bundle must have its
+                // sessionStorage applied AFTER navigation (it can't be pre-seeded).
+                let mut restore_ws_url: Option<String> = None;
                 if let Some(cdp) = self.cdp_client.clone() {
                     match Self::find_new_target_ws_url(&cdp, &targets_before).await {
                         Some(ws_url) => {
@@ -325,6 +337,21 @@ impl BrowserCommandHandler {
                             // of truth for every CDP call of this tab.
                             self.tab_ws_urls.write().await.insert(tab.id, ws_url.clone());
                             self.init_tab_identity_via_cdp(&cdp, &ws_url, &stealth, tab.id).await;
+
+                            // Session inheritance: cookies + localStorage MUST be
+                            // restored now (after identity init, before the first
+                            // real document loads).
+                            if let Some(bundle) = session_bundle.as_ref() {
+                                use crate::api::session_store::restore;
+                                match restore::restore_cookies(&cdp, &ws_url, bundle).await {
+                                    Ok(n) => debug!("Restored {} cookies for tab {}", n, tab.id),
+                                    Err(e) => warn!("Cookie restore failed for tab {}: {}", tab.id, e),
+                                }
+                                if let Err(e) = restore::restore_local_storage(&cdp, &ws_url, bundle).await {
+                                    warn!("localStorage restore failed for tab {}: {}", tab.id, e);
+                                }
+                                restore_ws_url = Some(ws_url.clone());
+                            }
                         }
                         None => {
                             warn!(
@@ -343,6 +370,28 @@ impl BrowserCommandHandler {
                 if !url.is_empty() && url != "about:blank" {
                     if let Err(err) = e.navigate(tab.id, url).await {
                         warn!("Navigation to {} failed for new tab {}: {}", url, tab.id, err);
+                    }
+                }
+
+                // sessionStorage cannot be pre-seeded before navigation, so apply
+                // it now (best effort) on the target origin's document.
+                if let (Some(ws_url), Some(bundle), Some(cdp)) =
+                    (restore_ws_url.as_ref(), session_bundle.as_ref(), self.cdp_client.clone())
+                {
+                    use crate::api::session_store::restore;
+                    let has_session = bundle.storage.iter().any(|s| !s.session.is_empty());
+                    if has_session {
+                        // Give the document a moment to settle after navigation.
+                        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+                        for entry in &bundle.storage {
+                            if entry.session.is_empty() {
+                                continue;
+                            }
+                            let script = restore::session_storage_script(entry);
+                            if let Err(e) = cdp.evaluate(ws_url, &script).await {
+                                debug!("sessionStorage restore failed for tab {}: {}", tab.id, e);
+                            }
+                        }
                     }
                 }
 

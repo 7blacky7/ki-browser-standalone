@@ -75,12 +75,51 @@ pub async fn create_tab(
 
     let url = request.url.unwrap_or_else(|| "about:blank".to_string());
 
+    // Resolve an optional inherited session: inline bundle wins, otherwise a
+    // stored session_id is loaded (and decrypted) from the session store.
+    let session_bundle = match request.session_bundle.clone() {
+        Some(bundle) => Some(bundle),
+        None => match &request.session_id {
+            Some(id) => match &state.session_store {
+                Some(store) => match store.load(id).await {
+                    Ok(Some(bundle)) => Some(bundle),
+                    Ok(None) => {
+                        return (
+                            StatusCode::NOT_FOUND,
+                            Json(ApiResponse::<NewTabResponse>::error(format!(
+                                "Unknown session_id: {}", id
+                            ))),
+                        ).into_response();
+                    }
+                    Err(e) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ApiResponse::<NewTabResponse>::error(format!(
+                                "Failed to load session: {}", e
+                            ))),
+                        ).into_response();
+                    }
+                },
+                None => {
+                    return (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(ApiResponse::<NewTabResponse>::error(
+                            "Session store unavailable",
+                        )),
+                    ).into_response();
+                }
+            },
+            None => None,
+        },
+    };
+
     // Send IPC command to create tab (identity is resolved in the browser handler
     // where engine + viewport are known; default = consistent random Chrome profile)
     let command = IpcCommand::CreateTab {
         url: url.clone(),
         active: request.active.unwrap_or(true),
         identity: request.identity.clone(),
+        session_bundle: session_bundle.map(Box::new),
     };
 
     match state.ipc_channel.send_command(IpcMessage::Command(command)).await {

@@ -40,6 +40,10 @@ use crate::api::routes::{
         crate::api::routes::dom::find_element,
         crate::api::routes::misc::toggle_api,
         crate::api::routes::misc::api_status,
+        crate::api::routes::session::import_session,
+        crate::api::routes::session::export_session,
+        crate::api::routes::session::list_sessions,
+        crate::api::routes::session::delete_session,
     ),
     components(schemas(
         HealthResponse,
@@ -61,6 +65,8 @@ use crate::api::routes::{
         BoundingBox,
         ApiToggleRequest,
         ApiStatusResponse,
+        crate::api::routes::session::SessionIdResponse,
+        crate::api::routes::session::ExportSessionRequest,
     )),
     tags(
         (name = "health", description = "Health check endpoint"),
@@ -68,6 +74,7 @@ use crate::api::routes::{
         (name = "navigation", description = "Page navigation and interaction"),
         (name = "dom", description = "DOM element operations"),
         (name = "api", description = "API management endpoints"),
+        (name = "session", description = "Login-session inheritance (import/export/list/delete)"),
     )
 )]
 pub struct ApiDoc;

@@ -424,6 +424,7 @@ async fn process_url(
         url: url.clone(),
         active: false,
         identity: None,
+        session_bundle: None,
     };
     let tab_id = match ipc.send_command(IpcMessage::Command(create_cmd)).await {
         Ok(resp) if resp.success => {
