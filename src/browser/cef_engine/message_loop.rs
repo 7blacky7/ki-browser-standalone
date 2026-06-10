@@ -61,7 +61,18 @@ pub(crate) fn run_cef_message_loop(
     settings.root_cache_path = CefString::from(cache_dir.as_str());
     settings.cache_path = CefString::from(cache_dir.as_str());
 
-    if config.headless {
+    // Render mode: OSR (default) vs windowed. Windowed renders into a real
+    // X11 window on the Xvfb display instead of off-screen, which defeats
+    // OSR-based bot detection (e.g. Gameforge blackbox / the OGame 409) — at
+    // the cost of the OSR frame buffer (viewer/screenshots) until those are
+    // moved to CDP. Default stays OSR.
+    let windowed = std::env::var("KI_BROWSER_RENDER_MODE")
+        .map(|v| v.eq_ignore_ascii_case("windowed"))
+        .unwrap_or(false);
+    if windowed {
+        settings.windowless_rendering_enabled = 0;
+        info!("KI_BROWSER_RENDER_MODE=windowed — real on-screen window (non-OSR)");
+    } else if config.headless {
         settings.windowless_rendering_enabled = 1;
     }
 
@@ -437,7 +448,11 @@ fn create_browser_internal(
         ..Default::default()
     };
 
-    // Window info for OSR (off-screen rendering)
+    // Window info: OSR by default; windowed mode renders into a real X11 window
+    // on the Xvfb display (matches KI_BROWSER_RENDER_MODE in the settings above).
+    let windowed = std::env::var("KI_BROWSER_RENDER_MODE")
+        .map(|v| v.eq_ignore_ascii_case("windowed"))
+        .unwrap_or(false);
     let window_info = WindowInfo {
         bounds: Rect {
             x: 0,
@@ -445,7 +460,7 @@ fn create_browser_internal(
             width: viewport_dims.0 as i32,
             height: viewport_dims.1 as i32,
         },
-        windowless_rendering_enabled: 1,
+        windowless_rendering_enabled: if windowed { 0 } else { 1 },
         ..Default::default()
     };
 
