@@ -12,177 +12,149 @@
     font: 13px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
     height: 100vh; display: flex; flex-direction: column;
   }
-  header {
-    display: flex; align-items: center; gap: 12px; padding: 8px 12px;
-    background: #171922; border-bottom: 1px solid #262a36; flex: 0 0 auto;
+  .bar { display: flex; align-items: center; gap: 6px; padding: 6px 8px; background: #171922; border-bottom: 1px solid #262a36; flex: 0 0 auto; }
+  button {
+    background: #20232e; color: #d7dae0; border: 1px solid #2c3140; border-radius: 6px;
+    padding: 5px 9px; cursor: pointer; font-size: 13px; line-height: 1;
   }
-  header .brand { font-weight: 600; color: #fff; }
-  #status { display: flex; align-items: center; gap: 6px; }
+  button:hover { background: #2a2e3b; }
+  button:active { background: #2d6cdf; }
+  .nav { font-size: 15px; min-width: 32px; }
+  #addr {
+    flex: 1 1 auto; background: #0e0f13; color: #e8eaee; border: 1px solid #2c3140;
+    border-radius: 7px; padding: 7px 11px; font-size: 13px; outline: none;
+  }
+  #addr:focus { border-color: #2d6cdf; }
+  #status { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
   #dot { width: 9px; height: 9px; border-radius: 50%; background: #b0451f; }
-  #dot.on { background: #2faa55; }
-  #dot.connecting { background: #c9a227; }
-  #tabs { display: flex; gap: 6px; overflow-x: auto; flex: 1 1 auto; }
+  #dot.on { background: #2faa55; } #dot.connecting { background: #c9a227; }
+  #tabbar { display: flex; align-items: center; gap: 4px; padding: 4px 8px; background: #13151c; border-bottom: 1px solid #262a36; overflow-x: auto; flex: 0 0 auto; }
   .tab {
-    padding: 4px 10px; background: #20232e; border: 1px solid #2c3140;
-    border-radius: 6px; white-space: nowrap; max-width: 240px; overflow: hidden;
-    text-overflow: ellipsis; cursor: default; font-size: 12px;
+    display: flex; align-items: center; gap: 6px; padding: 5px 8px; background: #20232e;
+    border: 1px solid #2c3140; border-radius: 6px 6px 0 0; white-space: nowrap;
+    max-width: 220px; cursor: pointer; font-size: 12px;
   }
   .tab.active { background: #2d6cdf; border-color: #2d6cdf; color: #fff; }
-  #hint { font-size: 11px; color: #8a909c; }
-  #stage {
-    flex: 1 1 auto; display: flex; align-items: center; justify-content: center;
-    overflow: hidden; background: #000; position: relative;
-  }
-  #screen { max-width: 100%; max-height: 100%; display: block; cursor: crosshair; background: #000; image-rendering: auto; }
-  #overlay {
-    position: absolute; inset: 0; display: flex; align-items: center;
-    justify-content: center; color: #8a909c; pointer-events: none; font-size: 14px;
-  }
+  .tab .label { overflow: hidden; text-overflow: ellipsis; max-width: 170px; }
+  .tab .x { opacity: .6; font-size: 14px; padding: 0 2px; border-radius: 4px; }
+  .tab .x:hover { opacity: 1; background: rgba(255,255,255,.15); }
+  #newtab { font-size: 16px; padding: 3px 9px; }
+  #stage { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; overflow: hidden; background: #000; position: relative; }
+  #screen { max-width: 100%; max-height: 100%; display: block; cursor: crosshair; background: #000; }
+  #overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #8a909c; pointer-events: none; font-size: 14px; }
 </style>
 </head>
 <body>
-<header>
-  <span class="brand">KI-Browser</span>
+<div class="bar">
+  <button class="nav" id="back" title="Zurück">←</button>
+  <button class="nav" id="fwd" title="Vorwärts">→</button>
+  <button class="nav" id="reload" title="Neu laden">⟳</button>
+  <input id="addr" type="text" placeholder="URL eingeben und Enter…" spellcheck="false" autocomplete="off">
   <span id="status"><span id="dot" class="connecting"></span><span id="statusText">verbinde…</span></span>
-  <div id="tabs"></div>
-  <span id="hint">Klicken &amp; tippen steuert den Browser live</span>
-</header>
+</div>
+<div id="tabbar">
+  <div id="tabs" style="display:flex;gap:4px;"></div>
+  <button id="newtab" title="Neuer Tab">+</button>
+</div>
 <div id="stage">
   <canvas id="screen" width="1920" height="1080" tabindex="0"></canvas>
   <div id="overlay">Warte auf erstes Bild…</div>
 </div>
 <script>
 (() => {
-  const canvas = document.getElementById('screen');
-  const ctx = canvas.getContext('2d', { alpha: false });
-  const dot = document.getElementById('dot');
-  const statusText = document.getElementById('statusText');
-  const tabsEl = document.getElementById('tabs');
-  const overlay = document.getElementById('overlay');
+  const $ = (id) => document.getElementById(id);
+  const canvas = $('screen'), ctx = canvas.getContext('2d', { alpha: false });
+  const dot = $('dot'), statusText = $('statusText'), tabsEl = $('tabs'), overlay = $('overlay'), addr = $('addr');
 
-  // Native frame size — updated from the first decoded frame.
   let frameW = 1920, frameH = 1080;
   let ws = null, reconnectTimer = null, gotFrame = false;
+  let activeTab = null, addrFocused = false;
 
-  function setStatus(state, text) {
-    dot.className = state;        // '', 'on', 'connecting'
-    statusText.textContent = text;
-  }
-
-  function wsUrl() {
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    return `${proto}://${location.host}/ws/viewer?codec=jpeg`;
-  }
+  const setStatus = (s, t) => { dot.className = s; statusText.textContent = t; };
+  const send = (o) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); };
+  const wsUrl = () => `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/viewer?codec=jpeg`;
 
   function connect() {
     setStatus('connecting', 'verbinde…');
     ws = new WebSocket(wsUrl());
     ws.binaryType = 'arraybuffer';
-
     ws.onopen = () => setStatus('on', 'verbunden');
-    ws.onclose = () => { setStatus('', 'getrennt — neu verbinden…'); scheduleReconnect(); };
+    ws.onclose = () => { setStatus('', 'getrennt…'); clearTimeout(reconnectTimer); reconnectTimer = setTimeout(connect, 1000); };
     ws.onerror = () => { try { ws.close(); } catch (e) {} };
-
     ws.onmessage = (ev) => {
-      if (typeof ev.data === 'string') { handleText(ev.data); return; }
-      const bytes = new Uint8Array(ev.data);
-      if (bytes.length < 2) return;
-      const prefix = bytes[0];
-      if (prefix === 0x00) {           // JPEG frame
-        renderJpeg(bytes.subarray(1));
-      }
-      // 0x01/0x02 (H.264) ignored — we request ?codec=jpeg
+      if (typeof ev.data === 'string') return handleText(ev.data);
+      const b = new Uint8Array(ev.data);
+      if (b.length >= 2 && b[0] === 0x00) renderJpeg(b.subarray(1));
     };
   }
 
-  function scheduleReconnect() {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(connect, 1000);
-  }
-
-  async function renderJpeg(jpegBytes) {
+  async function renderJpeg(bytes) {
     try {
-      const blob = new Blob([jpegBytes], { type: 'image/jpeg' });
-      const bmp = await createImageBitmap(blob);
-      if (bmp.width !== frameW || bmp.height !== frameH) {
-        frameW = bmp.width; frameH = bmp.height;
-        canvas.width = frameW; canvas.height = frameH;
-      }
-      ctx.drawImage(bmp, 0, 0);
-      bmp.close();
+      const bmp = await createImageBitmap(new Blob([bytes], { type: 'image/jpeg' }));
+      if (bmp.width !== frameW || bmp.height !== frameH) { frameW = bmp.width; frameH = bmp.height; canvas.width = frameW; canvas.height = frameH; }
+      ctx.drawImage(bmp, 0, 0); bmp.close();
       if (!gotFrame) { gotFrame = true; overlay.style.display = 'none'; }
-    } catch (e) { /* drop bad frame */ }
+    } catch (e) {}
   }
 
   function handleText(text) {
-    let msg; try { msg = JSON.parse(text); } catch (e) { return; }
-    if (msg.type === 'connected' || msg.type === 'tab_update') renderTabs(msg);
-    else if (msg.type === 'error') setStatus('', 'Fehler: ' + (msg.message || ''));
+    let m; try { m = JSON.parse(text); } catch (e) { return; }
+    if (m.type === 'connected' || m.type === 'tab_update') {
+      activeTab = m.active_tab || null;
+      renderTabs(m.tabs || [], m.active_tab);
+      const at = (m.tabs || []).find(t => t.id === m.active_tab);
+      if (at && !addrFocused) addr.value = at.url || '';
+    } else if (m.type === 'error') setStatus('', 'Fehler: ' + (m.message || ''));
   }
 
-  function renderTabs(msg) {
+  function renderTabs(tabs, active) {
     tabsEl.innerHTML = '';
-    (msg.tabs || []).forEach(t => {
+    tabs.forEach(t => {
       const el = document.createElement('div');
-      el.className = 'tab' + (t.id === msg.active_tab ? ' active' : '');
-      el.textContent = t.title || t.url || t.id;
-      el.title = t.url || '';
+      el.className = 'tab' + (t.id === active ? ' active' : '');
+      const label = document.createElement('span');
+      label.className = 'label'; label.textContent = t.title || t.url || 'Tab'; label.title = t.url || '';
+      label.onclick = () => send({ type: 'set_active_tab', tab_id: t.id });
+      const x = document.createElement('span');
+      x.className = 'x'; x.textContent = '×';
+      x.onclick = (e) => { e.stopPropagation(); send({ type: 'close_tab', tab_id: t.id }); };
+      el.appendChild(label); el.appendChild(x);
       tabsEl.appendChild(el);
     });
   }
 
-  // ---- Input forwarding (canvas coords -> native viewport coords) ----
-  function toViewport(ev) {
-    const r = canvas.getBoundingClientRect();
-    const x = (ev.clientX - r.left) / r.width * frameW;
-    const y = (ev.clientY - r.top) / r.height * frameH;
-    return { x: Math.round(x), y: Math.round(y) };
-  }
-  function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
-
-  let lastMove = 0;
-  canvas.addEventListener('mousemove', (ev) => {
-    const now = performance.now();
-    if (now - lastMove < 40) return;     // throttle ~25/s
-    lastMove = now;
-    const p = toViewport(ev);
-    send({ type: 'mouse_move', x: p.x, y: p.y });
-  });
-  canvas.addEventListener('mousedown', (ev) => {
-    canvas.focus();
-    const p = toViewport(ev);
-    send({ type: 'mouse_click', x: p.x, y: p.y, button: ev.button });
-    ev.preventDefault();
-  });
-  canvas.addEventListener('contextmenu', (ev) => ev.preventDefault());
-  canvas.addEventListener('wheel', (ev) => {
-    const p = toViewport(ev);
-    send({ type: 'mouse_wheel', x: p.x, y: p.y, delta_x: -ev.deltaX | 0, delta_y: -ev.deltaY | 0 });
-    ev.preventDefault();
-  }, { passive: false });
-
-  // Keyboard: 0=rawkeydown, 2=keyup, 3=char (CEF cef_key_event_type_t).
-  function modifiers(ev) {
-    let m = 0;
-    if (ev.shiftKey) m |= 1 << 1;
-    if (ev.ctrlKey)  m |= 1 << 2;
-    if (ev.altKey)   m |= 1 << 3;
-    return m;
-  }
-  canvas.addEventListener('keydown', (ev) => {
-    send({ type: 'key_event', event_type: 0, modifiers: modifiers(ev),
-           windows_key_code: ev.keyCode, character: 0 });
-    if (ev.key && ev.key.length === 1) {
-      send({ type: 'key_event', event_type: 3, modifiers: modifiers(ev),
-             windows_key_code: ev.keyCode, character: ev.key.charCodeAt(0) });
+  // ---- Toolbar ----
+  $('back').onclick = () => send({ type: 'go_back' });
+  $('fwd').onclick = () => send({ type: 'go_forward' });
+  $('reload').onclick = () => { if (addr.value) send({ type: 'navigate', url: addr.value }); };
+  $('newtab').onclick = () => send({ type: 'create_tab', url: 'about:blank' });
+  addr.addEventListener('focus', () => { addrFocused = true; });
+  addr.addEventListener('blur', () => { addrFocused = false; });
+  addr.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') {
+      let u = addr.value.trim();
+      if (u && !/^[a-z]+:\/\//i.test(u) && !u.startsWith('about:')) u = 'https://' + u;
+      send({ type: 'navigate', url: u });
+      canvas.focus();
     }
-    if (['Tab', 'Backspace', ' ', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(ev.key))
-      ev.preventDefault();
   });
-  canvas.addEventListener('keyup', (ev) => {
-    send({ type: 'key_event', event_type: 2, modifiers: modifiers(ev),
-           windows_key_code: ev.keyCode, character: 0 });
+
+  // ---- Input forwarding ----
+  const toVp = (ev) => { const r = canvas.getBoundingClientRect(); return { x: Math.round((ev.clientX - r.left) / r.width * frameW), y: Math.round((ev.clientY - r.top) / r.height * frameH) }; };
+  let lastMove = 0;
+  canvas.addEventListener('mousemove', (ev) => { const n = performance.now(); if (n - lastMove < 40) return; lastMove = n; const p = toVp(ev); send({ type: 'mouse_move', x: p.x, y: p.y }); });
+  canvas.addEventListener('mousedown', (ev) => { canvas.focus(); const p = toVp(ev); send({ type: 'mouse_click', x: p.x, y: p.y, button: ev.button }); ev.preventDefault(); });
+  canvas.addEventListener('contextmenu', (ev) => ev.preventDefault());
+  canvas.addEventListener('wheel', (ev) => { const p = toVp(ev); send({ type: 'mouse_wheel', x: p.x, y: p.y, delta_x: -ev.deltaX | 0, delta_y: -ev.deltaY | 0 }); ev.preventDefault(); }, { passive: false });
+
+  const mods = (e) => { let m = 0; if (e.shiftKey) m |= 2; if (e.ctrlKey) m |= 4; if (e.altKey) m |= 8; return m; };
+  canvas.addEventListener('keydown', (e) => {
+    send({ type: 'key_event', event_type: 0, modifiers: mods(e), windows_key_code: e.keyCode, character: 0 });
+    if (e.key && e.key.length === 1) send({ type: 'key_event', event_type: 3, modifiers: mods(e), windows_key_code: e.keyCode, character: e.key.charCodeAt(0) });
+    if (['Tab', 'Backspace', ' ', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) e.preventDefault();
   });
+  canvas.addEventListener('keyup', (e) => send({ type: 'key_event', event_type: 2, modifiers: mods(e), windows_key_code: e.keyCode, character: 0 }));
 
   connect();
 })();

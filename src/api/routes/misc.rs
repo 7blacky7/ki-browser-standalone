@@ -243,7 +243,14 @@ struct EndpointsData {
 /// Point an Unraid WebUI button at http://[IP]:[PORT]/viewer to watch and
 /// drive the browser live, exactly like an AI agent does.
 pub async fn viewer_page() -> impl IntoResponse {
-    axum::response::Html(include_str!("../../../static/viewer.html"))
+    // Read from disk at runtime so the UI can be iterated with a `docker cp`
+    // + page reload (no rebuild). Falls back to the version baked in at compile
+    // time if the file is missing (e.g. running outside the container layout).
+    const BAKED: &str = include_str!("../../../static/viewer.html");
+    let html = std::fs::read_to_string("/app/static/viewer.html")
+        .or_else(|_| std::fs::read_to_string("static/viewer.html"))
+        .unwrap_or_else(|_| BAKED.to_string());
+    axum::response::Html(html)
 }
 
 pub async fn list_endpoints() -> impl IntoResponse {

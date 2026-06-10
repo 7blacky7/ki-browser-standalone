@@ -222,6 +222,10 @@ COPY --from=builder /cef/ /opt/cef/
 # Copy binary from builder
 COPY --from=builder /build/target/release/ki-browser /app/ki-browser
 
+# Live-viewer web UI — served from disk at runtime so it can be updated with a
+# `docker cp static/viewer.html ki-browser:/app/static/` + reload, no rebuild.
+COPY static/ /app/static/
+
 # Copy entrypoint script
 COPY docker-entrypoint-cef.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
