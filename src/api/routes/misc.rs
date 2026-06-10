@@ -253,6 +253,62 @@ pub async fn viewer_page() -> impl IntoResponse {
     axum::response::Html(html)
 }
 
+/// POST /upload - attach a local file to a file input via the upload bridge.
+///
+/// Multipart form: `file` (the binary), `tab_id` (optional, defaults to active
+/// tab), `selector` (optional, defaults to `input[type=file]`). The file is
+/// written under /tmp/ki-uploads and attached through CDP DOM.setFileInputFiles,
+/// so a headless browser with no native file dialog can still complete uploads.
+pub async fn upload_file(
+    State(state): State<AppState>,
+    mut multipart: axum::extract::Multipart,
+) -> impl IntoResponse {
+    if !state.is_enabled().await {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(ApiResponse::<()>::error("API is disabled"))).into_response();
+    }
+    let mut tab_id: Option<String> = None;
+    let mut selector = "input[type=file]".to_string();
+    let mut saved_path: Option<String> = None;
+    while let Ok(Some(field)) = multipart.next_field().await {
+        match field.name().unwrap_or("").to_string().as_str() {
+            "tab_id" => tab_id = field.text().await.ok().filter(|s| !s.is_empty()),
+            "selector" => { if let Ok(s) = field.text().await { if !s.is_empty() { selector = s; } } }
+            "file" => {
+                let fname = field.file_name().unwrap_or("upload").to_string();
+                let safe: String = fname.chars().filter(|c| c.is_alphanumeric() || matches!(c, '.' | '-' | '_')).collect();
+                let safe = if safe.is_empty() { "upload".to_string() } else { safe };
+                match field.bytes().await {
+                    Ok(data) => {
+                        let dir = "/tmp/ki-uploads";
+                        let _ = std::fs::create_dir_all(dir);
+                        let path = format!("{}/{}-{}", dir, uuid::Uuid::new_v4(), safe);
+                        if std::fs::write(&path, &data).is_ok() { saved_path = Some(path); }
+                    }
+                    Err(e) => return (StatusCode::BAD_REQUEST, Json(ApiResponse::<()>::error(format!("Upload read failed: {}", e)))).into_response(),
+                }
+            }
+            _ => {}
+        }
+    }
+    let path = match saved_path {
+        Some(p) => p,
+        None => return (StatusCode::BAD_REQUEST, Json(ApiResponse::<()>::error("No 'file' field in upload"))).into_response(),
+    };
+    let tab_id = match tab_id.or({
+        let bs = state.browser_state.read().await;
+        bs.active_tab_id.clone()
+    }) {
+        Some(id) => id,
+        None => return (StatusCode::BAD_REQUEST, Json(ApiResponse::<()>::error("No tab specified and no active tab"))).into_response(),
+    };
+    let command = crate::api::ipc::IpcCommand::SetFileInput { tab_id, selector, paths: vec![path] };
+    match state.ipc_channel.send_command(crate::api::ipc::IpcMessage::Command(command)).await {
+        Ok(resp) if resp.success => Json(ApiResponse::success(())).into_response(),
+        Ok(resp) => (StatusCode::BAD_REQUEST, Json(ApiResponse::<()>::error(resp.error.unwrap_or_else(|| "File attach failed".to_string())))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<()>::error(format!("IPC error: {}", e)))).into_response(),
+    }
+}
+
 pub async fn list_endpoints() -> impl IntoResponse {
     let categories = vec![
         EndpointCategory {

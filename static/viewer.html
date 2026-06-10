@@ -49,6 +49,8 @@
   <button class="nav" id="back" title="Zurück">←</button>
   <button class="nav" id="fwd" title="Vorwärts">→</button>
   <button class="nav" id="reload" title="Neu laden">⟳</button>
+  <button class="nav" id="upload" title="Datei an Upload-Feld der Seite anhängen">📎</button>
+  <input id="filepick" type="file" style="display:none">
   <input id="addr" type="text" placeholder="URL eingeben und Enter…" spellcheck="false" autocomplete="off">
   <span id="status"><span id="dot" class="connecting"></span><span id="statusText">verbinde…</span></span>
 </div>
@@ -128,6 +130,26 @@
   $('fwd').onclick = () => send({ type: 'go_forward' });
   $('reload').onclick = () => { if (addr.value) send({ type: 'navigate', url: addr.value }); };
   $('newtab').onclick = () => send({ type: 'create_tab', url: 'about:blank' });
+
+  // File upload bridge: pick a local file, POST it to /upload, the server
+  // attaches it to the page's file input via CDP (no native dialog needed).
+  const filepick = $('filepick');
+  $('upload').onclick = () => filepick.click();
+  filepick.onchange = async () => {
+    const f = filepick.files[0];
+    if (!f) return;
+    const fd = new FormData();
+    fd.append('file', f);
+    if (activeTab) fd.append('tab_id', activeTab);
+    const btn = $('upload');
+    btn.textContent = '⏳';
+    try {
+      const r = await fetch('/upload', { method: 'POST', body: fd });
+      btn.textContent = r.ok ? '✓' : '✗';
+    } catch (e) { btn.textContent = '✗'; }
+    setTimeout(() => { btn.textContent = '📎'; }, 1500);
+    filepick.value = '';
+  };
   addr.addEventListener('focus', () => { addrFocused = true; });
   addr.addEventListener('blur', () => { addrFocused = false; });
   addr.addEventListener('keydown', (e) => {

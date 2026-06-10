@@ -199,6 +199,9 @@ impl BrowserCommandHandler {
             IpcCommand::TypeText { tab_id, text, selector, clear_first, frame_id } => {
                 self.handle_type_text(&engine_guard, &tab_id, &text, selector.as_deref(), clear_first, frame_id.as_deref()).await
             }
+            IpcCommand::SetFileInput { tab_id, selector, paths } => {
+                self.handle_set_file_input(&engine_guard, &tab_id, &selector, paths).await
+            }
             IpcCommand::Scroll { tab_id, x, y, delta_x, delta_y, selector, behavior, frame_id } => {
                 self.handle_scroll(&engine_guard, &tab_id, x, y, delta_x, delta_y, selector, behavior, frame_id.as_deref()).await
             }
@@ -897,6 +900,41 @@ impl BrowserCommandHandler {
                 IpcResponse::error("No browser engine available for TypeText")
             }
         }
+    }
+
+    /// Attach already-saved local files to a file input via CDP, so a headless
+    /// browser (which has no native file dialog) can still complete uploads.
+    async fn handle_set_file_input(
+        &self,
+        engine: &Option<BrowserEngineWrapper>,
+        tab_id: &str,
+        selector: &str,
+        paths: Vec<String>,
+    ) -> IpcResponse {
+        let uuid = match Uuid::parse_str(tab_id) {
+            Ok(u) => u,
+            Err(_) => return IpcResponse::error("Invalid tab ID"),
+        };
+        if let Some(ref cdp) = self.cdp_client {
+            let tab_url = match engine {
+                #[cfg(feature = "cef-browser")]
+                Some(BrowserEngineWrapper::Cef(e)) => e
+                    .get_tabs_sync()
+                    .into_iter()
+                    .find(|t| t.id == uuid)
+                    .map(|t| t.url.clone()),
+                _ => None,
+            };
+            if let Some(url) = tab_url {
+                if let Ok(ws_url) = self.resolve_ws_url_result(&uuid, &url).await {
+                    return match cdp.set_file_input_files(&ws_url, selector, &paths).await {
+                        Ok(_) => IpcResponse::success(),
+                        Err(e) => IpcResponse::error(e),
+                    };
+                }
+            }
+        }
+        IpcResponse::error("CDP not available or tab not found for file input")
     }
 
     async fn handle_scroll(

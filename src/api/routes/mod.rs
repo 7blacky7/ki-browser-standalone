@@ -100,6 +100,8 @@ pub fn create_router(state: AppState) -> Router {
 
         // Live viewer web UI (interactive remote browser view)
         .route("/viewer", get(crate::api::routes::misc::viewer_page))
+        // File-upload bridge: attach a local file to a file input (no native dialog)
+        .route("/upload", post(crate::api::routes::misc::upload_file))
 
         // WebSocket endpoints
         .route("/ws", get(websocket::ws_handler))

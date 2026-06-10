@@ -102,6 +102,13 @@ pub enum IpcCommand {
         frame_id: Option<String>,
     },
 
+    /// Attach local files to a `<input type=file>` (no native dialog needed)
+    SetFileInput {
+        tab_id: String,
+        selector: String,
+        paths: Vec<String>,
+    },
+
     /// Press key
     PressKey {
         tab_id: String,

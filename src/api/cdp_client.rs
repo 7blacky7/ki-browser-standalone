@@ -317,6 +317,45 @@ impl CdpClient {
     // Public API
     // ========================================================================
 
+    /// Attach local files to a `<input type=file>` without a native dialog.
+    ///
+    /// Headless CEF has no file-chooser dialog, so clicking a file input does
+    /// nothing. This resolves the input to a remote object via Runtime.evaluate
+    /// and sets the files through `DOM.setFileInputFiles`, which also fires the
+    /// element's `change` event so the page behaves as if the user picked them.
+    /// `paths` must exist in the browser process's filesystem (the server writes
+    /// uploads there first).
+    pub async fn set_file_input_files(
+        &self,
+        ws_url: &str,
+        selector: &str,
+        paths: &[String],
+    ) -> Result<(), String> {
+        let expr = format!(
+            "document.querySelector('{}')",
+            selector.replace('\\', "\\\\").replace('\'', "\\'")
+        );
+        let resolved = self
+            .send_command(
+                ws_url,
+                "Runtime.evaluate",
+                serde_json::json!({ "expression": expr, "returnByValue": false }),
+            )
+            .await?;
+        let object_id = resolved
+            .get("result")
+            .and_then(|r| r.get("objectId"))
+            .and_then(|o| o.as_str())
+            .ok_or_else(|| format!("No file input matched selector: {}", selector))?;
+        self.send_command(
+            ws_url,
+            "DOM.setFileInputFiles",
+            serde_json::json!({ "files": paths, "objectId": object_id }),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Evaluate JavaScript via CDP Runtime.evaluate (bypasses CSP/Trusted Types).
     ///
     /// Returns the result as a JSON string, or an error message.
