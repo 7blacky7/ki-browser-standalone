@@ -43,45 +43,24 @@ impl NavigatorOverrides {
     // This is THE MOST IMPORTANT anti-detection measure
     // ========================================================================
 
-    // Method 1: Direct property override
-    Object.defineProperty(navigator, 'webdriver', {{
-        get: function() {{ return false; }},
-        configurable: true,
-        enumerable: true
-    }});
-
-    // Method 2: Delete the property first, then redefine
+    // Remove the property entirely (puppeteer-extra-stealth approach).
+    // Real non-automated Chrome exposes `navigator.webdriver` as a getter on
+    // Navigator.prototype; automation flips it to true. Bot tests (sannysoft
+    // "WebDriver (New)") flag the AUTOMATION-typical shapes: an own data
+    // property on the navigator INSTANCE, or a faked getOwnPropertyDescriptor.
+    // Deleting it from the prototype makes `navigator.webdriver === undefined`
+    // and leaves no instance own-property — the cleanest pass. We deliberately
+    // do NOT add an instance property and do NOT patch getOwnPropertyDescriptor
+    // (that patch previously made the descriptor look like a data property,
+    // which is itself the detected anomaly).
     try {{
+        delete Navigator.prototype.webdriver;
+    }} catch (e) {{}}
+    try {{
+        // If a stray own-property exists on the instance (e.g. injected by the
+        // automation layer), drop it so no own descriptor remains.
         delete navigator.webdriver;
-        Object.defineProperty(navigator, 'webdriver', {{
-            get: function() {{ return false; }},
-            configurable: true,
-            enumerable: true
-        }});
     }} catch (e) {{}}
-
-    // Method 3: Override on the Navigator prototype
-    try {{
-        Object.defineProperty(Navigator.prototype, 'webdriver', {{
-            get: function() {{ return false; }},
-            configurable: true,
-            enumerable: true
-        }});
-    }} catch (e) {{}}
-
-    // Method 4: Spoof Object.getOwnPropertyDescriptor
-    const originalGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
-    Object.getOwnPropertyDescriptor = function(obj, prop) {{
-        if (prop === 'webdriver' && (obj === navigator || obj === Navigator.prototype)) {{
-            return {{
-                value: false,
-                writable: false,
-                enumerable: true,
-                configurable: true
-            }};
-        }}
-        return originalGetOwnPropertyDescriptor.call(this, obj, prop);
-    }};
 
     // Method 5: Override toString to hide our modifications
     const originalNavigatorToString = navigator.toString;
@@ -318,15 +297,16 @@ impl NavigatorOverrides {
     // Final Verification
     // ========================================================================
 
-    // Double-check webdriver is false
-    if (navigator.webdriver !== false) {{
-        console.error('CRITICAL: navigator.webdriver override failed!');
-        // Force it again
-        Object.defineProperty(navigator, 'webdriver', {{
-            get: function() {{ return false; }},
-            configurable: false,
-            enumerable: true
-        }});
+    // Double-check webdriver is not truthy. After the delete above it should be
+    // undefined (no own property, no prototype getter) — which passes. Only a
+    // truthy value (automation still leaking through) needs a fallback, and we
+    // fix it on the prototype as a getter, never as an instance data property.
+    if (navigator.webdriver) {{
+        console.error('CRITICAL: navigator.webdriver still truthy!');
+        try {{
+            delete Navigator.prototype.webdriver;
+            delete navigator.webdriver;
+        }} catch (e) {{}}
     }}
 
 }})();
