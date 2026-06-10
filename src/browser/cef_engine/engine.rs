@@ -42,6 +42,9 @@ pub struct CefBrowserEngine {
     /// Drained BEFORE queued API commands by the message loop so user input
     /// stays responsive while heavy API work is pending.
     pub(crate) input_tx: mpsc::UnboundedSender<CefCommand>,
+    /// Last known cursor position per tab — anchor for the human-like
+    /// Bézier approach of API clicks (see input.rs::click).
+    pub(crate) last_mouse_pos: Arc<parking_lot::Mutex<HashMap<Uuid, (i32, i32)>>>,
     /// Whether the engine is running.
     pub(crate) is_running: Arc<AtomicBool>,
     /// CEF initialized flag (v144 doesn't have CefContext).
@@ -132,6 +135,7 @@ impl BrowserEngine for CefBrowserEngine {
             tabs,
             command_tx,
             input_tx,
+            last_mouse_pos: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             is_running,
             _cef_initialized: cef_initialized,
             _browser_id_counter: browser_id_counter,
@@ -372,6 +376,7 @@ impl CefBrowserEngine {
 
     /// Closes a tab without blocking.
     pub fn send_close_tab(&self, tab_id: Uuid) {
+        self.last_mouse_pos.lock().remove(&tab_id);
         let (response_tx, _) = oneshot::channel();
         let _ = self.command_tx.send(CefCommand::CloseBrowser {
             tab_id,
@@ -391,6 +396,7 @@ impl CefBrowserEngine {
 
     /// Sends a mouse move event without blocking (high-priority input channel).
     pub fn send_mouse_move(&self, tab_id: Uuid, x: i32, y: i32) {
+        self.last_mouse_pos.lock().insert(tab_id, (x, y));
         let (response_tx, _) = oneshot::channel();
         let _ = self.input_tx.send(CefCommand::MouseMove {
             tab_id,
@@ -404,6 +410,7 @@ impl CefBrowserEngine {
     /// Sends a mouse-move first so CEF fires mouseenter/mouseover on the target
     /// element before the click — without this, clicks can be lost or misrouted.
     pub fn send_mouse_click(&self, tab_id: Uuid, x: i32, y: i32, button: i32) {
+        self.last_mouse_pos.lock().insert(tab_id, (x, y));
         // Move cursor to click position first (CEF needs hover state)
         let (response_tx, _) = oneshot::channel();
         let _ = self.input_tx.send(CefCommand::MouseMove {
@@ -439,6 +446,7 @@ impl CefBrowserEngine {
     /// selection, drag & drop). `click_count` carries the click detail
     /// (1 = single, 2 = double click) for both the down and the up event.
     pub fn send_mouse_button(&self, tab_id: Uuid, x: i32, y: i32, button: i32, down: bool, click_count: i32) {
+        self.last_mouse_pos.lock().insert(tab_id, (x, y));
         let count = click_count.max(1);
         let (response_tx, _) = oneshot::channel();
         let _ = self.input_tx.send(CefCommand::MouseClick {

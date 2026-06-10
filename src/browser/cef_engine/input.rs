@@ -18,6 +18,8 @@ use uuid::Uuid;
 use super::CefCommand;
 use super::engine::CefBrowserEngine;
 use super::tab::CefTab;
+use crate::input::bezier::{generate_human_path, Point};
+use crate::input::timing::HumanTiming;
 
 // ============================================================================
 // Internal methods (called on the CEF thread)
@@ -393,14 +395,70 @@ pub(crate) fn type_text_internal(
 impl CefBrowserEngine {
     /// Clicks at the specified coordinates in a tab.
     ///
-    /// Sends a mouse-down event followed by a 50ms delay and a mouse-up event
-    /// to simulate a realistic click at the given position.
+    /// Simulates a REAL user click (E2E-tool grade): the cursor approaches the
+    /// target along a Bézier curve (no teleport), settles, presses with a
+    /// human dwell time and releases — all delays jittered via `HumanTiming`.
+    /// Pacing runs on the tokio side, so the CEF message loop is never blocked
+    /// between events. This is the KI/API path (/click); the viewer WS path
+    /// forwards the user's raw events 1:1 and stays strictly separate.
     pub async fn click(&self, tab_id: Uuid, x: i32, y: i32, button: i32) -> Result<()> {
         if !self.is_running.load(Ordering::SeqCst) {
             return Err(anyhow!("Browser engine is not running"));
         }
 
-        // Mouse down
+        let timing = HumanTiming::fast();
+        let target = Point::new(x as f64, y as f64);
+
+        // Approach start: last known cursor position for this tab, or a
+        // plausible nearby point on first contact (never a 0,0 teleport).
+        let start = {
+            let positions = self.last_mouse_pos.lock();
+            positions
+                .get(&tab_id)
+                .map(|&(px, py)| Point::new(px as f64, py as f64))
+        }
+        .unwrap_or_else(|| Point::new((x as f64 - 180.0).max(0.0), (y as f64 - 120.0).max(0.0)));
+
+        // Bézier approach, density scaled by distance (~1 point per 25px).
+        let distance = start.distance_to(&target);
+        if distance >= 2.0 {
+            let num_points = ((distance / 25.0) as usize).clamp(6, 30);
+            for p in generate_human_path(start, target, num_points) {
+                self.mouse_move_and_wait(tab_id, p.x.round() as i32, p.y.round() as i32)
+                    .await?;
+                tokio::time::sleep(timing.get_move_delay()).await;
+            }
+        }
+        // Land exactly on the target (path points are jittered/rounded).
+        self.mouse_move_and_wait(tab_id, x, y).await?;
+        tokio::time::sleep(timing.get_move_delay()).await;
+
+        // Press, human dwell, release.
+        self.mouse_button_and_wait(tab_id, x, y, button, 1).await?;
+        tokio::time::sleep(timing.get_click_delay()).await;
+        self.mouse_button_and_wait(tab_id, x, y, button, -1).await?;
+
+        self.last_mouse_pos.lock().insert(tab_id, (x, y));
+        Ok(())
+    }
+
+    /// Sends a mouse move via the command channel and awaits delivery.
+    async fn mouse_move_and_wait(&self, tab_id: Uuid, x: i32, y: i32) -> Result<()> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .send(CefCommand::MouseMove {
+                tab_id,
+                x,
+                y,
+                response: response_tx,
+            })
+            .map_err(|_| anyhow!("Failed to send mouse move command"))?;
+        response_rx.await.context("Failed to receive mouse move response")?
+    }
+
+    /// Sends one button transition (down: positive, up: negative click_count)
+    /// via the command channel and awaits delivery.
+    async fn mouse_button_and_wait(&self, tab_id: Uuid, x: i32, y: i32, button: i32, click_count: i32) -> Result<()> {
         let (response_tx, response_rx) = oneshot::channel();
         self.command_tx
             .send(CefCommand::MouseClick {
@@ -408,28 +466,11 @@ impl CefBrowserEngine {
                 x,
                 y,
                 button,
-                click_count: 1, // Positive = down
+                click_count,
                 response: response_tx,
             })
-            .map_err(|_| anyhow!("Failed to send mouse down command"))?;
-        response_rx.await.context("Failed to receive mouse down response")??;
-
-        // Small delay between down and up
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-
-        // Mouse up
-        let (response_tx, response_rx) = oneshot::channel();
-        self.command_tx
-            .send(CefCommand::MouseClick {
-                tab_id,
-                x,
-                y,
-                button,
-                click_count: -1, // Negative = up
-                response: response_tx,
-            })
-            .map_err(|_| anyhow!("Failed to send mouse up command"))?;
-        response_rx.await.context("Failed to receive mouse up response")?
+            .map_err(|_| anyhow!("Failed to send mouse button command"))?;
+        response_rx.await.context("Failed to receive mouse button response")?
     }
 
     /// Types text in the currently focused element of a tab.
