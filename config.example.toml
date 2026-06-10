@@ -72,6 +72,14 @@ default_timeout_ms = 30000
 # Default: false
 stealth_mode = false
 
+# Real GPU WebGL via native EGL (environment variable only, no toml key):
+#   KI_BROWSER_USE_EGL=1  (or "true")
+# Makes CEF start with --use-gl=egl so the real GPU (e.g. NVIDIA with
+# --runtime=nvidia in Docker) backs WebGL instead of software GL (llvmpipe)
+# under Xvfb. EXPERIMENTAL: may break rendering on hosts without a working
+# EGL stack — default is OFF. The spoofed WebGL identity (vendor/renderer
+# strings per tab) stays active regardless of this switch.
+
 # =============================================================================
 # User Agent
 # =============================================================================

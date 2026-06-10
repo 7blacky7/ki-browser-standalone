@@ -177,6 +177,12 @@ Random Chrome/Edge profile per session. HTTP User-Agent and JS `navigator.userAg
 
 **Tested against:** Google (15 searches, no CAPTCHA), Amazon, Booking, LinkedIn, bot.sannysoft.com (29/30 passed, 1 FAIL vs Playwright's near-total detection).
 
+**Real GPU WebGL (experimental):** set `KI_BROWSER_USE_EGL=1` to start CEF with
+`--use-gl=egl`, so a real GPU (e.g. NVIDIA via Docker `--runtime=nvidia`) backs
+WebGL instead of software GL (llvmpipe) under Xvfb. Default OFF — may break
+rendering on hosts without a working EGL stack. The per-tab spoofed WebGL
+vendor/renderer strings stay active regardless of this switch.
+
 ## Benchmark: ki-browser vs Playwright CLI
 
 Tested 2026-03-28 against Playwright v1.58.2. Both at 1920x1080 viewport.

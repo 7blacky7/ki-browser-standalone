@@ -104,11 +104,22 @@ pub(crate) fn run_cef_message_loop(
     }
     // ret == -1 means we are the browser process, continue
 
-    // Create render process handler for MessageRouter context hooks
-    let rph = KiBrowserRenderProcessHandler::new();
+    // Create render process handler for early per-tab stealth injection
+    // (OnContextCreated, before page scripts) + MessageRouter context hooks.
+    let rph = KiBrowserRenderProcessHandler::new(tabs.clone(), stealth_config.clone());
+
+    // Optional real GPU GL via native EGL (KI_BROWSER_USE_EGL=true/1).
+    // Default OFF — may break rendering under Xvfb without a working EGL
+    // stack. Env parsing follows the settings.rs apply_env_overrides pattern.
+    let use_egl = std::env::var("KI_BROWSER_USE_EGL")
+        .map(|v| v.to_lowercase() == "true" || v == "1")
+        .unwrap_or(false);
+    if use_egl {
+        info!("KI_BROWSER_USE_EGL is set — CEF will use --use-gl=egl");
+    }
 
     // Create app with v144 API (wrap_app! macro generates ::new())
-    let mut app = KiBrowserApp::new(stealth_config.clone(), rph, config.headless);
+    let mut app = KiBrowserApp::new(stealth_config.clone(), rph, config.headless, use_egl);
 
     // Initialize CEF using v144 API
     let result = cef::initialize(

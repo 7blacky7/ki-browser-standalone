@@ -22,7 +22,7 @@ use cef::{
     ImplLoadHandler, WrapLoadHandler,
     ImplRenderProcessHandler, WrapRenderProcessHandler,
     // Traits needed to call methods on CEF types
-    ImplCommandLine, ImplFrame, ImplBrowser,
+    ImplCommandLine, ImplFrame, ImplBrowser, ImplV8Context,
     // rc module for Rc trait (needed by wrap macros)
     rc::Rc,
 };
@@ -93,11 +93,83 @@ impl BrowserSideHandler for KiBrowserQueryHandler {
 }
 
 // ============================================================================
-// RenderProcessHandler: hooks cefQuery into each new JS context
+// RenderProcessHandler: early stealth injection + cefQuery context hooks
 // ============================================================================
 
+/// Injects the stealth section scripts of the tab owning `browser` into a
+/// freshly created V8 context.
+///
+/// Runs inside `RenderProcessHandler::on_context_created`, i.e. in the render
+/// process BEFORE any page script executes. This is the only reliable way to
+/// beat load-time detection (e.g. sannysoft "WebDriver (New)" or inline
+/// `<script>` in `<head>`) in CEF single-process mode, where CDP's
+/// `Page.addScriptToEvaluateOnNewDocument` fires too late.
+///
+/// Fires for every frame (including cross-origin iframes — in single-process
+/// mode they all share this render process) and for every navigation. The
+/// section scripts are idempotent (each is an IIFE wrapped in try/catch), so
+/// repeated injection on the same document is safe. The existing CDP init
+/// scripts and the LoadHandler injection stay active as belt-and-suspenders.
+fn inject_stealth_on_context_created(
+    tabs: &Arc<RwLock<HashMap<Uuid, CefTab>>>,
+    default_stealth: &Arc<StealthConfig>,
+    browser: Option<&Browser>,
+    frame: Option<&Frame>,
+    context: Option<&cef::V8Context>,
+) {
+    let Some(frame) = frame else { return };
+
+    // Skip browser-internal pages (DevTools, chrome:// UI) — no spoofing there.
+    let url = CefString::from(&frame.url()).to_string();
+    if url.starts_with("devtools://") || url.starts_with("chrome://") {
+        return;
+    }
+
+    // Resolve the identity of the OWNING tab via the CEF browser id.
+    // Fallback: engine default identity (popups before mapping, GUI tabs).
+    let stealth = browser
+        .map(|b| b.identifier())
+        .and_then(|bid| {
+            let tabs_guard = tabs.read();
+            tabs_guard
+                .values()
+                .find(|t| t.browser_id == Some(bid))
+                .map(|t| t.stealth.clone())
+        })
+        .unwrap_or_else(|| default_stealth.clone());
+
+    let empty_url = CefString::from("");
+    for script in stealth.get_section_scripts() {
+        let code = CefString::from(script.as_str());
+
+        // Prefer synchronous V8 eval in the new context — guaranteed to run
+        // before any page script. Fall back to execute_java_script (executes
+        // immediately on the render thread) if eval is unavailable/fails.
+        let mut executed = false;
+        if let Some(ctx) = context {
+            let mut retval: Option<cef::V8Value> = None;
+            let mut exception: Option<cef::V8Exception> = None;
+            executed = ctx.eval(
+                Some(&code),
+                Some(&empty_url),
+                0,
+                Some(&mut retval),
+                Some(&mut exception),
+            ) != 0;
+        }
+        if !executed {
+            frame.execute_java_script(Some(&code), Some(&empty_url), 0);
+        }
+    }
+
+    debug!("Render-process stealth injection done for context (url={})", url);
+}
+
 cef::wrap_render_process_handler! {
-    pub(crate) struct KiBrowserRenderProcessHandler {}
+    pub(crate) struct KiBrowserRenderProcessHandler {
+        tabs: Arc<RwLock<HashMap<Uuid, CefTab>>>,
+        default_stealth: Arc<StealthConfig>,
+    }
 
     impl RenderProcessHandler {
         fn on_context_created(
@@ -106,13 +178,21 @@ cef::wrap_render_process_handler! {
             frame: Option<&mut cef::Frame>,
             context: Option<&mut cef::V8Context>,
         ) {
-            tracing::info!("RenderProcessHandler::on_context_created called!");
+            // Stealth FIRST: must be in place before any page script runs in
+            // the new context (load-time webdriver/WebGL detection).
+            inject_stealth_on_context_created(
+                &self.tabs,
+                &self.default_stealth,
+                browser.as_deref(),
+                frame.as_deref(),
+                context.as_deref(),
+            );
+
             RENDERER_ROUTER.on_context_created(
                 browser.map(|b| b.clone()),
                 frame.map(|f| f.clone()),
                 context.map(|c| c.clone()),
             );
-            tracing::info!("RenderProcessHandler::on_context_created - RENDERER_ROUTER done");
         }
 
         fn on_context_released(
@@ -160,6 +240,7 @@ cef::wrap_app! {
         stealth_config: Arc<StealthConfig>,
         render_process_handler_val: RenderProcessHandler,
         headless: bool,
+        use_egl: bool,
     }
 
     impl App {
@@ -176,7 +257,23 @@ cef::wrap_app! {
                 cmd.append_switch(Some(&CefString::from("no-first-run")));
                 cmd.append_switch(Some(&CefString::from("no-default-browser-check")));
 
-                if self.headless {
+                if self.use_egl {
+                    // Opt-in via KI_BROWSER_USE_EGL: use native EGL directly so the
+                    // real GPU (e.g. NVIDIA via --runtime=nvidia) backs WebGL instead
+                    // of ANGLE on llvmpipe under Xvfb. May break rendering on hosts
+                    // without a working EGL stack — default is OFF, the spoofed
+                    // WebGL identity stays active either way.
+                    cmd.append_switch_with_value(
+                        Some(&CefString::from("use-gl")),
+                        Some(&CefString::from("egl")),
+                    );
+                    cmd.append_switch(Some(&CefString::from("enable-webgl")));
+                    cmd.append_switch(Some(&CefString::from("in-process-gpu")));
+                    cmd.append_switch(Some(&CefString::from("enable-gpu")));
+                    cmd.append_switch(Some(&CefString::from("ignore-gpu-blocklist")));
+                    cmd.append_switch(Some(&CefString::from("ignore-gpu-blacklist")));
+                    debug!("CEF: KI_BROWSER_USE_EGL active — using native EGL for GPU GL");
+                } else if self.headless {
                     // Headless: prefer real GPU if available, fall back to SwiftShader.
                     // A real GPU avoids the "SwiftShader" WebGL renderer string which
                     // is a strong bot-detection signal on sites like bot.sannysoft.com.

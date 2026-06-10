@@ -316,6 +316,11 @@ impl BrowserCommandHandler {
                 if let Some(cdp) = self.cdp_client.clone() {
                     match Self::find_new_target_ws_url(&cdp, &targets_before).await {
                         Some(ws_url) => {
+                            // ATOMIC binding while still inside the creation-mutex
+                            // section: UUID -> ws_url FIRST, before any override
+                            // call. From here on this binding is the single source
+                            // of truth for every CDP call of this tab.
+                            self.tab_ws_urls.write().await.insert(tab.id, ws_url.clone());
                             self.init_tab_identity_via_cdp(&cdp, &ws_url, &stealth, tab.id).await;
                         }
                         None => {
@@ -380,9 +385,11 @@ impl BrowserCommandHandler {
         stealth: &crate::stealth::StealthConfig,
         tab_id: Uuid,
     ) {
+        // Note: the UUID -> ws_url binding is stored by the caller BEFORE this
+        // function runs (inside the creation-mutex section), so the binding
+        // exists even if individual CDP calls below fail.
         match cdp.add_init_script(ws_url, &stealth.get_complete_override_script()).await {
             Ok(_) => {
-                self.tab_ws_urls.write().await.insert(tab_id, ws_url.to_string());
                 debug!("Stealth init-script registered at creation for tab {}", tab_id);
             }
             Err(e) => {
@@ -424,6 +431,47 @@ impl BrowserCommandHandler {
                     i, tab_id, e
                 );
             }
+        }
+    }
+
+    /// Returns the CDP WebSocket URL that was deterministically bound to this
+    /// tab at creation time (under the creation mutex).
+    async fn bound_ws_url(&self, tab_id: &Uuid) -> Option<String> {
+        self.tab_ws_urls.read().await.get(tab_id).cloned()
+    }
+
+    /// Resolves the CDP ws_url for a tab.
+    ///
+    /// The creation-time binding in `tab_ws_urls` is the single source of
+    /// truth. URL-based discovery (`find_target_by_url`) is only a fallback
+    /// for tabs that were never bound (popups, GUI-created tabs) — and a
+    /// discovered ws_url that is already the binding of ANOTHER tab is
+    /// rejected. This prevents the override race where CDP calls (observed:
+    /// Emulation.setTimezoneOverride) landed on a foreign target when several
+    /// tabs shared the same URL (e.g. about:blank during parallel creation).
+    async fn resolve_ws_url_result(
+        &self,
+        tab_id: &Uuid,
+        tab_url: &str,
+    ) -> Result<String, String> {
+        if let Some(ws_url) = self.bound_ws_url(tab_id).await {
+            return Ok(ws_url);
+        }
+
+        let cdp = self
+            .cdp_client
+            .as_ref()
+            .ok_or_else(|| "No CDP client available".to_string())?;
+        let discovered = cdp.find_target_ws_url(tab_url).await?;
+
+        let bindings = self.tab_ws_urls.read().await;
+        if ws_url_free_for_tab(&discovered, tab_id, &bindings) {
+            Ok(discovered)
+        } else {
+            Err(format!(
+                "discovered CDP target {} is already bound to another tab (refusing cross-tab use for {})",
+                discovered, tab_id
+            ))
         }
     }
 
@@ -492,7 +540,7 @@ impl BrowserCommandHandler {
                     }
                     _ => None,
                 } {
-                    if let Ok(ws_url) = cdp.find_target_ws_url(&tab_url).await {
+                    if let Ok(ws_url) = self.resolve_ws_url_result(&uuid, &tab_url).await {
                         // The tab's own identity (assigned at creation by the engine).
                         #[cfg(feature = "cef-browser")]
                         let tab_stealth = match engine {
@@ -559,9 +607,20 @@ impl BrowserCommandHandler {
                             if let (Some(ref cdp), Some(sections)) = (&self.cdp_client, sections) {
                                 let cdp = cdp.clone();
                                 let url_clone = url.to_string();
+                                let bindings = self.tab_ws_urls.clone();
                                 tokio::spawn(async move {
                                     tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
                                     if let Ok(ws_url) = cdp.find_target_ws_url(&url_clone).await {
+                                        // Never inject into a target that is the
+                                        // creation-time binding of ANOTHER tab.
+                                        let foreign = {
+                                            let map = bindings.read().await;
+                                            !ws_url_free_for_tab(&ws_url, &uuid, &map)
+                                        };
+                                        if foreign {
+                                            warn!("Skip stealth re-injection after nav to {}: discovered target is bound to another tab", url_clone);
+                                            return;
+                                        }
                                         let mut ok = 0;
                                         for (i, script) in sections.iter().enumerate() {
                                             match cdp.evaluate(&ws_url, script).await {
@@ -671,7 +730,7 @@ impl BrowserCommandHandler {
                 };
 
                 if let Some(url) = tab_url {
-                    if let Ok(ws_url) = cdp.find_target_ws_url(&url).await {
+                    if let Ok(ws_url) = self.resolve_ws_url_result(&_uuid, &url).await {
                         match crate::api::cdp_frames::get_element_center_in_frame(cdp, &ws_url, fid, selector).await {
                             Ok((cx, cy)) => {
                                 match engine {
@@ -753,7 +812,7 @@ impl BrowserCommandHandler {
             };
 
             if let Some(url) = tab_url {
-                if let Ok(ws_url) = cdp.find_target_ws_url(&url).await {
+                if let Ok(ws_url) = self.resolve_ws_url_result(&uuid, &url).await {
                     if let Some(fid) = frame_id {
                         // Frame-specific: focus element in frame context, then insertText
                         if let Some(sel) = selector {
@@ -878,7 +937,7 @@ impl BrowserCommandHandler {
                 };
 
                 if let Some(url) = tab_url {
-                    match cdp.find_target_ws_url(&url).await {
+                    match self.resolve_ws_url_result(&uuid, &url).await {
                         Ok(ws_url) => {
                             match crate::api::cdp_frames::evaluate_in_frame(cdp, &ws_url, fid, &js, true).await {
                                 Ok(result) => {
@@ -1004,7 +1063,7 @@ impl BrowserCommandHandler {
             };
 
             if let Some(url) = tab_url {
-                match cdp.find_target_ws_url(&url).await {
+                match self.resolve_ws_url_result(&uuid, &url).await {
                     Ok(ws_url) => {
                         // If frame_id is set, use frame-isolated evaluation
                         if let Some(fid) = frame_id {
@@ -1433,6 +1492,23 @@ impl Default for BrowserCommandHandler {
     }
 }
 
+/// Returns true if `discovered` may be used as the CDP ws_url for `tab_id`.
+///
+/// A ws_url that is already the creation-time binding of a DIFFERENT tab must
+/// never be reused via URL-based discovery: URL matching is ambiguous (several
+/// tabs can share the same URL, and `find_target_by_url` even has an
+/// any-page-target fallback). This was the root of the parallel-creation
+/// override race where a timezone override landed on a foreign target.
+fn ws_url_free_for_tab(
+    discovered: &str,
+    tab_id: &Uuid,
+    bindings: &HashMap<Uuid, String>,
+) -> bool {
+    bindings
+        .iter()
+        .all(|(bound_tab, ws_url)| bound_tab == tab_id || ws_url != discovered)
+}
+
 /// Detect image dimensions from raw PNG/JPEG/WebP bytes
 #[allow(dead_code)]
 fn detect_image_dimensions(data: &[u8]) -> (u32, u32) {
@@ -1474,4 +1550,62 @@ fn detect_image_dimensions(data: &[u8]) -> (u32, u32) {
         }
     }
     (0, 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ws(id: &str) -> String {
+        format!("ws://127.0.0.1:9222/devtools/page/{}", id)
+    }
+
+    #[test]
+    fn test_ws_url_free_when_no_bindings() {
+        let bindings: HashMap<Uuid, String> = HashMap::new();
+        let tab = Uuid::new_v4();
+        assert!(ws_url_free_for_tab(&ws("A"), &tab, &bindings));
+    }
+
+    #[test]
+    fn test_ws_url_free_for_own_binding() {
+        let tab = Uuid::new_v4();
+        let mut bindings = HashMap::new();
+        bindings.insert(tab, ws("A"));
+        // A tab may always reuse its own bound target.
+        assert!(ws_url_free_for_tab(&ws("A"), &tab, &bindings));
+    }
+
+    #[test]
+    fn test_ws_url_blocked_for_foreign_binding() {
+        let tab_a = Uuid::new_v4();
+        let tab_b = Uuid::new_v4();
+        let mut bindings = HashMap::new();
+        bindings.insert(tab_a, ws("A"));
+        // Tab B must NOT use tab A's bound target (the override race).
+        assert!(!ws_url_free_for_tab(&ws("A"), &tab_b, &bindings));
+        // ...but an unbound target is fine for B.
+        assert!(ws_url_free_for_tab(&ws("B"), &tab_b, &bindings));
+    }
+
+    #[test]
+    fn test_ws_url_parallel_creation_scenario() {
+        // Simulates the live finding: two tabs created in parallel, both at
+        // about:blank. Tab A is bound under the creation mutex; URL-based
+        // discovery for tab B then accidentally returns A's target — the
+        // guard must reject it so B's overrides never land on A's target.
+        let tab_a = Uuid::new_v4();
+        let tab_b = Uuid::new_v4();
+        let mut bindings = HashMap::new();
+        bindings.insert(tab_a, ws("A"));
+
+        let discovered_for_b = ws("A"); // wrong match via about:blank
+        assert!(!ws_url_free_for_tab(&discovered_for_b, &tab_b, &bindings));
+
+        // After B gets its own binding, both resolve to their own targets.
+        bindings.insert(tab_b, ws("B"));
+        assert!(ws_url_free_for_tab(&ws("B"), &tab_b, &bindings));
+        assert!(ws_url_free_for_tab(&ws("A"), &tab_a, &bindings));
+        assert!(!ws_url_free_for_tab(&ws("B"), &tab_a, &bindings));
+    }
 }
