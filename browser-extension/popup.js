@@ -124,6 +124,20 @@ async function sendBundle(bundle) {
   const headers = { 'Content-Type': 'application/json' };
   if (cfg.kiBrowserToken) headers['Authorization'] = `Bearer ${cfg.kiBrowserToken}`;
 
+  // Firefox MV3 treats host access as opt-in. Request it for the target host
+  // from within this click handler (a user gesture) so Firefox shows an allow
+  // dialog and the cross-origin fetch is permitted. Match patterns carry no
+  // port, so request the bare host.
+  try {
+    const u = new URL(base);
+    const pattern = `${u.protocol}//${u.hostname}/*`;
+    if (ext.permissions && ext.permissions.request) {
+      await ext.permissions.request({ origins: [pattern] });
+    }
+  } catch (e) {
+    // Non-fatal: fall through; the fetch below surfaces the real error.
+  }
+
   let resp;
   try {
     resp = await fetch(`${base}/login-session/import`, {
