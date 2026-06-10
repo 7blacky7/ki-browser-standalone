@@ -59,8 +59,10 @@ By default the API listens on `0.0.0.0` **without authentication** (open on the 
 which preserves the historical behaviour. To lock it down:
 
 - **`KI_BROWSER_API_TOKEN`** (or `api_token` in `config.toml`): when set, every
-  route except `/health`, `/status`, `/api-doc` and `/swagger-ui` requires the
-  header `Authorization: Bearer <token>`. Unset = auth disabled (default).
+  route except `/health`, `/status`, `/api-doc`, `/swagger-ui` and the live
+  viewer (`/viewer`, `/ws/viewer`, `/upload` — a browser page cannot send
+  Bearer headers) requires the header `Authorization: Bearer <token>`.
+  Unset = auth disabled (default).
 - **`KI_BROWSER_API_BIND`** (or `api_bind`): the IP the server binds to.
   Use `127.0.0.1` to restrict to localhost, or keep `0.0.0.0` for LAN access.
 
@@ -69,6 +71,24 @@ export KI_BROWSER_API_TOKEN="a-long-random-secret"
 export KI_BROWSER_API_BIND="0.0.0.0"
 curl -H "Authorization: Bearer a-long-random-secret" http://host:9222/tabs
 ```
+
+## Live Viewer
+
+`GET /viewer` serves a self-contained web UI that streams the browser viewport
+live (JPEG frames over `/ws/viewer?codec=jpeg`) and forwards mouse, keyboard,
+address-bar and tab actions back — watch and drive the browser exactly like an
+AI agent does. The 📎 button uploads a local file through `POST /upload`, which
+attaches it to the page's `input[type=file]` via CDP (headless CEF has no
+native file dialog).
+
+On Unraid, set the container's WebUI to the viewer so right-click → WebUI
+opens it directly:
+
+```text
+http://[IP]:[PORT:9222]/viewer
+```
+
+(docker label: `net.unraid.docker.webui=http://[IP]:[PORT:9222]/viewer`)
 
 ## API Reference
 

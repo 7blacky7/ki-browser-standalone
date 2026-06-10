@@ -481,10 +481,17 @@ pub async fn list_endpoints() -> impl IntoResponse {
             ],
         },
         EndpointCategory {
+            name: "Live-Viewer",
+            endpoints: vec![
+                EndpointInfo { method: "GET", path: "/viewer", description: "Interaktive Live-Viewer Web-UI (Canvas-Stream, Maus/Tastatur, Tabs, Datei-Upload) — als Unraid-WebUI nutzbar" },
+                EndpointInfo { method: "POST", path: "/upload", description: "File-Upload-Bruecke: multipart (file, tab_id?, selector?) — haengt die Datei via CDP an das file-Input der Seite (kein nativer Dialog noetig)" },
+            ],
+        },
+        EndpointCategory {
             name: "WebSocket",
             endpoints: vec![
                 EndpointInfo { method: "GET", path: "/ws", description: "WebSocket fuer Echtzeit-Events" },
-                EndpointInfo { method: "GET", path: "/ws/viewer", description: "WebSocket fuer Live-Viewer Stream" },
+                EndpointInfo { method: "GET", path: "/ws/viewer", description: "WebSocket fuer Live-Viewer Stream (?codec=jpeg fuer Browser-Clients, sonst H264 falls verfuegbar)" },
             ],
         },
     ];

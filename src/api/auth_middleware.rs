@@ -8,7 +8,10 @@
 //!
 //! A small path whitelist (`/health`, `/status`, `/api-doc`, `/swagger-ui`)
 //! stays open even with a token set, so health checks and the API docs remain
-//! reachable without credentials.
+//! reachable without credentials. The live-viewer trio (`/viewer`,
+//! `/ws/viewer`, `/upload`) is open as well: the viewer is a plain browser
+//! page that cannot attach Bearer headers to page loads, WebSocket upgrades
+//! or form fetches — gate it at the network level (`api_bind`) if needed.
 
 use axum::{
     body::Body,
@@ -27,7 +30,18 @@ use crate::api::routes::ApiResponse;
 /// Matches the exact path and any sub-path (e.g. `/swagger-ui/index.html`,
 /// `/api-doc/openapi.json`).
 fn is_whitelisted(path: &str) -> bool {
-    const OPEN_PREFIXES: [&str; 4] = ["/health", "/status", "/api-doc", "/swagger-ui"];
+    // Health/docs stay open for monitoring; the live-viewer trio stays open
+    // because a browser page cannot send Bearer headers for the page load,
+    // the WebSocket upgrade or the upload fetch (restrict via api_bind).
+    const OPEN_PREFIXES: [&str; 7] = [
+        "/health",
+        "/status",
+        "/api-doc",
+        "/swagger-ui",
+        "/viewer",
+        "/ws/viewer",
+        "/upload",
+    ];
     OPEN_PREFIXES.iter().any(|prefix| {
         path == *prefix || path.starts_with(&format!("{}/", prefix))
     })
@@ -125,6 +139,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn viewer_trio_is_whitelisted() {
+        assert!(is_whitelisted("/viewer"));
+        assert!(is_whitelisted("/ws/viewer"));
+        assert!(is_whitelisted("/upload"));
+        assert!(!is_whitelisted("/evaluate"));
+        assert!(!is_whitelisted("/viewer-x"));
+        assert!(!is_whitelisted("/ws"));
     }
 
     #[tokio::test]

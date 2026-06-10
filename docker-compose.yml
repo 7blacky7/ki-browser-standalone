@@ -17,6 +17,10 @@ services:
     container_name: ki-browser
     restart: unless-stopped
 
+    # Unraid: right-click -> WebUI opens the live viewer
+    labels:
+      - net.unraid.docker.webui=http://[IP]:[PORT:9222]/viewer
+
     # CRITICAL: Chrome/CEF requires at least 2GB shared memory
     shm_size: 2gb
 
