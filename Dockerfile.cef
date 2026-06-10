@@ -118,6 +118,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1-mesa-dri \
     libegl1-mesa \
     libgles2-mesa \
+    # libglvnd — vendor-neutral GL/EGL dispatcher. The NVIDIA container runtime
+    # mounts libEGL_nvidia.so/libGLX_nvidia.so but NOT a vendor JSON, so without
+    # glvnd + the NVIDIA vendor config below the dispatcher only ever sees Mesa
+    # (llvmpipe) and ANGLE's EGL context creation falls back to software.
+    libglvnd0 \
+    libopengl0 \
     libvulkan1 \
     # Text rendering
     libpango-1.0-0 \
@@ -215,6 +221,27 @@ RUN python3 -c "from surya.detection import DetectionPredictor; from surya.recog
 # NVIDIA Container Runtime — GPU wird vom Host durchgereicht
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility
+
+# NVIDIA EGL vendor registration (THE GPU-WebGL fix).
+# --runtime=nvidia mounts libEGL_nvidia.so.0 / libGLX_nvidia.so.0 +
+# libnvidia-eglcore, but it does NOT install a glvnd vendor JSON. Without it the
+# libglvnd EGL dispatcher only finds 50_mesa.json -> ANGLE picks Mesa/llvmpipe
+# and eglCreateContext on the NVIDIA path fails (EGL_BAD_ATTRIBUTE), so WebGL
+# renders in software. Registering the NVIDIA vendor + pinning the dispatcher to
+# it makes eglInitialize report VENDOR=NVIDIA (verified live in-container).
+RUN mkdir -p /usr/share/glvnd/egl_vendor.d && \
+    printf '%s\n' \
+      '{' \
+      '    "file_format_version" : "1.0.0",' \
+      '    "ICD" : {' \
+      '        "library_path" : "libEGL_nvidia.so.0"' \
+      '    }' \
+      '}' > /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+# Pin glvnd to the NVIDIA vendor first, then Mesa as fallback. EGL_PLATFORM
+# surfaceless lets ANGLE reach the GPU via /dev/dri/renderD128 directly instead
+# of going through Xvfb's software GLX.
+ENV __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json:/usr/share/glvnd/egl_vendor.d/50_mesa.json
+ENV EGL_PLATFORM=surfaceless
 
 # Copy CEF runtime libraries
 COPY --from=builder /cef/ /opt/cef/
