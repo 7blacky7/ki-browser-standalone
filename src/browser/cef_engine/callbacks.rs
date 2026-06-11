@@ -600,11 +600,20 @@ cef::wrap_life_span_handler! {
                 // Also create a new internal tab with this URL
                 if let Some(ref tx) = self.popup_tx {
                     let new_tab_id = Uuid::new_v4();
+                    // Inherit the OPENING tab's stealth identity so the popup is
+                    // fingerprint-consistent with its parent. Critical for flows
+                    // where a logged-in tab opens a follow-up tab via a link/button
+                    // (e.g. OGame lobby -> game-server tab): a mismatched identity
+                    // would break the inherited session. Cookies are already shared
+                    // across tabs (global request context), so the popup also keeps
+                    // the parent's session automatically.
+                    let parent_stealth =
+                        self.tabs.read().get(&self.tab_id).map(|t| t.stealth.clone());
                     let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
                     let cmd = CefCommand::CreateBrowser {
                         url: url_str,
                         tab_id: new_tab_id,
-                        stealth: None, // popups inherit the engine default identity
+                        stealth: parent_stealth,
                         response: response_tx,
                     };
                     let _ = tx.send(cmd);
