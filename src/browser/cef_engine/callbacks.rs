@@ -607,8 +607,15 @@ cef::wrap_life_span_handler! {
                     // would break the inherited session. Cookies are already shared
                     // across tabs (global request context), so the popup also keeps
                     // the parent's session automatically.
-                    let parent_stealth =
-                        self.tabs.read().get(&self.tab_id).map(|t| t.stealth.clone());
+                    // NEVER block the CEF UI thread here: on_before_popup runs on
+                    // it, and a blocking .read() can deadlock against the async side
+                    // holding the write lock (froze input after opening a popup).
+                    // try_read() returns immediately; on contention we fall back to
+                    // the default identity instead of hanging.
+                    let parent_stealth = self
+                        .tabs
+                        .try_read()
+                        .and_then(|g| g.get(&self.tab_id).map(|t| t.stealth.clone()));
                     let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
                     let cmd = CefCommand::CreateBrowser {
                         url: url_str,
