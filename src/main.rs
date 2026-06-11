@@ -600,7 +600,14 @@ async fn main() -> Result<()> {
     let mut api_server = if settings.api_enabled {
         info!("Starting API server on port {}...", settings.api_port);
 
-        let ipc_channel = IpcChannel::new();
+        let mut ipc_channel = IpcChannel::new();
+        // Apply the configurable default IPC timeout BEFORE the channel is
+        // cloned/moved — clones copy `default_timeout` by value, so this must
+        // happen first to take effect everywhere.
+        ipc_channel.set_default_timeout(std::time::Duration::from_secs(settings.ipc_timeout_secs));
+        // Keep a clone for the optional watchdog. The timeout counter + uptime
+        // instant are shared via Arc, so this clone observes the same signal.
+        let watchdog_ipc = ipc_channel.clone();
 
         // Set up browser command handler with the actual browser engine
         #[cfg(feature = "cef-browser")]
@@ -665,6 +672,54 @@ async fn main() -> Result<()> {
             .start()
             .await
             .map_err(|e| anyhow::anyhow!("Failed to start API server: {}", e))?;
+
+        // Optional self-recovery watchdog. DEFAULT OFF — only spawned when
+        // KI_BROWSER_WATCHDOG=1 (settings.watchdog_enabled). Without it the
+        // behaviour is identical to before (no process::exit possible).
+        //
+        // Runs as a tokio task in the async runtime threadpool — a different
+        // thread than the dedicated CEF message loop. If the CEF loop stalls in
+        // its busy-waits, this task and its interval timer keep running, reading
+        // only a lock-free AtomicU64 (timeout_count) and an Instant (uptime).
+        //
+        // Restart-loop protection: (1) fires only after `min_uptime` so a fresh
+        // container surviving slow CEF init does not immediately re-restart;
+        // (2) sliding window — `prev` is reset every tick so only timeouts
+        // within the current window count.
+        if settings.watchdog_enabled {
+            let watchdog_max = settings.watchdog_max_timeouts as u64;
+            let window = std::time::Duration::from_secs(settings.watchdog_window_secs.max(1));
+            let min_uptime = std::time::Duration::from_secs(settings.watchdog_min_uptime_secs);
+            let ipc = watchdog_ipc;
+            info!(
+                "IPC saturation watchdog ENABLED (>= {} timeouts / {}s, min uptime {}s -> process restart)",
+                watchdog_max,
+                window.as_secs(),
+                min_uptime.as_secs()
+            );
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(window);
+                // Skip the immediate first tick fired by interval at t=0.
+                ticker.tick().await;
+                let mut prev = ipc.timeout_count();
+                loop {
+                    ticker.tick().await;
+                    let cur = ipc.timeout_count();
+                    let delta = cur.saturating_sub(prev);
+                    let uptime = ipc.uptime();
+                    if uptime >= min_uptime && delta >= watchdog_max {
+                        tracing::error!(
+                            "CEF saturation detected: {} IPC timeouts in {}s (uptime {}s) -> restarting process for recovery",
+                            delta,
+                            window.as_secs(),
+                            uptime.as_secs()
+                        );
+                        std::process::exit(1);
+                    }
+                    prev = cur;
+                }
+            });
+        }
 
         println!(
             "{green}{bold}API Server started:{reset} http://127.0.0.1:{}",

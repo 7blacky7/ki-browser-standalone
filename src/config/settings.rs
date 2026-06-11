@@ -274,6 +274,37 @@ pub struct BrowserSettings {
     /// (all interfaces). Must be a parseable `std::net::IpAddr`.
     #[serde(default = "default_api_bind")]
     pub api_bind: String,
+
+    /// Default per-command IPC timeout in seconds. Lowered from the historical
+    /// 30s hard default to 10s so a stalled CEF loop surfaces failures faster.
+    /// Override via `KI_BROWSER_IPC_TIMEOUT_SECS`. Long-running commands
+    /// (WaitFor*, EvaluateScript) carry their own explicit timeouts and are
+    /// unaffected by this default.
+    #[serde(default = "default_ipc_timeout_secs")]
+    pub ipc_timeout_secs: u64,
+
+    /// Enable the self-recovery watchdog. DEFAULT OFF — without this the
+    /// watchdog task is never spawned and behaviour is identical to today.
+    /// Only meaningful in a container with a restart policy. Env:
+    /// `KI_BROWSER_WATCHDOG` = `1`/`true`.
+    #[serde(default)]
+    pub watchdog_enabled: bool,
+
+    /// Number of IPC timeouts within `watchdog_window_secs` that triggers a
+    /// self-restart. Env: `KI_BROWSER_WATCHDOG_MAX_TIMEOUTS`.
+    #[serde(default = "default_watchdog_max_timeouts")]
+    pub watchdog_max_timeouts: u32,
+
+    /// Sliding window length in seconds over which timeouts are counted. Env:
+    /// `KI_BROWSER_WATCHDOG_WINDOW_SECS`.
+    #[serde(default = "default_watchdog_window_secs")]
+    pub watchdog_window_secs: u64,
+
+    /// Minimum process uptime before the watchdog may fire, guarding against a
+    /// restart loop during slow CEF init. Env:
+    /// `KI_BROWSER_WATCHDOG_MIN_UPTIME_SECS`.
+    #[serde(default = "default_watchdog_min_uptime_secs")]
+    pub watchdog_min_uptime_secs: u64,
 }
 
 // Default value functions for serde
@@ -309,6 +340,22 @@ fn default_api_bind() -> String {
     "0.0.0.0".to_string()
 }
 
+fn default_ipc_timeout_secs() -> u64 {
+    10
+}
+
+fn default_watchdog_max_timeouts() -> u32 {
+    4
+}
+
+fn default_watchdog_window_secs() -> u64 {
+    30
+}
+
+fn default_watchdog_min_uptime_secs() -> u64 {
+    60
+}
+
 impl Default for BrowserSettings {
     fn default() -> Self {
         Self {
@@ -326,6 +373,11 @@ impl Default for BrowserSettings {
             cdp_port: default_cdp_port(),
             api_token: None,
             api_bind: default_api_bind(),
+            ipc_timeout_secs: default_ipc_timeout_secs(),
+            watchdog_enabled: false,
+            watchdog_max_timeouts: default_watchdog_max_timeouts(),
+            watchdog_window_secs: default_watchdog_window_secs(),
+            watchdog_min_uptime_secs: default_watchdog_min_uptime_secs(),
         }
     }
 }
@@ -496,6 +548,34 @@ impl BrowserSettings {
 
         if let Ok(val) = env::var("KI_BROWSER_API_BIND") {
             self.api_bind = val;
+        }
+
+        if let Ok(val) = env::var("KI_BROWSER_IPC_TIMEOUT_SECS") {
+            if let Ok(s) = val.parse() {
+                self.ipc_timeout_secs = s;
+            }
+        }
+
+        if let Ok(val) = env::var("KI_BROWSER_WATCHDOG") {
+            self.watchdog_enabled = val.to_lowercase() == "true" || val == "1";
+        }
+
+        if let Ok(val) = env::var("KI_BROWSER_WATCHDOG_MAX_TIMEOUTS") {
+            if let Ok(n) = val.parse() {
+                self.watchdog_max_timeouts = n;
+            }
+        }
+
+        if let Ok(val) = env::var("KI_BROWSER_WATCHDOG_WINDOW_SECS") {
+            if let Ok(s) = val.parse() {
+                self.watchdog_window_secs = s;
+            }
+        }
+
+        if let Ok(val) = env::var("KI_BROWSER_WATCHDOG_MIN_UPTIME_SECS") {
+            if let Ok(s) = val.parse() {
+                self.watchdog_min_uptime_secs = s;
+            }
         }
 
         // Proxy configuration from environment

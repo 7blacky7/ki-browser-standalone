@@ -4,7 +4,8 @@
 //! for communicating browser control commands.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot, RwLock};
@@ -490,6 +491,15 @@ pub struct IpcChannel {
 
     /// Default timeout for commands
     default_timeout: Duration,
+
+    /// Cumulative count of IPC command timeouts observed across all clones.
+    /// Shared via `Arc` so every clone increments the same counter — this is
+    /// the central saturation signal read by the optional watchdog task.
+    timeout_count: Arc<AtomicU64>,
+
+    /// Wall-clock instant this channel family was created. Shared across clones
+    /// so the watchdog can enforce a minimum uptime before acting.
+    started_at: Arc<Instant>,
 }
 
 impl Clone for IpcChannel {
@@ -498,6 +508,8 @@ impl Clone for IpcChannel {
             command_tx: self.command_tx.clone(),
             command_rx: self.command_rx.clone(),
             default_timeout: self.default_timeout,
+            timeout_count: self.timeout_count.clone(),
+            started_at: self.started_at.clone(),
         }
     }
 }
@@ -511,6 +523,8 @@ impl IpcChannel {
             command_tx,
             command_rx: std::sync::Arc::new(RwLock::new(Some(command_rx))),
             default_timeout: Duration::from_secs(30),
+            timeout_count: Arc::new(AtomicU64::new(0)),
+            started_at: Arc::new(Instant::now()),
         }
     }
 
@@ -522,12 +536,26 @@ impl IpcChannel {
             command_tx,
             command_rx: std::sync::Arc::new(RwLock::new(Some(command_rx))),
             default_timeout: Duration::from_secs(30),
+            timeout_count: Arc::new(AtomicU64::new(0)),
+            started_at: Arc::new(Instant::now()),
         }
     }
 
     /// Set the default timeout for commands
     pub fn set_default_timeout(&mut self, timeout: Duration) {
         self.default_timeout = timeout;
+    }
+
+    /// Cumulative number of IPC command timeouts observed since creation.
+    /// Lock-free read of a shared `AtomicU64`; safe to call from any thread
+    /// (notably the watchdog tokio task) even while the CEF loop is stalled.
+    pub fn timeout_count(&self) -> u64 {
+        self.timeout_count.load(Ordering::Relaxed)
+    }
+
+    /// Time elapsed since this channel family was created.
+    pub fn uptime(&self) -> Duration {
+        self.started_at.elapsed()
     }
 
     /// Send a command and wait for response
@@ -581,6 +609,7 @@ impl IpcChannel {
                 Err(IpcError::ChannelClosed)
             }
             Err(_) => {
+                self.timeout_count.fetch_add(1, Ordering::Relaxed);
                 warn!("IPC command {} timed out after {:?}", command_id, timeout);
                 Err(IpcError::Timeout)
             }
